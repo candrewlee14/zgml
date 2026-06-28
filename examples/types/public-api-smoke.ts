@@ -237,6 +237,7 @@ import {
   type NativeEagerConv2dIntoOptions,
   type NativeEagerArgReduceDimIntoOptions,
   type NativeEagerCumsumIntoOptions,
+  type NativeEagerMomentIntoOptions,
   type NativeEagerMatmulIntoOptions,
   type NativeEagerPool2dIntoOptions,
   type NativeEagerReduceDimIntoOptions,
@@ -2619,6 +2620,9 @@ const nativeEagerArgReduceDimIntoAlias: Float32Array = zgml.native_eager.arg_red
 const nativeEagerCumsumOptions: NativeEagerCumsumIntoOptions = { outer: 2, axis: 3, inner: 1 };
 const nativeEagerCumsumInto: Float32Array = zgml.nativeEager.cumsumInto(new Float32Array(6), tensor([1, 2, 3, 4, 5, 6], [2, 3] as const), nativeEagerCumsumOptions);
 const nativeEagerCumsumIntoAlias: Float32Array = zgml.native_eager.cumsum_into(new Float32Array(6), tensor([1, 2, 3, 4, 5, 6], [2, 3] as const), { outer: 2, axis: 3, inner: 1, reverse: true });
+const nativeEagerMomentOptions: NativeEagerMomentIntoOptions = { outer: 2, reduce: 3, inner: 1, correction: 1 };
+const nativeEagerVarianceInto: Float32Array = zgml.nativeEager.varianceInto(new Float32Array(2), tensor([1, 2, 3, 4, 5, 6], [2, 3] as const), nativeEagerMomentOptions);
+const nativeEagerStdInto: Float32Array = zgml.native_eager.std_into(new Float32Array(2), tensor([1, 2, 3, 4, 5, 6], [2, 3] as const), nativeEagerMomentOptions);
 const nativeEagerConv2dOptions: NativeEagerConv2dIntoOptions = { outH: 2, outW: 2 };
 const nativeEagerConv2dInto: Float32Array = zgml.nativeEager.conv2dInto(
   new Float32Array(4),
@@ -6727,6 +6731,9 @@ void nativeEagerArgReduceDimIntoAlias;
 void nativeEagerCumsumOptions;
 void nativeEagerCumsumInto;
 void nativeEagerCumsumIntoAlias;
+void nativeEagerMomentOptions;
+void nativeEagerVarianceInto;
+void nativeEagerStdInto;
 void nativeEagerConv2dOptions;
 void nativeEagerConv2dInto;
 void nativeEagerConv2dIntoAlias;

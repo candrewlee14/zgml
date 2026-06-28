@@ -150,6 +150,14 @@ function expectApprox(actual, expected, tolerance, label) {
   }
 }
 
+function expectCloseValues(actual, expected, label, tolerance = 1e-6) {
+  const actualValues = Array.from(actual);
+  expectSame(actualValues.length, expected.length, `${label} length`);
+  for (let index = 0; index < expected.length; index += 1) {
+    expectApprox(actualValues[index], expected[index], tolerance, `${label} value ${index}`);
+  }
+}
+
 function expectThrow(fn, expectedMessage, label) {
   try {
     fn();
@@ -731,6 +739,28 @@ const noGradNativeReduce = createTensorMathHelpers({
     }
     return output;
   },
+  nativeEagerMomentInto(output, input, options) {
+    nativeReduceCalls.push(`moment:${options.sqrtOutput ? "std" : "variance"}:${options.outer}x${options.reduce}x${options.inner}:correction=${options.correction ?? 0}`);
+    const data = input.data;
+    const correction = options.correction ?? 0;
+    for (let outer = 0; outer < options.outer; outer += 1) {
+      for (let inner = 0; inner < options.inner; inner += 1) {
+        let mean = 0;
+        for (let reduce = 0; reduce < options.reduce; reduce += 1) {
+          mean += data[(outer * options.reduce + reduce) * options.inner + inner];
+        }
+        mean /= options.reduce;
+        let acc = 0;
+        for (let reduce = 0; reduce < options.reduce; reduce += 1) {
+          const centered = data[(outer * options.reduce + reduce) * options.inner + inner] - mean;
+          acc += centered * centered;
+        }
+        const value = acc / (options.reduce - correction);
+        output[outer * options.inner + inner] = options.sqrtOutput ? Math.sqrt(value) : value;
+      }
+    }
+    return output;
+  },
 });
 const reduceInput = new TensorDataSmokeTensor(Float32Array.of(-2, 4, 0.5, 3), [4]);
 expectSame(noGradNativeReduce.sum(reduceInput).data, [5.5], "tensor math no-grad native sum hook");
@@ -747,7 +777,10 @@ const argReduceDimInput = new TensorDataSmokeTensor(Float32Array.of(1, 5, 3, 4, 
 expectSame(noGradNativeReduce.argmaxDim(argReduceDimInput, 1).data, [1, 2], "tensor math no-grad native dim argmax hook");
 expectSame(noGradNativeReduce.argminDim(argReduceDimInput, 1).data, [0, 1], "tensor math no-grad native dim argmin hook");
 expectSame(noGradNativeReduce.cumsum(reduceDimInput, 1).data, [1, 3, 6, 4, 9, 15], "tensor math no-grad native cumsum hook");
-expectSame(nativeReduceCalls, ["sum", "mean", "max", "min", "prod", "dim:sum:2x3x1", "dim:mean:2x3x1", "dim:max:2x3x1", "dim:min:2x3x1", "arg:argmax:2x3x1", "arg:argmin:2x3x1", "cumsum:2x3x1:forward"], "tensor math no-grad native reduce hook count");
+expectCloseValues(noGradNativeReduce.variance(reduceDimInput, 1).data, [2 / 3, 2 / 3], "tensor math no-grad native variance dim hook");
+expectCloseValues(noGradNativeReduce.std(reduceDimInput, 1, 1).data, [1, 1], "tensor math no-grad native std dim hook");
+expectCloseValues(noGradNativeReduce.variance(reduceInput).data, [5.421875], "tensor math no-grad native variance scalar hook");
+expectSame(nativeReduceCalls, ["sum", "mean", "max", "min", "prod", "dim:sum:2x3x1", "dim:mean:2x3x1", "dim:max:2x3x1", "dim:min:2x3x1", "arg:argmax:2x3x1", "arg:argmin:2x3x1", "cumsum:2x3x1:forward", "moment:variance:2x3x1:correction=0", "moment:std:2x3x1:correction=1", "moment:variance:1x4x1:correction=0"], "tensor math no-grad native reduce hook count");
 const nativeSoftmaxCalls: string[] = [];
 const noGradNativeSoftmax = createTensorMathHelpers({
   getTensorClass: () => TensorDataSmokeTensor,

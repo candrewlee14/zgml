@@ -58,6 +58,7 @@ export type NodeNativeSymbols = Readonly<{
   eagerReduceDimF32: NativeFunction;
   eagerArgReduceDimF32: NativeFunction;
   eagerCumsumF32: NativeFunction;
+  eagerMomentF32: NativeFunction;
   eagerDotF32: NativeFunction;
   eagerConv2dF32: NativeFunction;
   eagerPool2dF32: NativeFunction;
@@ -160,6 +161,7 @@ export function bindNodeSymbols(nativeLibrary: unknown): NodeNativeSymbols {
     eagerReduceDimF32: lib.func("int zgml_eager_reduce_dim_f32(const float *input, size_t input_len, float *output, size_t output_len, size_t outer, size_t reduce, size_t inner, uint32_t op)"),
     eagerArgReduceDimF32: lib.func("int zgml_eager_arg_reduce_dim_f32(const float *input, size_t input_len, float *output, size_t output_len, size_t outer, size_t reduce, size_t inner, uint32_t op)"),
     eagerCumsumF32: lib.func("int zgml_eager_cumsum_f32(const float *input, size_t input_len, float *output, size_t output_len, size_t outer, size_t axis_len, size_t inner, uint32_t reverse)"),
+    eagerMomentF32: lib.func("int zgml_eager_moment_f32(const float *input, size_t input_len, float *output, size_t output_len, size_t outer, size_t reduce, size_t inner, float correction, uint32_t sqrt_output)"),
     eagerDotF32: lib.func("int zgml_eager_dot_f32(const float *lhs, size_t lhs_len, const float *rhs, size_t rhs_len, float *output, size_t output_len)"),
     eagerConv2dF32: lib.func("int zgml_eager_conv2d_f32(const float *input, size_t input_len, const float *weights, size_t weights_len, const float *bias, size_t bias_len, float *output, size_t output_len, size_t batch, size_t in_channels, size_t height, size_t width, size_t out_channels, size_t kernel_h, size_t kernel_w, size_t stride_h, size_t stride_w, size_t padding_h, size_t padding_w, size_t dilation_h, size_t dilation_w, size_t out_h, size_t out_w)"),
     eagerPool2dF32: lib.func("int zgml_eager_pool2d_f32(const float *input, size_t input_len, float *output, size_t output_len, size_t batch, size_t channels, size_t height, size_t width, size_t kernel_h, size_t kernel_w, size_t stride_h, size_t stride_w, size_t padding_h, size_t padding_w, size_t dilation_h, size_t dilation_w, size_t out_h, size_t out_w, uint32_t op, uint32_t ceil_mode, uint32_t count_include_pad)"),

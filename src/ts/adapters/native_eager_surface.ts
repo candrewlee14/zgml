@@ -128,6 +128,17 @@ type NativeEagerCumsumCall = (args: {
   reverse: boolean;
 }) => number;
 
+type NativeEagerMomentCall = (args: {
+  inputData: Float32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  outer: number;
+  reduce: number;
+  inner: number;
+  correction: number;
+  sqrtOutput: boolean;
+}) => number;
+
 type NativeEagerDotCall = (args: {
   lhsData: Float32Array;
   rhsData: Float32Array;
@@ -196,6 +207,7 @@ type NativeEagerSurfaceOptions = {
   reduceDimF32?: NativeEagerReduceDimCall;
   argReduceDimF32?: NativeEagerArgReduceDimCall;
   cumsumF32?: NativeEagerCumsumCall;
+  momentF32?: NativeEagerMomentCall;
   dotF32?: NativeEagerDotCall;
   conv2dF32?: NativeEagerConv2dCall;
   pool2dF32?: NativeEagerPool2dCall;
@@ -773,6 +785,51 @@ function nativeEagerCumsumInputs(
   };
 }
 
+function nativeEagerMomentInputs(
+  label: string,
+  output: Float32Array,
+  input: unknown,
+  callOptions: Record<string, unknown>,
+  f32: NativeEagerTensorFactory,
+  sqrtOutput: boolean,
+) {
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const inputData = nativeEagerTensorData(input, `${label} input`, f32);
+  if (inputData.length === 0) {
+    throw new Error(`${label} input must be non-empty`);
+  }
+  const outer = nativeEagerPositiveInteger(callOptions.outer, `${label} outer`);
+  const reduce = nativeEagerPositiveInteger(callOptions.reduce, `${label} reduce`);
+  const inner = nativeEagerPositiveInteger(callOptions.inner, `${label} inner`);
+  const correction = Number(callOptions.correction ?? 0);
+  if (!Number.isFinite(correction) || correction < 0) {
+    throw new Error(`${label} correction must be finite and >= 0, got ${callOptions.correction}`);
+  }
+  if (reduce - correction <= 0) {
+    throw new Error(`${label} correction ${correction} must be less than reduce ${reduce}`);
+  }
+  const expectedInput = outer * reduce * inner;
+  const expectedOutput = outer * inner;
+  if (inputData.length !== expectedInput) {
+    throw new Error(`${label} input length ${inputData.length} must equal outer*reduce*inner ${expectedInput}`);
+  }
+  if (output.length < expectedOutput) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${expectedOutput}`);
+  }
+  return {
+    inputData,
+    output,
+    expectedOutput,
+    outer,
+    reduce,
+    inner,
+    correction,
+    sqrtOutput,
+  };
+}
+
 function nativeEagerDotInputs(
   output: Float32Array,
   lhs: unknown,
@@ -1150,6 +1207,28 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     cumsum_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
       return this.cumsumInto(output, input, callOptions);
+    },
+    varianceInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.momentF32 !== "function") {
+        throw new Error("nativeEager.varianceInto is unavailable in this runtime");
+      }
+      const args = nativeEagerMomentInputs("nativeEager.varianceInto", output, input, callOptions, options.f32, false);
+      options.check(options.momentF32(args));
+      return output;
+    },
+    variance_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
+      return this.varianceInto(output, input, callOptions);
+    },
+    stdInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.momentF32 !== "function") {
+        throw new Error("nativeEager.stdInto is unavailable in this runtime");
+      }
+      const args = nativeEagerMomentInputs("nativeEager.stdInto", output, input, callOptions, options.f32, true);
+      options.check(options.momentF32(args));
+      return output;
+    },
+    std_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
+      return this.stdInto(output, input, callOptions);
     },
     dotInto(output: Float32Array, lhs: unknown, rhs: unknown) {
       if (typeof options.dotF32 !== "function") {

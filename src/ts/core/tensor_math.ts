@@ -108,6 +108,11 @@ type NativeEagerCumsumInto = (
   input: unknown,
   options: Readonly<{ outer: number; axis: number; inner: number; reverse?: boolean }>,
 ) => Float32Array;
+type NativeEagerMomentInto = (
+  output: Float32Array,
+  input: unknown,
+  options: Readonly<{ outer: number; reduce: number; inner: number; correction?: number; sqrtOutput?: boolean }>,
+) => Float32Array;
 type NativeEagerDotInto = (
   output: Float32Array,
   lhs: unknown,
@@ -139,6 +144,7 @@ export type TensorMathHelpersOptions = Readonly<{
   nativeEagerReduceDimInto?: NativeEagerReduceDimInto;
   nativeEagerArgReduceDimInto?: NativeEagerArgReduceDimInto;
   nativeEagerCumsumInto?: NativeEagerCumsumInto;
+  nativeEagerMomentInto?: NativeEagerMomentInto;
   nativeEagerReduceMinLength?: number;
   nativeEagerDotInto?: NativeEagerDotInto;
   nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
@@ -170,6 +176,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   const nativeEagerReduceDimInto = options.nativeEagerReduceDimInto;
   const nativeEagerArgReduceDimInto = options.nativeEagerArgReduceDimInto;
   const nativeEagerCumsumInto = options.nativeEagerCumsumInto;
+  const nativeEagerMomentInto = options.nativeEagerMomentInto;
   const nativeEagerDotInto = options.nativeEagerDotInto;
   const nativeEagerReduceMinLength = Number.isSafeInteger(options.nativeEagerReduceMinLength) && Number(options.nativeEagerReduceMinLength) >= 0
     ? Number(options.nativeEagerReduceMinLength)
@@ -381,6 +388,44 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
       inner,
     });
     return new (tensorClass())(output, tensor.shape);
+  }
+
+  function nativeMomentTensor(
+    tensor: TensorMathTensor,
+    dim: number | undefined,
+    correction: number,
+    label: string,
+    sqrtOutput: boolean,
+  ) {
+    if (gradModeEnabled()) return null;
+    if (typeof nativeEagerMomentInto !== "function") return null;
+    if (tensor.length < nativeEagerReduceMinLength) return null;
+    const numericCorrection = Number(correction);
+    if (dim === undefined) {
+      const output = new Float32Array(1);
+      nativeEagerMomentInto(output, tensor, {
+        outer: 1,
+        reduce: tensor.length,
+        inner: 1,
+        correction: numericCorrection,
+        sqrtOutput,
+      });
+      return new (tensorClass())(output, [1]);
+    }
+    const plan = dimReductionPlan(tensor.shape, dim, label);
+    let outer = 1;
+    for (let i = 0; i < plan.axis; i += 1) outer *= tensor.shape[i];
+    let inner = 1;
+    for (let i = plan.axis + 1; i < tensor.shape.length; i += 1) inner *= tensor.shape[i];
+    const output = new Float32Array(shapeProduct(plan.shape));
+    nativeEagerMomentInto(output, tensor, {
+      outer,
+      reduce: plan.reduceLen,
+      inner,
+      correction: numericCorrection,
+      sqrtOutput,
+    });
+    return new (tensorClass())(output, plan.shape);
   }
 
   function nativeDotScalar(
@@ -1484,6 +1529,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     if (dim !== undefined) return varianceDim(tensor, dim, correction);
     const TensorClass = tensorClass();
     const denom = varianceDenominator(tensor.length, correction, "variance");
+    const native = nativeMomentTensor(tensor, undefined, correction, "variance", false);
+    if (native !== null) return native;
     let meanValue = 0;
     for (let i = 0; i < tensor.length; i += 1) meanValue += tensor.data[i];
     meanValue /= tensor.length;
@@ -1516,6 +1563,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     if (dim !== undefined) return stdDim(tensor, dim, correction);
     const TensorClass = tensorClass();
     const denom = varianceDenominator(tensor.length, correction, "std");
+    const native = nativeMomentTensor(tensor, undefined, correction, "std", true);
+    if (native !== null) return native;
     let meanValue = 0;
     for (let i = 0; i < tensor.length; i += 1) meanValue += tensor.data[i];
     meanValue /= tensor.length;
@@ -1611,6 +1660,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const TensorClass = tensorClass();
     const plan = dimReductionPlan(tensor.shape, dim, "variance");
     const denom = varianceDenominator(plan.reduceLen, correction, "variance");
+    const native = nativeMomentTensor(tensor, plan.axis, correction, "variance", false);
+    if (native !== null) return native;
     const meanValues = new Float32Array(shapeProduct(plan.shape));
     for (let i = 0; i < tensor.length; i += 1) meanValues[plan.inToOut[i]] += tensor.data[i];
     for (let i = 0; i < meanValues.length; i += 1) meanValues[i] /= plan.reduceLen;
@@ -1641,6 +1692,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const TensorClass = tensorClass();
     const plan = dimReductionPlan(tensor.shape, dim, "std");
     const denom = varianceDenominator(plan.reduceLen, correction, "std");
+    const native = nativeMomentTensor(tensor, plan.axis, correction, "std", true);
+    if (native !== null) return native;
     const meanValues = new Float32Array(shapeProduct(plan.shape));
     for (let i = 0; i < tensor.length; i += 1) meanValues[plan.inToOut[i]] += tensor.data[i];
     for (let i = 0; i < meanValues.length; i += 1) meanValues[i] /= plan.reduceLen;

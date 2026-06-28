@@ -2589,6 +2589,49 @@ export fn zgml_eager_cumsum_f32(
     return status(.ok);
 }
 
+export fn zgml_eager_moment_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    outer: usize,
+    reduce: usize,
+    inner: usize,
+    correction: f32,
+    sqrt_output: u32,
+) c_int {
+    if (input_ptr == null or output_ptr == null or input_len == 0) return status(.invalid_argument);
+    if (outer == 0 or reduce == 0 or inner == 0) return status(.invalid_argument);
+    if (!std.math.isFinite(correction) or correction < 0) return status(.invalid_argument);
+    const denom = @as(f32, @floatFromInt(reduce)) - correction;
+    if (denom <= 0) return status(.invalid_argument);
+    const expected_input = std.math.mul(usize, std.math.mul(usize, outer, reduce) catch return status(.invalid_argument), inner) catch return status(.invalid_argument);
+    const expected_output = std.math.mul(usize, outer, inner) catch return status(.invalid_argument);
+    if (input_len != expected_input or output_len != expected_output) return status(.shape_mismatch);
+
+    const input = input_ptr.?[0..input_len];
+    const output = output_ptr.?[0..output_len];
+    for (0..outer) |outer_idx| {
+        for (0..inner) |inner_idx| {
+            var mean: f32 = 0;
+            for (0..reduce) |reduce_idx| {
+                const input_index = (outer_idx * reduce + reduce_idx) * inner + inner_idx;
+                mean += input[input_index];
+            }
+            mean /= @as(f32, @floatFromInt(reduce));
+            var acc: f32 = 0;
+            for (0..reduce) |reduce_idx| {
+                const input_index = (outer_idx * reduce + reduce_idx) * inner + inner_idx;
+                const centered = input[input_index] - mean;
+                acc += centered * centered;
+            }
+            const variance = acc / denom;
+            output[outer_idx * inner + inner_idx] = if (sqrt_output != 0) @sqrt(variance) else variance;
+        }
+    }
+    return status(.ok);
+}
+
 export fn zgml_eager_dot_f32(
     lhs_ptr: ?[*]const f32,
     lhs_len: usize,
@@ -13409,6 +13452,76 @@ test "C ABI native eager cumsum writes caller output" {
         2,
         0,
         1,
+        0,
+    ));
+}
+
+test "C ABI native eager moment writes caller output" {
+    const input = [_]f32{ 1, 2, 3, 4, 5, 6 };
+    var dim_output = [_]f32{0} ** 2;
+    var scalar_output = [_]f32{0};
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_moment_f32(
+        input[0..].ptr,
+        input.len,
+        dim_output[0..].ptr,
+        dim_output.len,
+        2,
+        3,
+        1,
+        0,
+        0,
+    ));
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0 / 3.0), dim_output[0], 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0 / 3.0), dim_output[1], 0.000001);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_moment_f32(
+        input[0..].ptr,
+        input.len,
+        dim_output[0..].ptr,
+        dim_output.len,
+        2,
+        3,
+        1,
+        1,
+        1,
+    ));
+    try std.testing.expectApproxEqAbs(@sqrt(@as(f32, 1.0)), dim_output[0], 0.000001);
+    try std.testing.expectApproxEqAbs(@sqrt(@as(f32, 1.0)), dim_output[1], 0.000001);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_moment_f32(
+        input[0..].ptr,
+        input.len,
+        scalar_output[0..].ptr,
+        scalar_output.len,
+        1,
+        input.len,
+        1,
+        0,
+        0,
+    ));
+    try std.testing.expectApproxEqAbs(@as(f32, 35.0 / 12.0), scalar_output[0], 0.000001);
+
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_moment_f32(
+        input[0..].ptr,
+        input.len - 1,
+        dim_output[0..].ptr,
+        dim_output.len,
+        2,
+        3,
+        1,
+        0,
+        0,
+    ));
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_moment_f32(
+        input[0..].ptr,
+        input.len,
+        dim_output[0..].ptr,
+        dim_output.len,
+        2,
+        3,
+        1,
+        3,
         0,
     ));
 }

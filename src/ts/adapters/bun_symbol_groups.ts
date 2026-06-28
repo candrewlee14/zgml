@@ -95,6 +95,7 @@ export function createBunSymbolGroups(symbols: BunNativeSymbols) {
       eagerReduceDimF32: symbols.zgml_eager_reduce_dim_f32,
       eagerArgReduceDimF32: symbols.zgml_eager_arg_reduce_dim_f32,
       eagerCumsumF32: symbols.zgml_eager_cumsum_f32,
+      eagerMomentF32: symbols.zgml_eager_moment_f32,
       eagerDotF32: symbols.zgml_eager_dot_f32,
       eagerConv2dF32: symbols.zgml_eager_conv2d_f32,
       eagerPool2dF32: symbols.zgml_eager_pool2d_f32,

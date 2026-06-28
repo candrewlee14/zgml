@@ -81,6 +81,7 @@ const nativeEagerExpectedKeys = [
   "reduce_sum_dim_batched",
   "argmax_dim_batched",
   "cumsum_dim_batched",
+  "variance_dim_batched",
   "elementwise_lt_batched",
   "clamp_batched",
   "where_batched",

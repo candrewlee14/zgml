@@ -362,6 +362,12 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.cumsumInto !== "function") {
     throw new Error(`${label} expected nativeEager.cumsumInto`);
   }
+  if (typeof nativeEager.varianceInto !== "function") {
+    throw new Error(`${label} expected nativeEager.varianceInto`);
+  }
+  if (typeof nativeEager.stdInto !== "function") {
+    throw new Error(`${label} expected nativeEager.stdInto`);
+  }
   if (typeof nativeEager.dotInto !== "function") {
     throw new Error(`${label} expected nativeEager.dotInto`);
   }
@@ -662,6 +668,20 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   expectClose(cumsumAliasOutput, [6, 5, 3, 15, 11, 6], `${label} native_eager.cumsum_into output`);
   const tensorCumsum = adapter.noGrad(() => tensorReduceDimInput.cumsum(1));
   expectClose(tensorCumsum.data, [1, 3, 6, 4, 9, 15], `${label} noGrad Tensor cumsum native eager output`);
+  const varianceOutput = new Float32Array(2);
+  const varianceResult = nativeEager.varianceInto(varianceOutput, tensorReduceDimInput, { outer: 2, reduce: 3, inner: 1 });
+  if (varianceResult !== varianceOutput) {
+    throw new Error(`${label} expected nativeEager.varianceInto to reuse caller output`);
+  }
+  expectClose(varianceOutput, [2 / 3, 2 / 3], `${label} nativeEager.varianceInto output`);
+  const stdOutput = new Float32Array(2);
+  const stdResult = nativeEagerAlias.std_into(stdOutput, tensorReduceDimInput, { outer: 2, reduce: 3, inner: 1, correction: 1 });
+  if (stdResult !== stdOutput) {
+    throw new Error(`${label} expected native_eager.std_into to reuse caller output`);
+  }
+  expectClose(stdOutput, [1, 1], `${label} native_eager.std_into output`);
+  const tensorMoments = adapter.noGrad(() => tensorReduceDimInput.variance(1).add(tensorReduceDimInput.std(1, 1)));
+  expectClose(tensorMoments.data, [5 / 3, 5 / 3], `${label} noGrad Tensor moment native eager output`);
   const geluOutput = new Float32Array(6);
   const geluResult = nativeEager.linearActivationInto(geluOutput, input, weights, { bias, activation: "gelu" });
   if (geluResult !== geluOutput) {

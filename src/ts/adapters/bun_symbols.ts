@@ -317,6 +317,17 @@ export type BunNativeSymbols = Readonly<{
     inner: bigint,
     reverse: number,
   ): number;
+  zgml_eager_moment_f32(
+    input: Float32Array,
+    inputLen: bigint,
+    output: Float32Array,
+    outputLen: bigint,
+    outer: bigint,
+    reduce: bigint,
+    inner: bigint,
+    correction: number,
+    sqrtOutput: number,
+  ): number;
   zgml_eager_dot_f32(
     lhs: Float32Array,
     lhsLen: bigint,
@@ -872,6 +883,20 @@ export function bindBunSymbols(libPath: string): BunNativeSymbols {
         FFIType.u64,
         FFIType.u64,
         FFIType.u64,
+        FFIType.u32,
+      ],
+      returns: FFIType.i32,
+    },
+    zgml_eager_moment_f32: {
+      args: [
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.u64,
+        FFIType.u64,
+        FFIType.u64,
+        FFIType.float,
         FFIType.u32,
       ],
       returns: FFIType.i32,
