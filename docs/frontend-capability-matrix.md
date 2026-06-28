@@ -30,6 +30,9 @@ that read better as functions than modules.
 `simple` is the checked first-contact runtime subset for examples that should
 avoid advanced deployment/evidence names while still using the native-backed
 root package.
+`zgml.nativeCore()` is the typed runtime proof for the boundary: the friendly
+API is TypeScript, tensor runtime and hot-path execution are Zig through the C
+ABI, and supported fixed-shape training uses Zig FFI kernels.
 
 ## User-Facing Capabilities
 

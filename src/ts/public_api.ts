@@ -2272,6 +2272,13 @@ export type NativeCoreEvidence = Readonly<{
   host: "node" | "bun";
   productApi: "typescript";
   nativeCore: "zig-c-abi";
+  boundary: Readonly<{
+    userApi: "typescript";
+    tensorRuntime: "zig";
+    ffi: "c-abi";
+    hotPath: "program-session";
+    training: "zig-ffi-kernels";
+  }>;
   productSourceOfTruth: FrontendManifest["productSourceOfTruth"];
   nativeProductPolicy: FrontendManifest["nativeProductPolicy"];
   runtimePath: "JS/TS API -> Zig C ABI -> Program/Session kernels";

@@ -228,6 +228,8 @@ Program/Session/ABI contract instead of re-authoring the same API in Zig.
 This is the PyTorch/NumPy-shaped split: TypeScript owns the ergonomic shell and
 type-level policy, while Zig owns tensor storage, kernels, executable handles,
 and backend dispatch for tensor-sized work.
+`zgml.nativeCore()` returns typed runtime evidence for that boundary, including
+`boundary.userApi === "typescript"` and `boundary.tensorRuntime === "zig"`.
 Graph-owned constructors use familiar names (`zeros`, `ones`, `full`,
 `arange`, `linspace`, `rand`, `randn`, `scalar`, `parameter`, `param`) so
 small JS/TS models can start from ordinary tensor vocabulary and only opt into

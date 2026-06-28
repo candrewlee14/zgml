@@ -14,6 +14,13 @@ export type NativeCoreEvidence = Readonly<{
   host: NativeCoreHost;
   productApi: "typescript";
   nativeCore: "zig-c-abi";
+  boundary: Readonly<{
+    userApi: "typescript";
+    tensorRuntime: "zig";
+    ffi: "c-abi";
+    hotPath: "program-session";
+    training: "zig-ffi-kernels";
+  }>;
   productSourceOfTruth: typeof frontendManifest.productSourceOfTruth;
   nativeProductPolicy: typeof frontendManifest.nativeProductPolicy;
   runtimePath: "JS/TS API -> Zig C ABI -> Program/Session kernels";
@@ -81,6 +88,13 @@ export function createAdapterNativeCoreSurface(options: NativeCoreSurfaceOptions
       host: options.host,
       productApi: "typescript",
       nativeCore: "zig-c-abi",
+      boundary: Object.freeze({
+        userApi: "typescript",
+        tensorRuntime: "zig",
+        ffi: "c-abi",
+        hotPath: "program-session",
+        training: "zig-ffi-kernels",
+      }),
       productSourceOfTruth: frontendManifest.productSourceOfTruth,
       nativeProductPolicy: frontendManifest.nativeProductPolicy,
       runtimePath: "JS/TS API -> Zig C ABI -> Program/Session kernels",
