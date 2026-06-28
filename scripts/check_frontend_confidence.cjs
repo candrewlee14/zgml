@@ -17,6 +17,9 @@ const workflows = Object.freeze([
     docNeedles: [
       "| Linear regression |",
       "`examples/node_training/train_linear.cjs`",
+      "`examples/bun_training/train_linear.ts`",
+      "zero-step `nativeBulk`/`bulkKernel` preflight",
+      "`zgml_train_linear_mse_sgd_f32_bulk`",
       "checkpoint JSON round-trip",
     ],
     smokeNeedles: [
@@ -73,6 +76,9 @@ const workflows = Object.freeze([
     docNeedles: [
       "| Classifier with cross entropy |",
       "`examples/node_training/train_classifier.cjs`",
+      "`examples/bun_training/train_classifier.ts`",
+      "zero-step `nativeBulk`/`bulkKernel` preflight",
+      "`zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk`",
       "`Linear -> LogSoftmax` package smoke Program evidence",
     ],
     smokeNeedles: [
@@ -161,6 +167,34 @@ for (const workflow of workflows) {
   }
   for (const needle of workflow.exampleNeedles ?? []) {
     requireIncludes(readFileSync(join(root, "examples", "node_training", "train_mlp.cjs"), "utf8"), "examples/node_training/train_mlp.cjs", needle, workflow.name);
+  }
+}
+
+for (const [examplePath, needles] of [
+  ["examples/node_training/train_linear.cjs", [
+    "const ergonomicNativePlan = train.explainNative(",
+    "ergonomicNativePlan.nativeBulk !== true",
+    "ergonomicNativePlan.bulkKernel !== \"zgml_train_linear_mse_sgd_f32_bulk\"",
+  ]],
+  ["examples/bun_training/train_linear.ts", [
+    "const ergonomicNativePlan = train.explainNative(",
+    "ergonomicNativePlan.nativeBulk !== true",
+    "ergonomicNativePlan.bulkKernel !== \"zgml_train_linear_mse_sgd_f32_bulk\"",
+  ]],
+  ["examples/node_training/train_classifier.cjs", [
+    "const ergonomicNativePreflight = ergonomicNativeModel.explainNativeTraining(",
+    "ergonomicNativePreflight.nativeBulk !== true",
+    "ergonomicNativePreflight.bulkKernel !== \"zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk\"",
+  ]],
+  ["examples/bun_training/train_classifier.ts", [
+    "const nativePlan = train.explainNative(nativeTrainer, nativeLoader",
+    "nativePlan.nativeBulk !== true",
+    "nativePlan.bulkKernel !== \"zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk\"",
+  ]],
+]) {
+  const source = readFileSync(join(root, examplePath), "utf8");
+  for (const needle of needles) {
+    requireIncludes(source, examplePath, needle, "native bulk preflight");
   }
 }
 

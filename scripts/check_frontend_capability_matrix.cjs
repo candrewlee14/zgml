@@ -200,6 +200,9 @@ for (const row of workflowRows) {
 }
 requireIncludes(confidence, confidencePath, "user workflow -> eager/autograd proof -> checkpoint or state proof -> compiled inference proof");
 requireIncludes(confidence, confidencePath, "`compileForInference`, `compileSupport`, `kernelPlan`, or a Program/Session");
+requireIncludes(confidence, confidencePath, "zero-step `nativeBulk`/`bulkKernel` preflight");
+requireIncludes(confidence, confidencePath, "`zgml_train_linear_mse_sgd_f32_bulk`");
+requireIncludes(confidence, confidencePath, "`zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk`");
 requireIncludes(confidence, confidencePath, "New replacement claims should attach to one of these workflows");
 requireIncludes(confidence, confidencePath, "`zgml` remains the canonical first-contact namespace");
 requireIncludes(confidence, confidencePath, "`torch` compatibility");

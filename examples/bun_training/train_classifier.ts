@@ -148,6 +148,18 @@ const nativeTrainer = compile.compileForTraining(nativeModel, nativeOptimizer, {
   classes: 2,
   loss: "crossEntropy",
 });
+const nativePlan = train.explainNative(nativeTrainer, nativeLoader, {
+  epochs: 80,
+});
+if (
+  nativePlan.supported !== true ||
+  nativePlan.loweredBy !== "zig-ffi" ||
+  nativePlan.nativeBulk !== true ||
+  nativePlan.bulkKernel !== "zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk" ||
+  nativePlan.bulkPlan?.kernel !== "zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk"
+) {
+  throw new Error(`native classifier preflight must prove the Bun Zig MLP bulk trainer: ${JSON.stringify(nativePlan)}`);
+}
 const nativeFit = train.fit(nativeTrainer, nativeLoader, {
   epochs: 80,
 });

@@ -147,6 +147,25 @@ const ergonomicNativeOptimizer = optim.sgd(ergonomicNativeModel, { lr: 0.04 });
 const ergonomicNativeBatches = data.dataLoader(samples, { batchSize: 4, shuffle: false });
 const ergonomicNativeCriterion = loss.mseLoss();
 const ergonomicNativeBefore = scalar(loss.mse(ergonomicNativeModel.forward(tensor([1, -1], [1, 2] as const)), tensor([2.5], [1, 1] as const)));
+const ergonomicNativePlan = train.explainNative(
+  ergonomicNativeOptimizer,
+  ergonomicNativeModel,
+  ergonomicNativeBatches,
+  ergonomicNativeCriterion,
+  {
+    epochs: 80,
+    requireNative: true,
+  },
+);
+if (
+  ergonomicNativePlan.supported !== true ||
+  ergonomicNativePlan.loweredBy !== "zig-ffi" ||
+  ergonomicNativePlan.nativeBulk !== true ||
+  ergonomicNativePlan.bulkKernel !== "zgml_train_linear_mse_sgd_f32_bulk" ||
+  ergonomicNativePlan.bulkPlan?.kernel !== "zgml_train_linear_mse_sgd_f32_bulk"
+) {
+  throw new Error(`native training preflight must prove the Bun Zig linear bulk trainer: ${JSON.stringify(ergonomicNativePlan)}`);
+}
 const ergonomicNativeFit = train.fitModule(
   ergonomicNativeOptimizer,
   ergonomicNativeModel,
