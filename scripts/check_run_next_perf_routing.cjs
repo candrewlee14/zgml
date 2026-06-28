@@ -32,12 +32,12 @@ const widthParallelLine = lineWith(
 
 const widthParallelInputBridgeLine = lineWith(
   "q8_prompt=semantic_bridge_candidate:commands=121:next=semantic_width_parallel_kernel",
-  "qsemantic_input_bridge=absorbed:2.71x:median:2.74x:dispatches:5:decomposed_extra:4:direct_width_parallel:0:direct_width_lanes:0:scratch_runtime_uses:628:scratch_runtime_bytes:9216:direct_serial:1.28x:direct_serial_median:1.32x:direct_serial_dispatches:1:row_serial_dot_ops:2985984:total_row_serial_dot_ops:382205952:next=semantic_with_input_width_parallel_kernel:source=fresh",
+  "qsemantic_input_bridge=absorbed:2.71x:median:2.74x:gate:ready:floor:2.45x:dispatches:5:decomposed_extra:4:direct_width_parallel:0:direct_width_lanes:0:scratch_runtime_uses:628:scratch_runtime_bytes:9216:direct_serial:1.28x:direct_serial_median:1.32x:direct_serial_dispatches:1:row_serial_dot_ops:2985984:total_row_serial_dot_ops:382205952:next=semantic_with_input_width_parallel_kernel:source=fresh",
   "frontier=semantic_width_parallel_kernel:candidate=ready:fresh=source:fresh,throughput=smollm:1.86x,full:2.24x",
 );
 
 const inputBridgeOnlyWidthLine = lineWith(
-  "qsemantic_input_bridge=absorbed:2.71x:median:2.74x:dispatches:5:decomposed_extra:4:direct_width_parallel:0:direct_width_lanes:0:scratch_runtime_uses:628:scratch_runtime_bytes:9216:direct_serial:1.28x:direct_serial_median:1.32x:direct_serial_dispatches:1:row_serial_dot_ops:2985984:total_row_serial_dot_ops:382205952:next=semantic_with_input_width_parallel_kernel:source=fresh",
+  "qsemantic_input_bridge=absorbed:2.71x:median:2.74x:gate:ready:floor:2.45x:dispatches:5:decomposed_extra:4:direct_width_parallel:0:direct_width_lanes:0:scratch_runtime_uses:628:scratch_runtime_bytes:9216:direct_serial:1.28x:direct_serial_median:1.32x:direct_serial_dispatches:1:row_serial_dot_ops:2985984:total_row_serial_dot_ops:382205952:next=semantic_with_input_width_parallel_kernel:source=fresh",
   "frontier=semantic_width_parallel_kernel:candidate=ready:fresh=source:fresh,throughput=smollm:1.86x,full:2.24x",
 );
 

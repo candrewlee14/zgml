@@ -2435,6 +2435,12 @@ function writeFocusedSemanticInputBridgeArtifact(best, attempts, aggregate, line
   mkdirSync(artifactDir, { recursive: true });
   const artifactPath = join(artifactDir, `frontier-qsemantic-input-bridge-${timestampForArtifact()}-${process.pid}.json`);
   const bestSummary = selectedSemanticInputBridgeAttemptSummary(best);
+  const absorbedGate = best.absorbedSpeedup >= semanticInputBridgeSteadyAbsorbedSpeedupFloor &&
+    best.absorbedMaxAbsDiff <= projectionRowChainMaxAbsDiffCeil
+    ? "ready"
+    : best.absorbedSpeedup >= 1.0 && best.absorbedMaxAbsDiff <= projectionRowChainMaxAbsDiffCeil
+      ? "diagnostic"
+      : "below_floor";
   const artifact = {
     schema: "zgml.frontier-qsemantic-input-bridge.v1",
     createdAt: new Date().toISOString(),
@@ -2465,6 +2471,8 @@ function writeFocusedSemanticInputBridgeArtifact(best, attempts, aggregate, line
     selectedAttempt: best.attempt,
     attempts: attempts.length,
     aggregateFailures: aggregate,
+    absorbedFloor: roundMetric(semanticInputBridgeSteadyAbsorbedSpeedupFloor),
+    absorbedGate,
     speedupStats: {
       command: speedupStats(attempts, "commandSpeedup"),
       absorbed: speedupStats(attempts, "absorbedSpeedup"),

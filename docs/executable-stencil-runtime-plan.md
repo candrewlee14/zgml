@@ -1065,7 +1065,12 @@ unlucky single attempt replace the selected semantic frontier proof. The checked
 input-bridge gate now adds a collapse floor for steady runs too:
 `BENCH_FRONTIER_ATTEMPTS>=3` requires best absorbed speedup to stay at or above
 `2.45x` by default, configurable with
-`BENCH_QSEMANTIC_INPUT_BRIDGE_STEADY_ABSORBED_FLOOR`.
+`BENCH_QSEMANTIC_INPUT_BRIDGE_STEADY_ABSORBED_FLOOR`. New input-bridge
+artifacts also store `absorbedFloor` and `absorbedGate`, and `bench:status`
+prints `gate=ready|diagnostic|below_floor` plus `floor=...` on both the selected
+and latest input-bridge lines. That keeps the key distinction visible: a clever
+kernel can be correct and still remain diagnostic if it does not beat the floor
+that protects the retained decomposed path.
 The PyTorch comparison microscope also accepts exploratory lanes such as
 `rms_gelu_linear_batched`, `softmax_classifier_batched`,
 `log_softmax_classifier_batched`, and `lazy_token_head_batched`, so optimization

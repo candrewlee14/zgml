@@ -678,9 +678,10 @@ without letting a quick probe replace the steadier `perf-next` target. The
 checked gate also fails three-attempt input-bridge runs when the best absorbed
 speedup falls below the collapse floor (`2.45x` by default), so
 correct but weaker kernel probes do not become invisible regressions. Its
-compact status line now also includes `decomposed_extra`, so a passing legacy
-artifact still advertises how far it is from the intended one-dispatch
-input-bridge kernel. Force that
+compact status line now also includes `gate`, `floor`, and `decomposed_extra`,
+so a passing legacy artifact still advertises both whether it clears the
+collapse floor and how far it is from the intended one-dispatch input-bridge
+kernel. Force that
 exact microscope with
 `BENCH_NEXT_PERF_LANE=qsemantic_input_bridge npm run dev:perf:next{,:run}`.
 For qsemantic kernel work, `BENCH_QSEMANTIC_VARIANTS=target` limits the raw
