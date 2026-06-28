@@ -3626,7 +3626,9 @@ export type ProgramCompileEvidence = Readonly<{
   nativeRequirements?: ProgramRequirements;
   nativeRequirementsSignature?: string;
   nativeRequirementsSource?: "zig-module-program";
+  nativeRequirementsAuthoritative?: true;
   nativeCompilerAuthority?: "zig-module-program";
+  nativeCompileBoundary?: "ts-module-api-to-zig-program";
   nativeProgramInspection?: ProgramInspection;
   nativeProgramInspectionSignature?: string;
   nativeProgramInspectionSource?: "zig-program-inspection";

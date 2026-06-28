@@ -12,6 +12,7 @@ type UnknownRecord = Record<string, unknown>;
 type ModuleProgramRequirementsSource = "zig-module-program";
 type ModuleProgramInspectionSource = "zig-program-inspection";
 type ModuleProgramCompilerAuthority = "zig-module-program";
+type ModuleProgramCompileBoundary = "ts-module-api-to-zig-program";
 
 function isRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === "object";
@@ -72,7 +73,9 @@ export function moduleProgramEvidenceWithNativeRequirements(
     nativeRequirements: requirements,
     nativeRequirementsSignature: requirements.signature,
     nativeRequirementsSource: "zig-module-program" satisfies ModuleProgramRequirementsSource,
+    nativeRequirementsAuthoritative: true,
     nativeCompilerAuthority: "zig-module-program" satisfies ModuleProgramCompilerAuthority,
+    nativeCompileBoundary: "ts-module-api-to-zig-program" satisfies ModuleProgramCompileBoundary,
     nativeProgramInspection: nativeInspection ?? undefined,
     nativeProgramInspectionSignature: nativeInspection?.signature,
     nativeProgramInspectionSource: nativeInspection ? ("zig-program-inspection" satisfies ModuleProgramInspectionSource) : undefined,

@@ -6972,6 +6972,8 @@ const nativeModuleRequirements = Object.freeze({
 const nativeRequirementsEvidence = moduleProgramEvidence.moduleProgramEvidenceWithNativeRequirements(programCompileEvidence, nativeModuleRequirements, programCompileSpec.desc);
 expectSame(nativeRequirementsEvidence.nativeRequirements, nativeModuleRequirements, "module Program compile evidence retains native requirements");
 expectSame(nativeRequirementsEvidence.nativeRequirementsSource, "zig-module-program", "module Program compile evidence records native requirements source");
+expectSame(nativeRequirementsEvidence.nativeRequirementsAuthoritative, true, "module Program compile evidence marks native requirements authoritative");
+expectSame(nativeRequirementsEvidence.nativeCompileBoundary, "ts-module-api-to-zig-program", "module Program compile evidence records native compile boundary");
 expectSame(nativeRequirementsEvidence.inputLen, nativeModuleRequirements.inputLen, "module Program compile evidence uses native input len");
 expectSame(nativeRequirementsEvidence.signature, compilerSignatures.programCompileEvidenceSignature(nativeRequirementsEvidence), "module Program native requirements evidence signature");
 expectSame(compilerSignatures.isProgramCompileEvidence(nativeRequirementsEvidence), true, "module Program native requirements evidence predicate");

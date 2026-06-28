@@ -3117,6 +3117,10 @@ const sequentialNativeProgramInspectionSource: "zig-program-inspection" | undefi
   sequentialEvidence?.kind === "module" ? sequentialEvidence.nativeProgramInspectionSource : undefined;
 const sequentialNativeCompilerAuthority: "zig-module-program" | undefined =
   sequentialEvidence?.kind === "module" ? sequentialEvidence.nativeCompilerAuthority : undefined;
+const sequentialNativeRequirementsAuthoritative: true | undefined =
+  sequentialEvidence?.kind === "module" ? sequentialEvidence.nativeRequirementsAuthoritative : undefined;
+const sequentialNativeCompileBoundary: "ts-module-api-to-zig-program" | undefined =
+  sequentialEvidence?.kind === "module" ? sequentialEvidence.nativeCompileBoundary : undefined;
 const sequentialNativeInspectionExecutionSupported: boolean | undefined =
   sequentialEvidence?.kind === "module" ? sequentialEvidence.nativeExecutionSupported : undefined;
 const sequentialNativeCommandStencilHash: bigint | undefined =
@@ -5081,6 +5085,8 @@ void sequentialEvidence;
 void sequentialNativeProgramInspection;
 void sequentialNativeProgramInspectionSource;
 void sequentialNativeCompilerAuthority;
+void sequentialNativeRequirementsAuthoritative;
+void sequentialNativeCompileBoundary;
 void sequentialNativeInspectionExecutionSupported;
 void sequentialNativeCommandStencilHash;
 void sequentialProgramIr;
