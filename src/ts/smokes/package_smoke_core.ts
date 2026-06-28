@@ -5463,10 +5463,17 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   const zgmlNativeRun = adapter.zgml.native(inferenceModel, { backend: "cpu", inputShape: [2] });
   try {
     const plan = zgmlNativeRun.requireExecutionPlan();
+    const requirements = zgmlNativeRun.requirements();
+    const layout = zgmlNativeRun.bufferLayout();
+    const outputSlot = zgmlNativeRun.bufferSlot("output");
     if (
       zgmlNativeRun.native !== true ||
       plan.canExecute !== true ||
       plan.executionMode !== "executable" ||
+      zgmlNativeRun.compileEvidence() !== zgmlNativeRun.program.compileEvidence() ||
+      requirements.signature !== zgmlNativeRun.program.requirements().signature ||
+      layout.signature !== zgmlNativeRun.program.bufferLayout().signature ||
+      outputSlot?.byteLength !== zgmlNativeRun.program.bufferSlot("output")?.byteLength ||
       zgmlNativeRun.program.inputLen() !== 2 ||
       zgmlNativeRun.session.outputLen() !== 1
     ) {
@@ -5484,10 +5491,17 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   const rawLayerNativeRun = adapter.zgml.native([inferenceModel], { backend: "cpu", inputShape: [2] });
   try {
     const plan = rawLayerNativeRun.requireExecutionPlan();
+    const requirements = rawLayerNativeRun.requirements();
+    const layout = rawLayerNativeRun.bufferLayout();
+    const outputSlot = rawLayerNativeRun.bufferSlot("output");
     if (
       rawLayerNativeRun.native !== true ||
       plan.canExecute !== true ||
       plan.executionMode !== "executable" ||
+      rawLayerNativeRun.compileEvidence() !== rawLayerNativeRun.program.compileEvidence() ||
+      requirements.signature !== rawLayerNativeRun.program.requirements().signature ||
+      layout.signature !== rawLayerNativeRun.program.bufferLayout().signature ||
+      outputSlot?.byteLength !== rawLayerNativeRun.program.bufferSlot("output")?.byteLength ||
       rawLayerNativeRun.program.inputLen() !== 2 ||
       rawLayerNativeRun.session.outputLen() !== 1
     ) {
@@ -5500,11 +5514,18 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   const rawLayerCompileInferenceRun = adapter.compile.compileForInference([inferenceModel], { backend: "cpu", inputShape: [2] });
   try {
     const plan = rawLayerCompileInferenceRun.requireExecutionPlan();
+    const requirements = rawLayerCompileInferenceRun.requirements();
+    const layout = rawLayerCompileInferenceRun.bufferLayout();
+    const outputSlot = rawLayerCompileInferenceRun.bufferSlot("output");
     if (
       rawLayerCompileInferenceRun.native !== true ||
       plan.canExecute !== true ||
       plan.executionMode !== "executable" ||
       plan.compileEvidence?.nativeCore !== "zig-module-program" ||
+      rawLayerCompileInferenceRun.compileEvidence() !== rawLayerCompileInferenceRun.program.compileEvidence() ||
+      requirements.signature !== rawLayerCompileInferenceRun.program.requirements().signature ||
+      layout.signature !== rawLayerCompileInferenceRun.program.bufferLayout().signature ||
+      outputSlot?.byteLength !== rawLayerCompileInferenceRun.program.bufferSlot("output")?.byteLength ||
       rawLayerCompileInferenceRun.program.inputLen() !== 2 ||
       rawLayerCompileInferenceRun.session.outputLen() !== 1
     ) {
@@ -5542,6 +5563,19 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     expectClose(nativeInference.__call__(inferenceInput).data, [-0.5], `${label} nn.native __call__`);
     const nativeInferenceAlias = inferenceModel.native({ backend: "cpu", inputShape: [2] });
     try {
+      const aliasPlan = nativeInferenceAlias.requireExecutionPlan();
+      const aliasRequirements = nativeInferenceAlias.requirements();
+      const aliasLayout = nativeInferenceAlias.bufferLayout();
+      const aliasOutputSlot = nativeInferenceAlias.bufferSlot("output");
+      if (
+        aliasPlan.canExecute !== true ||
+        nativeInferenceAlias.compileEvidence() !== nativeInferenceAlias.program.compileEvidence() ||
+        aliasRequirements.signature !== nativeInferenceAlias.program.requirements().signature ||
+        aliasLayout.signature !== nativeInferenceAlias.program.bufferLayout().signature ||
+        aliasOutputSlot?.byteLength !== nativeInferenceAlias.program.bufferSlot("output")?.byteLength
+      ) {
+        throw new Error(`${label} module.native expected first-contact compiled inference proof`);
+      }
       expectClose(nativeInferenceAlias.forward(inferenceInput).data, [-0.5], `${label} module.native forward`);
     } finally {
       nativeInferenceAlias.dispose();
@@ -5562,6 +5596,10 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     }
     if (
       lazyInference.compileSupport().supported !== true ||
+      lazyInference.compileEvidence() !== lazyInference.program.compileEvidence() ||
+      lazyInference.requirements().signature !== lazyInference.program.requirements().signature ||
+      lazyInference.bufferLayout().signature !== lazyInference.program.bufferLayout().signature ||
+      lazyInference.bufferSlot("output")?.byteLength !== lazyInference.program.bufferSlot("output")?.byteLength ||
       lazyInference.kernelPlan()?.ops.map((op: Record<string, any>) => op.op).join("|") !== "matmul" ||
       lazyInference.inputShape().join("x") !== "2" ||
       lazyInference.outputShape().join("x") !== "1"

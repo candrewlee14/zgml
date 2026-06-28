@@ -221,6 +221,7 @@ function checkTsProductManifestsUseSharedPolicy(errors) {
     ["src/ts/public_surface.ts", "publicSurfaceManifest", "src/ts/public_surface.ts"],
     ["src/ts/session.ts", "sessionManifest", "src/ts/session.ts"],
     ["src/ts/shared_frontend.ts", "sharedFrontendManifest", "src/ts/shared_frontend.ts"],
+    ["src/ts/simple.ts", "simpleManifest", "src/ts/simple.ts"],
     ["src/ts/step_params.ts", "stepParamsManifest", "src/ts/step_params.ts"],
     ["src/ts/tensor.ts", "tensorManifest", "src/ts/tensor.ts"],
     ["src/ts/train.ts", "trainManifest", "src/ts/train.ts"],

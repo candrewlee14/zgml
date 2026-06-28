@@ -206,6 +206,10 @@ first-contact users can inspect the Zig-owned executable proof and memory
 contract without dropping down to `fast.program`. That keeps the happy path tiny
 while still making the executable artifact inspectable without forcing users to
 know the lower-level `Program` API on day one.
+Adapter-created native inference handles now fail closed when the Program proof
+surface is missing: compile evidence, requirements, buffer layout/slot lookup,
+shape, kernel-plan, and compiler-signature methods must come from the native
+Program facade rather than `nn` or adapter code quietly reconstructing them.
 The same handle is now deliberately module-shaped: it exposes `forward`,
 `call`, and `__call__`, so native inference feels like ordinary `nn` code while
 still owning a real `Program` and `Session` underneath. The `nn` namespace also
@@ -731,9 +735,12 @@ compile hooks exist.
 The root runtime now also exports `simple`, a frozen native-backed first-contact
 subset containing `Tensor`, `tensor`, `nn`, `F`, `data`, `loss`, `optim`,
 `train`, `checkpoint`, `lazy`, `compile`, `forInference`, `compileForInference`, and grad-mode
-helpers. The `zgml/simple` subpath owns the matching manifest, so examples can
-opt into the small surface without hiding the advanced runtime SDK from users
-who need it.
+helpers. The `zgml/simple` subpath owns the small namespace and manifest
+contract for that first-contact surface, while its manifest explicitly records
+that the native-backed runtime values (`simple`, `zgml`, and `F`) live on the
+concrete root runtime instead of being re-created by a second frontend entry.
+Examples can opt into the small surface without hiding the advanced runtime SDK
+from users who need it.
 The frontend workflow evidence now uses that surface directly for the previously
 open Conv2d and token-classifier gaps: `examples/node_training/train_conv2d.cjs`
 trains, checkpoints, restores, and compiles a small Conv2d+ReLU feature model,

@@ -261,6 +261,17 @@ const sourceContracts = Object.freeze({
     "firstContactIsSubsetOfStableSurface: true",
     "newProductSurfaceGoesThroughStableNamespaces: true",
   ]),
+  "src/ts/simple.ts": Object.freeze([
+    'import { tsProductManifestPolicy } from "./internal/product_manifest.js";',
+    "export const simpleManifest = Object.freeze({",
+    'kind: "zgml-simple-surface"',
+    '...tsProductManifestPolicy("src/ts/simple.ts")',
+    'rootRuntimeValue: "simple"',
+    "rootRuntimeValues: simpleRootRuntimeValues",
+    "subpathRuntimeValues: simpleSubpathRuntimeValues",
+    "subpathExportsRuntimeValues: false",
+    "advancedRuntimeSurface: false",
+  ]),
   "scripts/check_frontend_capability_matrix.cjs": Object.freeze([
     "docs/frontend-capability-matrix.md",
     "src/ts/public_surface.ts",

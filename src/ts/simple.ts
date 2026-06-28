@@ -39,20 +39,24 @@ export const simpleFirstContactNamespaces = Object.freeze([
   "compile",
 ] as const);
 
-export const simpleRuntimeValues = Object.freeze([
+export const simpleRootRuntimeValues = Object.freeze([
   "simple",
   "zgml",
   "F",
 ] as const);
 
+export const simpleSubpathRuntimeValues = Object.freeze([] as const);
+
 export const simpleManifest = Object.freeze({
   kind: "zgml-simple-surface",
   ...tsProductManifestPolicy("src/ts/simple.ts"),
   rootRuntimeValue: "simple",
+  rootRuntimeValues: simpleRootRuntimeValues,
   canonicalFriendlyNamespace: "zgml",
   functionalNamespace: "F",
   firstContactRuntimeHandle: "zgml.native",
   namespaces: simpleFirstContactNamespaces,
-  runtimeValues: simpleRuntimeValues,
+  subpathRuntimeValues: simpleSubpathRuntimeValues,
+  subpathExportsRuntimeValues: false,
   advancedRuntimeSurface: false,
 });

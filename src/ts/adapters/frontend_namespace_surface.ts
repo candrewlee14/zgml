@@ -952,6 +952,14 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     throw new Error("compile.compile requires a module with compile() or a compile-capable lazy graph");
   }
 
+  function requireNativeProgramMethod(program: Record<string, any>, method: string) {
+    const fn = program[method];
+    if (typeof fn !== "function") {
+      throw new Error(`compile.compileForInference expected native Program.${method} proof method`);
+    }
+    return fn.bind(program);
+  }
+
   function compiledInferenceHandle(
     program: Record<string, any>,
     session: Record<string, any>,
@@ -959,6 +967,15 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     compileOptions: CompileNamespaceOptions,
   ) {
     let disposed = false;
+    const compileEvidence = requireNativeProgramMethod(program, "compileEvidence");
+    const requirements = requireNativeProgramMethod(program, "requirements");
+    const bufferLayout = requireNativeProgramMethod(program, "bufferLayout");
+    const bufferSlotNames = requireNativeProgramMethod(program, "bufferSlotNames");
+    const bufferSlot = requireNativeProgramMethod(program, "bufferSlot");
+    const inputShape = requireNativeProgramMethod(program, "inputShape");
+    const outputShape = requireNativeProgramMethod(program, "outputShape");
+    const kernelPlan = requireNativeProgramMethod(program, "kernelPlan");
+    const compilerSignatures = requireNativeProgramMethod(program, "compilerSignatures");
     const dispose = () => {
       if (disposed) return;
       disposed = true;
@@ -1004,31 +1021,31 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
         return compileSupport(target, compileOptions);
       },
       compileEvidence() {
-        return typeof program.compileEvidence === "function" ? program.compileEvidence() : executionPlan?.compileEvidence ?? null;
+        return compileEvidence();
       },
       requirements() {
-        return typeof program.requirements === "function" ? program.requirements() : null;
+        return requirements();
       },
       bufferLayout() {
-        return typeof program.bufferLayout === "function" ? program.bufferLayout() : null;
+        return bufferLayout();
       },
       bufferSlotNames() {
-        return typeof program.bufferSlotNames === "function" ? program.bufferSlotNames() : [];
+        return bufferSlotNames();
       },
       bufferSlot(nameOrKind: unknown) {
-        return typeof program.bufferSlot === "function" ? program.bufferSlot(nameOrKind) : null;
+        return bufferSlot(nameOrKind);
       },
       inputShape() {
-        return typeof program.inputShape === "function" ? program.inputShape() : null;
+        return inputShape();
       },
       outputShape() {
-        return typeof program.outputShape === "function" ? program.outputShape() : null;
+        return outputShape();
       },
       kernelPlan() {
-        return typeof program.kernelPlan === "function" ? program.kernelPlan() : null;
+        return kernelPlan();
       },
       compilerSignatures() {
-        return typeof program.compilerSignatures === "function" ? program.compilerSignatures() : null;
+        return compilerSignatures();
       },
       dispose,
       free: dispose,
