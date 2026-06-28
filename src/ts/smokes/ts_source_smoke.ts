@@ -473,6 +473,51 @@ expectSame({ data: nativeBmm.data, shape: nativeBmm.shape, requiresGrad: nativeB
 }, "tensor math no-grad native bmm hook");
 expectSame(nativeMatmulCalls, 1, "tensor math no-grad native bmm avoids per-batch matmul hook");
 expectSame(nativeBmmCalls, 1, "tensor math no-grad native bmm hook count");
+let gradNativeBmmCalls = 0;
+const gradNativeBmmMath = createTensorMathHelpers({
+  getTensorClass: () => TensorDataSmokeTensor,
+  f32: tensorData.f32,
+  addTensorGrad: tensorData.addTensorGrad,
+  scalarTensor: (value, requiresGrad = false) =>
+    new TensorDataSmokeTensor(Float32Array.of(value), [1], { requiresGrad }),
+  isGradEnabled: () => true,
+  nativeEagerBmmInto(output, left, right, options) {
+    gradNativeBmmCalls += 1;
+    expectSame(options, { batch: 2, rows: 8, shared: 8, cols: 8 }, "tensor math grad native bmm options");
+    const leftData = left.data ?? left;
+    const rightData = right.data ?? right;
+    const batch = options.batch;
+    const rows = options.rows;
+    const shared = options.shared;
+    const cols = options.cols;
+    const lhsBatchLen = rows * shared;
+    const rhsBatchLen = shared * cols;
+    const outBatchLen = rows * cols;
+    for (let b = 0; b < batch; b += 1) {
+      for (let r = 0; r < rows; r += 1) {
+        for (let c = 0; c < cols; c += 1) {
+          let acc = 0;
+          for (let k = 0; k < shared; k += 1) {
+            acc += leftData[b * lhsBatchLen + r * shared + k] * rightData[b * rhsBatchLen + k * cols + c];
+          }
+          output[b * outBatchLen + r * cols + c] = acc;
+        }
+      }
+    }
+    return output;
+  },
+});
+const gradNativeBmmLhs = new TensorDataSmokeTensor(nativeBmmValues, [2, 8, 8], { requiresGrad: true });
+const gradNativeBmmRhs = new TensorDataSmokeTensor(nativeBmmIdentity, [2, 8, 8], { requiresGrad: true });
+const gradNativeBmm = gradNativeBmmMath.bmm(gradNativeBmmLhs, gradNativeBmmRhs);
+expectSame({ data: gradNativeBmm.data, shape: gradNativeBmm.shape, requiresGrad: gradNativeBmm.requiresGrad }, {
+  data: Array.from(nativeBmmValues),
+  shape: [2, 8, 8],
+  requiresGrad: true,
+}, "tensor math grad native bmm hook");
+gradNativeBmm._backward(new Float32Array(2 * 8 * 8).fill(1));
+expectSame(Array.from(gradNativeBmmLhs.grad), new Array(2 * 8 * 8).fill(1), "tensor math grad native bmm lhs backward");
+expectSame(gradNativeBmmCalls, 1, "tensor math grad native bmm hook count");
 const nativeActivationCalls = [];
 const noGradNativeActivation = createTensorMathHelpers({
   getTensorClass: () => TensorDataSmokeTensor,

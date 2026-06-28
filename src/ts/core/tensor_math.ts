@@ -934,7 +934,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const out = new Float32Array(batch * lhsRows * rhsCols);
     const gradEnabled = gradModeEnabled();
     const nativeBmmMinMultiplyAdds = 512;
-    const useNativeBmm = !gradEnabled && typeof nativeEagerBmmInto === "function" && batch * lhsRows * lhsCols * rhsCols >= nativeBmmMinMultiplyAdds;
+    const useNativeBmm = typeof nativeEagerBmmInto === "function" && batch * lhsRows * lhsCols * rhsCols >= nativeBmmMinMultiplyAdds;
     if (useNativeBmm) {
       nativeEagerBmmInto(out, tensor, rhsTensor ?? rhs, {
         batch,
@@ -943,7 +943,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
         cols: rhsCols,
       });
     } else {
-      const useNative = !gradEnabled && typeof nativeEagerMatmulInto === "function" && lhsRows * lhsCols * rhsCols >= nativeBmmMinMultiplyAdds;
+      const useNative = typeof nativeEagerMatmulInto === "function" && lhsRows * lhsCols * rhsCols >= nativeBmmMinMultiplyAdds;
       for (let b = 0; b < batch; b += 1) {
         const lhsBatchOffset = b * lhsRows * lhsCols;
         const rhsBatchOffset = b * rhsRows * rhsCols;

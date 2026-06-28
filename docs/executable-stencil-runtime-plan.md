@@ -620,10 +620,12 @@ Current checked progress:
   instead of only proving plain Linear.
   Native eager matmul is also now surfaced as `zgml_eager_matmul_f32` and
   `zgml.nativeEager.matmulInto`, with Node/Bun `Tensor.matmul` dispatching
-  through that Zig path automatically when gradients are disabled. Rank-3
+  through that Zig path automatically for the forward kernel even when TS
+  autograd metadata is enabled. Rank-3
   batched matmul now has the same one-call shape through
-  `zgml_eager_bmm_f32` / `zgml.nativeEager.bmmInto`, so no-grad `Tensor.bmm`
-  no longer loops in TS and crosses FFI once per batch.
+  `zgml_eager_bmm_f32` / `zgml.nativeEager.bmmInto`, so useful-sized
+  `Tensor.bmm` forwards no longer loop in TS or cross FFI once per batch; TS
+  still owns the backward closure.
   Scalar RHS elementwise, symmetric last-dimension row broadcasts, scalar
   reductions, and vector dot products are now covered the same way:
   `zgml.nativeEager.elementwiseInto`, `zgml.nativeEager.reduceInto`, and
@@ -769,12 +771,14 @@ Current checked progress:
   public Tensor route keeps the TS loop until the measured module path reaches
   parity. The native eager scorecard records this as
   `native_eager_moment_explicit_abi_not_default`.
-  No-grad `Tensor.bmm` is now
+  Grad-compatible `Tensor.bmm` forward is now
   measured in the same family as `bmm_batched`: useful-sized batches route
   through one `zgml_eager_bmm_f32` call, while tiny batches remain on the
   lower-overhead TS loop. The current artifact measures direct Node
   `bmm_batched` at `83.12x` and the public no-grad Tensor path at `47.16x`,
-  with zero measured diff. The same artifact family now
+  with zero measured diff; the source smoke now also proves the native bmm hook
+  is used while gradients are enabled and that the TS backward closure still
+  produces the expected gradients. The same artifact family now
   proves the no-grad `Tensor.where()` path after removing the pre-native
   broadcast-plan tax and vectorizing the native comparison condition: Node
   reports `where_batched` module speedup `213.80x`, Bun reports `189.48x`, and
@@ -1210,6 +1214,17 @@ evidence stays correct (`max_abs_diff=0.000002`) and moves the diagnostic to
 at `absorbed=2.77x` (`median=2.65x`, worst `2.61x`). The remaining direct-width
 gap is now product/gate-up staging plus the scratch partial architecture, not
 per-row finalize launch overhead.
+A staged-scratch cleanup then made the direct-width allocation match the staged
+diagnostic instead of the future full down-partial target. The general
+semantic-width/absorbed throughput candidate still reserves the full
+`14155776` byte down-partial arena, but direct-width input-bridge planning now
+reserves only `product_bytes + output_bytes + runtime_capacity_bytes`
+(`786432 + 294912 + 9216 = 1090560` bytes for the prompt shape). The direct
+serial diagnostic no longer reports a semantic-width scratch requirement at all.
+Focused Zig tests assert the smaller staged layout, while the retained
+qsemantic input-bridge gate still passes (`direct_width=1.50x`,
+`absorbed=2.54x` in a fresh three-attempt run). This does not claim promotion;
+it removes misleading memory evidence from the diagnostic path.
 With that proof surface in place, the absorbed decomposed bridge now uses the
 same width-partial row-chain encoder for the model-width input projection as
 well as the hidden-width down tail. The guard is deliberately narrow: it only
@@ -3071,10 +3086,10 @@ Current frontend slice:
   per-call `seed` options), and
   PyTorch-familiar construction helpers (`zeros`, `ones`, `full`, `rand`,
   `randn`, `linspace`, `arange`, `scalar`, `parameter`, `param`) on both the
-  module and `Tensor` class. No-grad `Tensor.bmm` now routes each batch through
-  the same Zig native eager matmul bridge used by `Tensor.matmul`, keeping the
-  PyTorch-like API small while moving the inference/evaluation path into the
-  native substrate; eager batched
+  module and `Tensor` class. Useful-sized `Tensor.bmm` forwards now route
+  through the same Zig native eager substrate used by `Tensor.matmul` even when
+  TS autograd is recording the graph, keeping the PyTorch-like API small while
+  moving numerical forward work into the native substrate; eager batched
   `nn.linear`, `nn.embedding`, `nn.dropout`, `nn.sequential`,
   `gelu`/`relu`/`silu`/`sigmoid` activations, unary elementwise modules
   (`exp`, `log`, `neg`, `recip`, `abs`, `sqrt`, `square`/`sqr`, `sign`/`sgn`, `step`), traceable shape modules (`reshape`, `view`,
