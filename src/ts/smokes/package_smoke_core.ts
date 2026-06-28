@@ -5626,7 +5626,7 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   const inferenceInput = adapter.tensor([1, 2], [2]);
   const inference = adapter.compile.compileForInference(inferenceModel, { backend: "cpu", inputShape: [2] });
   try {
-    if (!Object.isFrozen(inference) || inference.program.inputLen() !== 2 || inference.session.outputLen() !== 1) {
+    if (typeof inference !== "function" || !Object.isFrozen(inference) || inference.program.inputLen() !== 2 || inference.session.outputLen() !== 1) {
       throw new Error(`${label} expected frozen compiled inference handle over Program/Session`);
     }
     const inferenceSupport = inference.compileSupport();
@@ -5700,6 +5700,7 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     ) {
       throw new Error(`${label} expected compileForInference handle to expose compile evidence`);
     }
+    expectClose(inference(inferenceInput).data, [-0.5], `${label} callable compileForInference handle`);
     expectClose(inference.forward(inferenceInput).data, [-0.5], `${label} compileForInference forward`);
     expectClose(inference.call(inferenceInput).data, [-0.5], `${label} compileForInference call`);
     expectClose(inference.__call__(inferenceInput).data, [-0.5], `${label} compileForInference __call__`);

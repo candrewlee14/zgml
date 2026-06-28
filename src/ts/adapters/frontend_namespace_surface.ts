@@ -1014,7 +1014,8 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       ? moduleBindingPlanForBindings(moduleBindingMetadata.bindings)
       : null;
     const programBindingPlan = bindingPlan(inferenceBindings);
-    return Object.freeze({
+    const handle = (input: unknown) => session.stepTensor(input);
+    return Object.freeze(Object.assign(handle, {
       native: true,
       engine: "zig",
       runtime: "native",
@@ -1109,7 +1110,7 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
       },
       dispose,
       free: dispose,
-    });
+    }));
   }
 
   function compileForInference(target: unknown, compileOptions: CompileNamespaceOptions = {}, bindOptions?: unknown) {

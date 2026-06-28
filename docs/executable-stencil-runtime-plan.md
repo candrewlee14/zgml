@@ -186,6 +186,7 @@ The first-contact API should be the tiny executable handle:
 
 ```ts
 const fast = zgml.forInference(model, { inputShape: [2] as const });
+const direct = fast(input);
 const y = fast.forward(input);
 const alsoY = fast.call(input);
 const out = fast.into(new Float32Array(2), input);
@@ -195,7 +196,10 @@ fast.dispose();
 
 That handle is intentionally not a second runtime abstraction. It owns a
 `Program` and bound `Session`, exposes them for evidence and advanced control,
-and gives ordinary inference users the short path they actually want.
+and gives ordinary inference users the short path they actually want. It is now
+a callable JS value too: `fast(input)` delegates to the same Zig-backed
+`Session.stepTensor` as `fast.forward(input)`, so the ergonomic surface stays
+tiny while the core execution remains in the native Program/Session substrate.
 The handle now also exposes first-contact proof methods directly:
 `explain()`, `preflight()`, `compileSupport()`, `inputShape()`,
 `outputShape()`, `compileEvidence()`, `requirements()`, `bufferLayout()`,

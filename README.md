@@ -63,6 +63,7 @@ const support = fast.compileSupport();
 const parameters = fast.parameterBindingPlan();
 const binding = fast.programBindingPlan();
 const engine = fast.engine; // "zig"
+const called = fast(zgml.tensor([1, 0], [2] as const));
 const out = fast.into(new Float32Array(1), zgml.tensor([1, 0], [2] as const));
 fast.dispose();
 void proof;
@@ -70,16 +71,19 @@ void support;
 void parameters;
 void binding;
 void engine;
+void called;
 void out;
 ```
 
 `zgml.forInference(model, ...)` is the friendly first-contact TS entry into a
 native Zig-backed Program/Session; the returned handle exposes
-`engine === "zig"` and `runtime === "native"`. `model.inference(...)` is the
-same module-local shape. `parameterBindingPlan()` reports whether module state
-was placed in native slots, while `programBindingPlan()` reports whether the
-Program is bound in host or native mode. `zgml.native(...)` remains a short
-alias.
+`engine === "zig"` and `runtime === "native"`. The handle itself is callable:
+`fast(input)` is the same native Session step as `fast.forward(input)` and
+`fast.stepTensor(input)`, while `fast.into(output, input)` keeps hot loops
+allocation-free. `model.inference(...)` is the same module-local shape.
+`parameterBindingPlan()` reports whether module state was placed in native
+slots, while `programBindingPlan()` reports whether the Program is bound in host
+or native mode. `zgml.native(...)` remains a short alias.
 `model.fit(...)` auto-selects supported Zig FFI training kernels for fixed-shape
 module batches; `model.forTraining(...)` / `zgml.forTraining(...)` expose the
 same compiled native training handle explicitly, and `model.fitNative(...)` is

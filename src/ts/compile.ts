@@ -555,7 +555,8 @@ function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShap
     ? moduleBindingPlanForBindings(moduleBindingMetadata.bindings) as ModuleBindingPlan<InputShape, OutputShape>
     : null;
   const programBindingPlan = program.bindingPlan(inferenceBindings as ProgramBindings<InputShape, OutputShape>) as ProgramBindingPlan<InputShape, OutputShape>;
-  return Object.freeze({
+  const handle = ((input: ProgramInputBinding<InputShape>) => session.stepTensor(input)) as unknown as CompiledInferenceHandle<InputShape, OutputShape>;
+  return Object.freeze(Object.assign(handle, {
     native: true,
     engine: "zig",
     runtime: "native",
@@ -650,7 +651,7 @@ function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShap
     },
     dispose,
     free: dispose,
-  });
+  }));
 }
 
 export function compileForInference<const Target extends EmbeddingModule, const S extends TensorShapeTuple>(
