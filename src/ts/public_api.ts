@@ -3927,17 +3927,17 @@ export interface NnModule {
   assert_compile_plan(options?: CompileOptions): ModuleCompileExplanation;
   canCompile(options?: CompileOptions): boolean;
   can_compile(options?: CompileOptions): boolean;
-  native<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
+  native<const Self extends NnModule, const S extends TensorShapeTuple>(this: Self, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleForwardShape<Self, S>>;
   native(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
-  inference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
+  inference<const Self extends NnModule, const S extends TensorShapeTuple>(this: Self, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleForwardShape<Self, S>>;
   inference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
-  forInference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
+  forInference<const Self extends NnModule, const S extends TensorShapeTuple>(this: Self, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleForwardShape<Self, S>>;
   forInference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
-  for_inference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
+  for_inference<const Self extends NnModule, const S extends TensorShapeTuple>(this: Self, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleForwardShape<Self, S>>;
   for_inference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
-  compileInference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
+  compileInference<const Self extends NnModule, const S extends TensorShapeTuple>(this: Self, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleForwardShape<Self, S>>;
   compileInference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
-  compile_inference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
+  compile_inference<const Self extends NnModule, const S extends TensorShapeTuple>(this: Self, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, ModuleForwardShape<Self, S>>;
   compile_inference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
   forTraining(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
   for_training(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
@@ -7693,8 +7693,9 @@ export type TinyMlpDesc = TinyLinearDesc & {
 export type ProgramHostBinding<Shape extends TensorShapeTuple = TensorShapeTuple> = TensorLike<Shape>;
 export type ProgramInputBinding<Shape extends TensorShapeTuple = TensorShapeTuple> = TensorLike<Shape> | Uint32Array | Int32Array;
 export type ProgramOutputBinding<Shape extends TensorShapeTuple = TensorShapeTuple> = Tensor<Shape> | Float32Array | NativeBuffer;
-export type CompiledInference<InputShape extends TensorShapeTuple = TensorShapeTuple, OutputShape extends TensorShapeTuple = TensorShapeTuple> = Readonly<{
-  (input: ProgramInputBinding<InputShape>): Tensor<OutputShape>;
+export type CompiledInference<InputShape extends TensorShapeTuple = TensorShapeTuple, OutputShape extends TensorShapeTuple = TensorShapeTuple> = ((
+  input: ProgramInputBinding<InputShape>,
+) => Tensor<OutputShape>) & Readonly<{
   native: true;
   engine: "zig";
   runtime: "native";
