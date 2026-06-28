@@ -985,6 +985,10 @@ only the tiny runtime partial prefix. Current retained kernels still report
 `runtime_bytes=9216` because they only need the per-row/output-tile RMS partial
 prefix, but the future direct width-parallel input-bridge kernel now has
 backend-owned storage matching the plan rather than a profile-only placeholder.
+Fresh frontier artifacts now export `semantic_width_scratch_allocated_bytes`,
+and the checker/status path compares it with `down_partial_bytes`, so the
+evidence distinguishes planned width scratch from the buffer actually allocated
+by the Metal runtime.
 Two June 27, 2026 shortcut probes are explicitly rejected. First, splitting the
 direct input-bridge down projection across spare row-threadgroup lanes required
 an extra barrier for correctness, then measured as noisy and slower than the

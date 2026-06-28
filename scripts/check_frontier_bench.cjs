@@ -1635,6 +1635,7 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
   const semanticWidthScratchDownPartialBytes = metric(output, bridgeProfileLabel, "semantic_width_scratch_down_partial_bytes");
   const semanticWidthScratchOutputBytes = metric(output, bridgeProfileLabel, "semantic_width_scratch_output_bytes");
   const semanticWidthScratchDownPartialToOutputX1000 = metric(output, bridgeProfileLabel, "semantic_width_scratch_down_partial_to_output_x1000");
+  const semanticWidthScratchAllocatedBytes = metric(output, bridgeProfileLabel, "semantic_width_scratch_allocated_bytes");
   const semanticWidthScratchRuntimeCapacityBytes = metric(output, bridgeProfileLabel, "semantic_width_scratch_runtime_capacity_bytes");
   const semanticWidthScratchRuntimeUses = metric(output, bridgeProfileLabel, "semantic_width_scratch_runtime_uses");
   const semanticWidthScratchRuntimeBytes = metric(output, bridgeProfileLabel, "semantic_width_scratch_runtime_bytes");
@@ -1666,9 +1667,10 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
     semanticWidthScratchProductBytes !== targetProductBytes ||
     semanticWidthScratchDownPartialBytes !== targetDownPartialBytes ||
     semanticWidthScratchOutputBytes !== targetOutputBytes ||
-    semanticWidthScratchDownPartialToOutputX1000 !== targetDownPartialToOutput * 1000
+    semanticWidthScratchDownPartialToOutputX1000 !== targetDownPartialToOutput * 1000 ||
+    semanticWidthScratchAllocatedBytes !== targetDownPartialBytes
   ) {
-    failures.push(`semantic bridge must expose backend-owned width scratch candidates=1 bytes=${targetDownPartialBytes} product=${targetProductBytes} down_partial=${targetDownPartialBytes} output=${targetOutputBytes} ratio_x1000=${targetDownPartialToOutput * 1000}`);
+    failures.push(`semantic bridge must expose backend-owned width scratch candidates=1 bytes=${targetDownPartialBytes} allocated=${targetDownPartialBytes} product=${targetProductBytes} down_partial=${targetDownPartialBytes} output=${targetOutputBytes} ratio_x1000=${targetDownPartialToOutput * 1000}`);
   }
   if (semanticWidthScratchRuntimeCapacityBytes !== rowChainTiledPartialSlots * 4 || semanticWidthScratchRuntimeUses <= 0 || semanticWidthScratchRuntimeBytes !== rowChainTiledPartialSlots * 4) {
     failures.push(`semantic bridge must route the tiled tail through precisely-sized semantic scratch runtime_capacity=${rowChainTiledPartialSlots * 4} runtime_uses>0 runtime_bytes=${rowChainTiledPartialSlots * 4}`);
@@ -1682,7 +1684,7 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
     `shape_commands=${shapeCommands} shape_semantic_ffn_sublayers=${shapeSemantic} shape_covered_ops=${shapeCoveredOps} shape_saved_dispatches=${shapeSavedDispatches}`,
     `runtime_backend_dispatches=${runtimeDispatches} semantic_target_dispatches=${semanticTargetDispatches} runtime_semantic_ffn_dispatches=${runtimeSemanticDispatches} semantic_dispatch_split=${Number.isFinite(semanticDispatchSplit) ? semanticDispatchSplit.toFixed(2) : "n/a"} semantic_pair_dispatches=${semanticFallbackPairDispatches} semantic_tail_dispatches=${semanticFallbackTailDispatches}`,
     `qmatmul_row_chain_tiled_count=${rowChainTiledCount} row_tile_groups=${rowChainTiledRowTileGroups} n_tiles=${rowChainTiledNTiles} serial_tile_loops=${rowChainTiledSerialTileLoops} partial_slots=${rowChainTiledPartialSlots} scratch_capacity=${rowChainTiledScratchCapacity} two_phase_count=${rowChainTiledTwoPhaseCount} finalize_tile_groups=${rowChainTiledFinalizeTileGroups} finalize_elements=${rowChainTiledFinalizeElements} spilled_elementwise=${rowChainTiledSpilledElementwise} spilled_input=${rowChainTiledSpilledInput} output_spills=${rowChainTiledOutputSpills} width_parallel=${rowChainWidthParallelCount}:lanes:${rowChainWidthParallelLanes}`,
-    `semantic_width_scratch=candidates:${semanticWidthScratchCandidates},bytes:${semanticWidthScratchBytes},product_bytes:${semanticWidthScratchProductBytes},down_partial_bytes:${semanticWidthScratchDownPartialBytes},output_bytes:${semanticWidthScratchOutputBytes},down_partial_to_output:${(semanticWidthScratchDownPartialToOutputX1000 / 1000).toFixed(2)},runtime_capacity:${semanticWidthScratchRuntimeCapacityBytes},runtime_uses:${semanticWidthScratchRuntimeUses},runtime_bytes:${semanticWidthScratchRuntimeBytes}`,
+    `semantic_width_scratch=candidates:${semanticWidthScratchCandidates},bytes:${semanticWidthScratchBytes},allocated:${semanticWidthScratchAllocatedBytes},product_bytes:${semanticWidthScratchProductBytes},down_partial_bytes:${semanticWidthScratchDownPartialBytes},output_bytes:${semanticWidthScratchOutputBytes},down_partial_to_output:${(semanticWidthScratchDownPartialToOutputX1000 / 1000).toFixed(2)},runtime_capacity:${semanticWidthScratchRuntimeCapacityBytes},runtime_uses:${semanticWidthScratchRuntimeUses},runtime_bytes:${semanticWidthScratchRuntimeBytes}`,
     `width_target=rows:${targetRows},hidden:${targetHidden},input:${targetInput},output:${targetOutput},row_groups:${targetRowGroups},hidden_tiles:${targetHiddenTiles},output_tiles:${targetOutputTiles},product_elements:${targetProductElements},output_elements:${targetOutputElements},down_partial_elements:${targetDownPartialElements},product_bytes:${targetProductBytes},down_partial_bytes:${targetDownPartialBytes},output_bytes:${targetOutputBytes},down_partial_to_output:${targetDownPartialToOutput.toFixed(2)},scratch_plan:${targetScratchPlan},gate_up_dot_ops:${targetGateUpDotOps},down_dot_ops:${targetDownDotOps},total_dot_ops:${targetTotalDotOps}`,
     `next=${next}`,
   ].join("; ");
@@ -1721,6 +1723,7 @@ function scoreFocusedSemanticBridgeCandidate(output, attempt) {
     semanticWidthScratchDownPartialBytes,
     semanticWidthScratchOutputBytes,
     semanticWidthScratchDownPartialToOutputX1000,
+    semanticWidthScratchAllocatedBytes,
     semanticWidthScratchRuntimeCapacityBytes,
     semanticWidthScratchRuntimeUses,
     semanticWidthScratchRuntimeBytes,
@@ -1796,6 +1799,7 @@ function selectedSemanticBridgeAttemptSummary(attempt) {
       qmatmulRowChainWidthParallelLanes: attempt.rowChainWidthParallelLanes,
       semanticWidthScratchCandidates: attempt.semanticWidthScratchCandidates,
       semanticWidthScratchBytes: attempt.semanticWidthScratchBytes,
+      semanticWidthScratchAllocatedBytes: attempt.semanticWidthScratchAllocatedBytes,
       semanticWidthScratchProductBytes: attempt.semanticWidthScratchProductBytes,
       semanticWidthScratchDownPartialBytes: attempt.semanticWidthScratchDownPartialBytes,
       semanticWidthScratchOutputBytes: attempt.semanticWidthScratchOutputBytes,
@@ -1941,6 +1945,18 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   const commandLabel = "qsemantic input-bridge m=128 h=1536 k=576 o=576 semantic input command";
   const absorbedLabel = "qsemantic input-bridge m=128 h=1536 k=576 o=576 semantic input absorbed";
   const directSerialLabel = "qsemantic input-bridge m=128 h=1536 k=576 o=576 semantic input direct_serial";
+  const targetRows = 128;
+  const targetHidden = 1536;
+  const targetOutput = 576;
+  const targetTile = 32;
+  const targetHiddenTiles = Math.ceil(targetHidden / targetTile);
+  const targetProductElements = targetRows * targetHidden;
+  const targetOutputElements = targetRows * targetOutput;
+  const targetDownPartialElements = targetRows * targetOutput * targetHiddenTiles;
+  const targetProductBytes = targetProductElements * 4;
+  const targetDownPartialBytes = targetDownPartialElements * 4;
+  const targetOutputBytes = targetOutputElements * 4;
+  const targetDownPartialToOutput = targetDownPartialElements / targetOutputElements;
   const commandProfileLabel = `${commandLabel} dispatch_profile`;
   const absorbedProfileLabel = `${absorbedLabel} dispatch_profile`;
   const directSerialProfileLabel = `${directSerialLabel} dispatch_profile`;
@@ -2014,6 +2030,7 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   const absorbedSemanticWidthScratchDownPartialBytes = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_down_partial_bytes") ?? 0;
   const absorbedSemanticWidthScratchOutputBytes = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_output_bytes") ?? 0;
   const absorbedSemanticWidthScratchDownPartialToOutputX1000 = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_down_partial_to_output_x1000") ?? 0;
+  const absorbedSemanticWidthScratchAllocatedBytes = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_allocated_bytes") ?? 0;
   const absorbedSemanticWidthScratchRuntimeCapacityBytes = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_runtime_capacity_bytes") ?? 0;
   const absorbedSemanticWidthScratchRuntimeUses = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_runtime_uses") ?? 0;
   const absorbedSemanticWidthScratchRuntimeBytes = optionalMetric(output, absorbedProfileLabel, "semantic_width_scratch_runtime_bytes") ?? 0;
@@ -2153,6 +2170,17 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   if (absorbedUsesStagedWidthKernel && (absorbedRowChainTiledSpilledElementwise !== 0 || absorbedRowChainTiledSpilledInput !== 0 || absorbedRowChainTiledOutputSpills !== 0)) {
     failures.push("semantic input staged width spill profile must stay spill-free for the retained tail");
   }
+  if (
+    absorbedSemanticWidthScratchCandidates !== 1 ||
+    absorbedSemanticWidthScratchBytes !== targetDownPartialBytes ||
+    absorbedSemanticWidthScratchProductBytes !== targetProductBytes ||
+    absorbedSemanticWidthScratchDownPartialBytes !== targetDownPartialBytes ||
+    absorbedSemanticWidthScratchOutputBytes !== targetOutputBytes ||
+    absorbedSemanticWidthScratchDownPartialToOutputX1000 !== targetDownPartialToOutput * 1000 ||
+    absorbedSemanticWidthScratchAllocatedBytes !== targetDownPartialBytes
+  ) {
+    failures.push(`semantic input absorbed path must expose backend-owned width scratch candidates=1 bytes=${targetDownPartialBytes} allocated=${targetDownPartialBytes} product=${targetProductBytes} down_partial=${targetDownPartialBytes} output=${targetOutputBytes} ratio_x1000=${targetDownPartialToOutput * 1000}`);
+  }
 
   const next = "semantic_with_input_width_parallel_kernel";
   const line = [
@@ -2164,7 +2192,7 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     `absorbed_decomposed=${absorbedDecomposedCount}:dispatches=${absorbedDecomposedDispatches}:extra_dispatches=${absorbedDecomposedExtraDispatches}:row_chain=${absorbedDecomposedRowChainDispatches}:pair=${absorbedDecomposedPairDispatches}:tail=${absorbedDecomposedTailDispatches}`,
     `direct=${absorbedDirectCount}:rows=${absorbedDirectRows}:row_threadgroups=${absorbedDirectRowThreadgroups}:row_serial_dot_ops=${absorbedDirectRowSerialDotOps}:total_row_serial_dot_ops=${absorbedDirectTotalRowSerialDotOps}:per_row_threadgroup=${absorbedDirectTotalRowSerialDotOpsPerRowThreadgroup}:width_parallel=${absorbedDirectWidthParallelCount}:width_lanes=${absorbedDirectWidthParallelLanes}:width_tiles=${absorbedDirectWidthParallelRowTileGroups}x${absorbedDirectWidthParallelOutputTiles}:partial_slots=${absorbedDirectWidthParallelPartialSlots}`,
     `fallback_pair_dispatches=${absorbedFallbackPairDispatches} fallback_tail_dispatches=${absorbedFallbackTailDispatches} tiled_count=${absorbedRowChainTiledCount} row_tile_groups=${absorbedRowChainTiledRowTileGroups} n_tiles=${absorbedRowChainTiledNTiles} two_phase_count=${absorbedRowChainTiledTwoPhaseCount} width_parallel=${absorbedRowChainWidthParallelCount}:lanes:${absorbedRowChainWidthParallelLanes} spilled_input=${absorbedRowChainTiledSpilledInput}`,
-    `semantic_width_scratch=candidates:${absorbedSemanticWidthScratchCandidates},bytes:${absorbedSemanticWidthScratchBytes},product_bytes:${absorbedSemanticWidthScratchProductBytes},down_partial_bytes:${absorbedSemanticWidthScratchDownPartialBytes},output_bytes:${absorbedSemanticWidthScratchOutputBytes},down_partial_to_output:${(absorbedSemanticWidthScratchDownPartialToOutputX1000 / 1000).toFixed(2)},runtime_capacity:${absorbedSemanticWidthScratchRuntimeCapacityBytes},runtime_uses:${absorbedSemanticWidthScratchRuntimeUses},runtime_bytes:${absorbedSemanticWidthScratchRuntimeBytes}`,
+    `semantic_width_scratch=candidates:${absorbedSemanticWidthScratchCandidates},bytes:${absorbedSemanticWidthScratchBytes},allocated:${absorbedSemanticWidthScratchAllocatedBytes},product_bytes:${absorbedSemanticWidthScratchProductBytes},down_partial_bytes:${absorbedSemanticWidthScratchDownPartialBytes},output_bytes:${absorbedSemanticWidthScratchOutputBytes},down_partial_to_output:${(absorbedSemanticWidthScratchDownPartialToOutputX1000 / 1000).toFixed(2)},runtime_capacity:${absorbedSemanticWidthScratchRuntimeCapacityBytes},runtime_uses:${absorbedSemanticWidthScratchRuntimeUses},runtime_bytes:${absorbedSemanticWidthScratchRuntimeBytes}`,
     `next=${next}`,
   ].join("; ");
 
@@ -2241,6 +2269,7 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
     absorbedSemanticWidthScratchDownPartialBytes,
     absorbedSemanticWidthScratchOutputBytes,
     absorbedSemanticWidthScratchDownPartialToOutputX1000,
+    absorbedSemanticWidthScratchAllocatedBytes,
     absorbedSemanticWidthScratchRuntimeCapacityBytes,
     absorbedSemanticWidthScratchRuntimeUses,
     absorbedSemanticWidthScratchRuntimeBytes,
@@ -2360,6 +2389,7 @@ function selectedSemanticInputBridgeAttemptSummary(attempt) {
       qmatmulRowChainWidthParallelLanes: attempt.absorbedRowChainWidthParallelLanes,
       semanticWidthScratchCandidates: attempt.absorbedSemanticWidthScratchCandidates,
       semanticWidthScratchBytes: attempt.absorbedSemanticWidthScratchBytes,
+      semanticWidthScratchAllocatedBytes: attempt.absorbedSemanticWidthScratchAllocatedBytes,
       semanticWidthScratchProductBytes: attempt.absorbedSemanticWidthScratchProductBytes,
       semanticWidthScratchDownPartialBytes: attempt.absorbedSemanticWidthScratchDownPartialBytes,
       semanticWidthScratchOutputBytes: attempt.absorbedSemanticWidthScratchOutputBytes,

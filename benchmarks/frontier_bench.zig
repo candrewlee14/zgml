@@ -519,6 +519,7 @@ fn writeSemanticSublayerRuntimeMetricJson(
     try writeMetricJsonField(&jw, "semantic_width_scratch_down_partial_bytes", rt.semantic_width_scratch_down_partial_bytes);
     try writeMetricJsonField(&jw, "semantic_width_scratch_output_bytes", rt.semantic_width_scratch_output_bytes);
     try writeMetricJsonField(&jw, "semantic_width_scratch_down_partial_to_output_x1000", rt.semantic_width_scratch_down_partial_to_output_x1000);
+    try writeMetricJsonField(&jw, "semantic_width_scratch_allocated_bytes", rt.semantic_width_scratch_allocated_bytes);
     try writeMetricJsonField(&jw, "semantic_width_scratch_runtime_capacity_bytes", rt.semantic_width_scratch_runtime_capacity_bytes);
     try writeMetricJsonField(&jw, "semantic_width_scratch_runtime_uses", rt.semantic_width_scratch_runtime_uses);
     try writeMetricJsonField(&jw, "semantic_width_scratch_runtime_bytes", rt.semantic_width_scratch_runtime_bytes);

@@ -10384,6 +10384,7 @@ const RuntimeBindings = struct {
             @intCast(compiled.semantic_width_scratch_requirement.output_bytes),
             @intCast(compiled.semantic_width_scratch_requirement.runtimeScratchBytes()),
         );
+        runtime_profile.recordSemanticWidthScratchAllocation(if (semantic_width_scratch) |scratch| @intCast(scratch.size) else 0);
         return .{
             .device_bufs = device_bufs,
             .ref_buffers = ref_buffers,
@@ -10542,6 +10543,7 @@ fn compileProgramInner(self: *MetalBackend, program: backend_mod.DeviceProgram, 
         @intCast(semantic_width_scratch_requirement.output_bytes),
         @intCast(semantic_width_scratch_requirement.runtimeScratchBytes()),
     );
+    runtime_profile.recordSemanticWidthScratchAllocation(if (semantic_width_scratch) |scratch| @intCast(scratch.size) else 0);
 
     const compiled = try alloc.create(CompiledProgram);
     compiled.* = .{
