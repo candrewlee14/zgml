@@ -939,6 +939,7 @@ function checkPackageExports(errors) {
     "nativeEagerRoutingActivationEnabled",
     "elementwiseMinLength: 512",
     "activationMinLength: 65536",
+    "disabledActivations: [\"relu\"]",
     "disabledActivations: []",
   ]) {
     if (!nativeEagerRoutingPolicySource.includes(required)) {

@@ -743,23 +743,33 @@ Current checked progress:
   `avg_pool2d_batched`; fresh Node/Bun short runs show zero measured module
   diff across the native eager rows, with per-row speedup floors recorded where
   the direct low-level ABI is evidence rather than the preferred high-level
-  route. The standalone activation rows now prove the promoted path too:
+  route. The standalone activation rows now prove the runtime dispatch policy too:
   `zgml_eager_activation_f32` uses a vectorized Zig helper for ReLU/GELU/SiLU/
-  Sigmoid/Tanh sized tensors. Normal no-grad high-level activation calls go
-  through adapter-level dispatch policy once the runtime threshold is met:
-  Node and Bun now route every supported standalone activation
-  (`ReLU`/`GELU`/`SiLU`/`Sigmoid`/`Tanh`) through `nativeEager.activationInto`
-  instead of preserving stale host-specific disabled lists. Fused
+  Sigmoid/Tanh sized tensors, but the high-level Tensor route is allowed to
+  choose the faster host policy instead of crossing FFI for every cheap unary
+  op. A June 28, 2026 Node 25 probe measured standalone ReLU as memory-bound:
+  the direct `nativeEager.activationInto` lane was only about `1.06x` faster
+  than the already-native public route and slower than a plain TS typed-array
+  loop. Node therefore records `disabledActivations=["relu"]` and leaves
+  standalone `Tensor.relu()` on the TS loop by default, while the explicit C ABI
+  row remains measured as `node_relu_prefers_ts_loop_over_ffi_boundary`. Bun
+  keeps the higher activation threshold and no disabled activation list. Fused
   Linear+activation and compiled lazy activation paths remain native where they
-  win. Fresh Node/Bun
-  runs show the public Tensor path above floor: the standalone activation rows
-  enforce direct/module floors after the Zig vector helper, including ReLU and
-  Bun Sigmoid, with zero measured diff except the expected bounded Tanh
-  approximation tolerance. A June 28, 2026 short native-eager microscope run
-  measured Node ReLU at `10.04x` direct / `4.29x` public no-grad and Bun ReLU
-  at `12.53x` direct / `5.69x` public no-grad; Bun Sigmoid moved from the
-  disabled route to `2.04x` direct / `1.93x` public no-grad. Grad-enabled activation calls
-  and small tensors stay on the TS/autograd path. No-grad `Tensor.bmm` is now
+  win, and standalone GELU/SiLU/Sigmoid/Tanh continue to use the adapter-level
+  activation dispatch policy once the runtime threshold is met. Grad-enabled activation calls
+  and small tensors stay on the TS/autograd path. The same evidence-first rule
+  applies to `Tensor.cumsum`: the C ABI keeps `nativeEager.cumsumInto` /
+  `native_eager.cumsum_into` for caller-owned-output experiments, but a fresh
+  Node native-eager sweep measured the direct cumsum row at about `0.27x`, so
+  ordinary no-grad `Tensor.cumsum(...)` stays on the TS typed-array route and
+  the benchmark records `native_eager_cumsum_explicit_abi_not_default`.
+  The same policy now applies to no-grad `Tensor.variance(...)` and
+  `Tensor.std(...)`: `nativeEager.varianceInto` / `nativeEager.stdInto` stay
+  exposed for caller-owned-output experiments and future kernel work, but the
+  public Tensor route keeps the TS loop until the measured module path reaches
+  parity. The native eager scorecard records this as
+  `native_eager_moment_explicit_abi_not_default`.
+  No-grad `Tensor.bmm` is now
   measured in the same family as `bmm_batched`: useful-sized batches route
   through one `zgml_eager_bmm_f32` call, while tiny batches remain on the
   lower-overhead TS loop. The current artifact measures direct Node

@@ -424,7 +424,7 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const expectedRuntime = label.includes("bun") ? "bun" : "node";
   const expectedElementwiseMinLength = 512;
   const expectedActivationMinLength = expectedRuntime === "bun" ? 65536 : 512;
-  const expectedDisabledActivations = "";
+  const expectedDisabledActivations = expectedRuntime === "node" ? "relu" : "";
   if (
     !Object.isFrozen(routingPolicy) ||
     routingPolicyAlias !== routingPolicy ||
@@ -440,7 +440,7 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     !routingPolicy.signature.includes(`runtime=${expectedRuntime}`) ||
     !routingPolicy.signature.includes(`elementwiseMin=${expectedElementwiseMinLength}`) ||
     !routingPolicy.signature.includes(`activationMin=${expectedActivationMinLength}`) ||
-    !routingPolicy.signature.includes("disabledActivations=none")
+    !routingPolicy.signature.includes(`disabledActivations=${expectedDisabledActivations || "none"}`)
   ) {
     throw new Error(`${label} expected nativeEager routing policy evidence`);
   }
@@ -667,7 +667,7 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   expectClose(cumsumAliasOutput, [6, 5, 3, 15, 11, 6], `${label} native_eager.cumsum_into output`);
   const tensorCumsum = adapter.noGrad(() => tensorReduceDimInput.cumsum(1));
-  expectClose(tensorCumsum.data, [1, 3, 6, 4, 9, 15], `${label} noGrad Tensor cumsum native eager output`);
+  expectClose(tensorCumsum.data, [1, 3, 6, 4, 9, 15], `${label} noGrad Tensor cumsum TS route output`);
   const varianceOutput = new Float32Array(2);
   const varianceResult = nativeEager.varianceInto(varianceOutput, tensorReduceDimInput, { outer: 2, reduce: 3, inner: 1 });
   if (varianceResult !== varianceOutput) {
@@ -681,7 +681,7 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   expectClose(stdOutput, [1, 1], `${label} native_eager.std_into output`);
   const tensorMoments = adapter.noGrad(() => tensorReduceDimInput.variance(1).add(tensorReduceDimInput.std(1, 1)));
-  expectClose(tensorMoments.data, [5 / 3, 5 / 3], `${label} noGrad Tensor moment native eager output`);
+  expectClose(tensorMoments.data, [5 / 3, 5 / 3], `${label} noGrad Tensor moment TS route output`);
   const geluOutput = new Float32Array(6);
   const geluResult = nativeEager.linearActivationInto(geluOutput, input, weights, { bias, activation: "gelu" });
   if (geluResult !== geluOutput) {

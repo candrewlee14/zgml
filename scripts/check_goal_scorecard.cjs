@@ -906,6 +906,9 @@ function checkScripts() {
     "nativeEagerBmmInto(output, input, bmmRhsTensor, 16, 32, 32, 32)",
     "zgml.noGrad(() => input.bmm(bmmRhsTensor))",
     "native_eager_activation_storage_slice",
+    "node_relu_prefers_ts_loop_over_ffi_boundary",
+    "native_eager_cumsum_explicit_abi_not_default",
+    "native_eager_moment_explicit_abi_not_default",
     "zgml.noGrad(() => softmaxModel.forward(input))",
     "zgml.noGrad(() => logSoftmaxModel.forward(input))",
     "zgml.noGrad(() => input.mul(2))",
@@ -1087,6 +1090,7 @@ function checkScripts() {
     "nativeEagerRoutingActivationEnabled",
     "elementwiseMinLength: 512",
     "activationMinLength: 65536",
+    "disabledActivations: [\"relu\"]",
     "disabledActivations: []",
   ]);
   requireIncludes(read("src/ts/adapters/node_ffi_runtime.ts"), "src/ts/adapters/node_ffi_runtime.ts", "Node native eager activation dispatch policy", [
@@ -6816,8 +6820,8 @@ function checkZgmlFrontendSurface() {
     "expected nativeEager.stdInto",
     "noGrad Tensor dim-reduce native eager output",
     "noGrad Tensor arg-dim-reduce native eager output",
-    "noGrad Tensor cumsum native eager output",
-    "noGrad Tensor moment native eager output",
+    "noGrad Tensor cumsum TS route output",
+    "noGrad Tensor moment TS route output",
     "nativeEager.reduceDimInto output",
     "native_eager.reduce_dim_into output",
     "nativeEager.argReduceDimInto output",
