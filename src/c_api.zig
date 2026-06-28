@@ -40,6 +40,7 @@ const tiny_llama_2layer_kind: u32 = 4;
 const tiny_mlp_kind: u32 = 5;
 const module_kind: u32 = 6;
 const llama_family_kind: u32 = 7;
+const smollm2_360m_kind: u32 = 8;
 const abi_version: u32 = 6;
 const feature_buffer_handle: u64 = 1 << 0;
 const feature_model_auto: u64 = 1 << 1;
@@ -247,6 +248,18 @@ const smollm_135m_config = llm_mod.LlamaConfig{
     .rms_norm_eps = 1e-5,
     .tied_lm_head = true,
 };
+const smollm2_360m_config = llm_mod.LlamaConfig{
+    .vocab_size = 49152,
+    .d_model = 960,
+    .n_heads = 15,
+    .n_kv_heads = 5,
+    .d_ff = 2560,
+    .n_layers = 32,
+    .max_seq_len = 8192,
+    .rope_base = 100000.0,
+    .rms_norm_eps = 1e-5,
+    .tied_lm_head = true,
+};
 const TinyLlamaModel = llm_mod.LlamaModel(f32, tiny_llama_config);
 const TinyLlamaProgram = llm_mod.LlamaProgram(f32, tiny_llama_config);
 const TinyLlamaSession = llm_mod.LlamaSession(f32, tiny_llama_config);
@@ -256,6 +269,9 @@ const TinyLlama2LayerSession = llm_mod.LlamaSession(f32, tiny_llama_2layer_confi
 const SmolLM135MModel = llm_mod.LlamaModel(f32, smollm_135m_config);
 const SmolLM135MProgram = llm_mod.LlamaProgram(f32, smollm_135m_config);
 const SmolLM135MSession = llm_mod.LlamaSession(f32, smollm_135m_config);
+const SmolLM2_360MModel = llm_mod.LlamaModel(f32, smollm2_360m_config);
+const SmolLM2_360MProgram = llm_mod.LlamaProgram(f32, smollm2_360m_config);
+const SmolLM2_360MSession = llm_mod.LlamaSession(f32, smollm2_360m_config);
 
 const LlamaFamilySpec = struct {
     kind: u32,
@@ -285,6 +301,7 @@ const compatible_llama_families = [_]LlamaFamilySpec{
     .{ .kind = tiny_llama_kind, .config = tiny_llama_config },
     .{ .kind = tiny_llama_2layer_kind, .config = tiny_llama_2layer_config },
     .{ .kind = smollm_135m_kind, .config = smollm_135m_config },
+    .{ .kind = smollm2_360m_kind, .config = smollm2_360m_config },
 };
 
 pub const zgml_runtime_info = extern struct {
@@ -803,6 +820,14 @@ const SmolLM135MModelHandle = struct {
     }
 };
 
+const SmolLM2_360MModelHandle = struct {
+    model: *SmolLM2_360MModel,
+
+    fn deinit(self: *SmolLM2_360MModelHandle) void {
+        self.model.deinit();
+    }
+};
+
 const ModelHandle = struct {
     ref_count: usize = 1,
     data: union(enum) {
@@ -811,6 +836,7 @@ const ModelHandle = struct {
         tiny_llama: TinyLlamaModelHandle,
         tiny_llama_2layer: TinyLlama2LayerModelHandle,
         smollm_135m: SmolLM135MModelHandle,
+        smollm2_360m: SmolLM2_360MModelHandle,
     },
 
     fn retain(self: *ModelHandle) void {
@@ -830,6 +856,7 @@ const ModelHandle = struct {
             .tiny_llama => |*llama| llama.deinit(),
             .tiny_llama_2layer => |*llama| llama.deinit(),
             .smollm_135m => |*llama| llama.deinit(),
+            .smollm2_360m => |*llama| llama.deinit(),
         }
         allocator.destroy(self);
     }
@@ -960,6 +987,16 @@ const SmolLM135MProgramHandle = struct {
     }
 };
 
+const SmolLM2_360MProgramHandle = struct {
+    model: *ModelHandle,
+    program: *SmolLM2_360MProgram,
+
+    fn deinit(self: *SmolLM2_360MProgramHandle, allocator: std.mem.Allocator) void {
+        self.program.deinit();
+        self.model.release(allocator);
+    }
+};
+
 const ProgramHandle = struct {
     ref_count: usize = 1,
     data: union(enum) {
@@ -969,6 +1006,7 @@ const ProgramHandle = struct {
         tiny_llama: TinyLlamaProgramHandle,
         tiny_llama_2layer: TinyLlama2LayerProgramHandle,
         smollm_135m: SmolLM135MProgramHandle,
+        smollm2_360m: SmolLM2_360MProgramHandle,
     },
 
     fn retain(self: *ProgramHandle) void {
@@ -989,6 +1027,7 @@ const ProgramHandle = struct {
             .tiny_llama => |*llama| llama.deinit(allocator),
             .tiny_llama_2layer => |*llama| llama.deinit(allocator),
             .smollm_135m => |*llama| llama.deinit(allocator),
+            .smollm2_360m => |*llama| llama.deinit(allocator),
         }
         allocator.destroy(self);
     }
@@ -1066,6 +1105,21 @@ const SmolLM135MSessionHandle = struct {
     }
 };
 
+const SmolLM2_360MSessionHandle = struct {
+    program: *ProgramHandle,
+    session: *SmolLM2_360MSession,
+    output_buf: []f32 = &.{},
+    output_resource: ?backend_mod.ProgramIO.ExternalResource = null,
+    output_is_resource: bool = false,
+    owns_output_buf: bool = false,
+
+    fn deinit(self: *SmolLM2_360MSessionHandle, allocator: std.mem.Allocator) void {
+        self.session.deinit();
+        if (self.owns_output_buf) allocator.free(self.output_buf);
+        self.program.release(allocator);
+    }
+};
+
 const SessionHandle = struct {
     data: union(enum) {
         tiny_linear: TinyLinearSessionHandle,
@@ -1074,6 +1128,7 @@ const SessionHandle = struct {
         tiny_llama: TinyLlamaSessionHandle,
         tiny_llama_2layer: TinyLlama2LayerSessionHandle,
         smollm_135m: SmolLM135MSessionHandle,
+        smollm2_360m: SmolLM2_360MSessionHandle,
     },
 
     fn deinit(self: *SessionHandle, allocator: std.mem.Allocator) void {
@@ -1084,6 +1139,7 @@ const SessionHandle = struct {
             .tiny_llama => |*llama| llama.deinit(allocator),
             .tiny_llama_2layer => |*llama| llama.deinit(allocator),
             .smollm_135m => |*llama| llama.deinit(allocator),
+            .smollm2_360m => |*llama| llama.deinit(allocator),
         }
         allocator.destroy(self);
     }
@@ -1366,7 +1422,7 @@ fn deviceProgramRuntime(p: *ProgramHandle) ?DeviceProgramRuntime {
             .execution_supported = module.execution_supported,
             .program = &module.program,
         },
-        .tiny_llama, .tiny_llama_2layer, .smollm_135m => null,
+        .tiny_llama, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => null,
     };
 }
 
@@ -1402,7 +1458,7 @@ fn deviceSessionRuntime(s: *SessionHandle) ?DeviceSessionRuntime {
                 .session = &module.session,
             };
         },
-        .tiny_llama, .tiny_llama_2layer, .smollm_135m => null,
+        .tiny_llama, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => null,
     };
 }
 
@@ -1438,6 +1494,7 @@ fn releaseDeviceBuffer(program: *ProgramHandle, resource: backend_mod.ProgramIO.
         .tiny_llama => |*llama| llama.program.releaseDeviceBuffer(resource),
         .tiny_llama_2layer => |*llama| llama.program.releaseDeviceBuffer(resource),
         .smollm_135m => |*llama| llama.program.releaseDeviceBuffer(resource),
+        .smollm2_360m => |*llama| llama.program.releaseDeviceBuffer(resource),
     }
 }
 
@@ -1457,6 +1514,7 @@ fn getDeviceHandle(program: *ProgramHandle, placement: u32) !usize {
         .tiny_llama => |*llama| llama.program.deviceHandle(),
         .tiny_llama_2layer => |*llama| llama.program.deviceHandle(),
         .smollm_135m => |*llama| llama.program.deviceHandle(),
+        .smollm2_360m => |*llama| llama.program.deviceHandle(),
     };
 }
 
@@ -1507,6 +1565,13 @@ fn importDeviceBuffer(program: *ProgramHandle, resource: DeviceBufferImportResou
             resource.byte_len,
             resource.access,
         ),
+        .smollm2_360m => |*llama| llama.program.importDeviceBuffer(
+            resource.device_handle,
+            resource.buffer_handle,
+            resource.byte_offset,
+            resource.byte_len,
+            resource.access,
+        ),
     };
 }
 
@@ -1533,6 +1598,7 @@ fn writeDeviceBuffer(owner: BufferHandle.DeviceBufferOwner, resource: backend_mo
         .tiny_llama => |*llama| try llama.program.writeDeviceBuffer(resource, byte_offset, src),
         .tiny_llama_2layer => |*llama| try llama.program.writeDeviceBuffer(resource, byte_offset, src),
         .smollm_135m => |*llama| try llama.program.writeDeviceBuffer(resource, byte_offset, src),
+        .smollm2_360m => |*llama| try llama.program.writeDeviceBuffer(resource, byte_offset, src),
     };
 }
 
@@ -1551,6 +1617,7 @@ fn readDeviceBuffer(owner: BufferHandle.DeviceBufferOwner, resource: backend_mod
         .tiny_llama => |*llama| try llama.program.readDeviceBuffer(resource, byte_offset, dst),
         .tiny_llama_2layer => |*llama| try llama.program.readDeviceBuffer(resource, byte_offset, dst),
         .smollm_135m => |*llama| try llama.program.readDeviceBuffer(resource, byte_offset, dst),
+        .smollm2_360m => |*llama| try llama.program.readDeviceBuffer(resource, byte_offset, dst),
     };
 }
 
@@ -4451,6 +4518,7 @@ fn modelKindForHandle(m: *const ModelHandle) u32 {
         .tiny_llama => tiny_llama_kind,
         .tiny_llama_2layer => tiny_llama_2layer_kind,
         .smollm_135m => smollm_135m_kind,
+        .smollm2_360m => smollm2_360m_kind,
     };
 }
 
@@ -4462,6 +4530,7 @@ fn programModelKindForHandle(p: *const ProgramHandle) u32 {
         .tiny_llama => tiny_llama_kind,
         .tiny_llama_2layer => tiny_llama_2layer_kind,
         .smollm_135m => smollm_135m_kind,
+        .smollm2_360m => smollm2_360m_kind,
     };
 }
 
@@ -4472,15 +4541,19 @@ fn programAcceptsModel(p: *const ProgramHandle, m: *const ModelHandle) bool {
         .module => false,
         .tiny_llama => switch (m.data) {
             .tiny_llama => true,
-            .tiny_linear, .tiny_mlp, .tiny_llama_2layer, .smollm_135m => false,
+            .tiny_linear, .tiny_mlp, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => false,
         },
         .tiny_llama_2layer => switch (m.data) {
             .tiny_llama_2layer => true,
-            .tiny_linear, .tiny_mlp, .tiny_llama, .smollm_135m => false,
+            .tiny_linear, .tiny_mlp, .tiny_llama, .smollm_135m, .smollm2_360m => false,
         },
         .smollm_135m => switch (m.data) {
             .smollm_135m => true,
-            .tiny_linear, .tiny_mlp, .tiny_llama, .tiny_llama_2layer => false,
+            .tiny_linear, .tiny_mlp, .tiny_llama, .tiny_llama_2layer, .smollm2_360m => false,
+        },
+        .smollm2_360m => switch (m.data) {
+            .smollm2_360m => true,
+            .tiny_linear, .tiny_mlp, .tiny_llama, .tiny_llama_2layer, .smollm_135m => false,
         },
     };
 }
@@ -5669,6 +5742,7 @@ fn addProgramRuntimeProfileTo(p: *ProgramHandle, dest: *profile_mod.RuntimeProfi
         .tiny_llama => |*llama| llama.program.addRuntimeProfileTo(dest),
         .tiny_llama_2layer => |*llama| llama.program.addRuntimeProfileTo(dest),
         .smollm_135m => |*llama| llama.program.addRuntimeProfileTo(dest),
+        .smollm2_360m => |*llama| llama.program.addRuntimeProfileTo(dest),
     }
 }
 
@@ -5680,6 +5754,7 @@ fn resetProgramRuntimeProfile(p: *ProgramHandle) void {
         .tiny_llama => |*llama| llama.program.resetRuntimeProfile(),
         .tiny_llama_2layer => |*llama| llama.program.resetRuntimeProfile(),
         .smollm_135m => |*llama| llama.program.resetRuntimeProfile(),
+        .smollm2_360m => |*llama| llama.program.resetRuntimeProfile(),
     }
 }
 
@@ -5691,6 +5766,7 @@ fn addSessionRuntimeProfileTo(s: *SessionHandle, dest: *profile_mod.RuntimeProfi
         .tiny_llama => |*llama| llama.session.addRuntimeProfileTo(dest),
         .tiny_llama_2layer => |*llama| llama.session.addRuntimeProfileTo(dest),
         .smollm_135m => |*llama| llama.session.addRuntimeProfileTo(dest),
+        .smollm2_360m => |*llama| llama.session.addRuntimeProfileTo(dest),
     }
 }
 
@@ -5702,6 +5778,7 @@ fn resetSessionRuntimeProfile(s: *SessionHandle) void {
         .tiny_llama => |*llama| llama.session.resetRuntimeProfile(),
         .tiny_llama_2layer => |*llama| llama.session.resetRuntimeProfile(),
         .smollm_135m => |*llama| llama.session.resetRuntimeProfile(),
+        .smollm2_360m => |*llama| llama.session.resetRuntimeProfile(),
     }
 }
 
@@ -5896,7 +5973,10 @@ fn selectAutoModelKind(path: []const u8) !u32 {
         return compatibleLlamaKindForConfig(gguf_loader.configFromGGUF(&gf)) orelse error.UnsupportedModel;
     }
     if (std.ascii.endsWithIgnoreCase(path, ".safetensors")) {
-        return (try compatibleLlamaKindForSafetensorsPathHeader(path)) orelse error.UnsupportedModel;
+        if (try compatibleLlamaKindForSafetensorsPathHeader(path)) |kind| return kind;
+        const selected = try genericLlamaProbeSelectionForSafetensorsPath(path);
+        if (selected.kind == llama_family_kind) return error.UnsupportedModel;
+        return selected.kind;
     }
     return error.UnsupportedModel;
 }
@@ -5933,7 +6013,7 @@ fn selectAutoProbePathModel(path: []const u8) !ProbeModelSelection {
 fn selectProbePathModel(kind: u32, path: []const u8) !ProbeModelSelection {
     return switch (kind) {
         auto_kind => selectAutoProbePathModel(path),
-        tiny_llama_kind, tiny_llama_2layer_kind, smollm_135m_kind => blk: {
+        tiny_llama_kind, tiny_llama_2layer_kind, smollm_135m_kind, smollm2_360m_kind => blk: {
             const selected = try selectAutoProbePathModel(path);
             if (selected.kind != kind) return error.UnsupportedModel;
             break :blk selected;
@@ -5961,6 +6041,11 @@ fn selectLoadPathModelKind(kind: u32, path: []const u8) !u32 {
             if (selected != smollm_135m_kind) return error.UnsupportedModel;
             break :blk selected;
         },
+        smollm2_360m_kind => blk: {
+            const selected = try selectAutoModelKind(path);
+            if (selected != smollm2_360m_kind) return error.UnsupportedModel;
+            break :blk selected;
+        },
         tiny_linear_kind, tiny_mlp_kind => error.UnsupportedModel,
         else => error.InvalidArgument,
     };
@@ -5982,6 +6067,11 @@ fn selectSafetensorsHeaderModelKind(kind: u32, header: []const u8) !u32 {
         smollm_135m_kind => blk: {
             const selected = compatibleLlamaKindForSafetensorsHeader(header) orelse return error.UnsupportedModel;
             if (selected != smollm_135m_kind) return error.UnsupportedModel;
+            break :blk selected;
+        },
+        smollm2_360m_kind => blk: {
+            const selected = compatibleLlamaKindForSafetensorsHeader(header) orelse return error.UnsupportedModel;
+            if (selected != smollm2_360m_kind) return error.UnsupportedModel;
             break :blk selected;
         },
         tiny_linear_kind, tiny_mlp_kind => error.UnsupportedModel,
@@ -6214,7 +6304,7 @@ export fn zgml_model_create(desc_ptr: ?*const zgml_model_desc, out_model: ?*?*zg
             };
             break :blk .{ .data = .{ .tiny_llama_2layer = .{ .model = model } } };
         },
-        smollm_135m_kind => {
+        smollm_135m_kind, smollm2_360m_kind => {
             alloc.destroy(handle);
             return status(.unsupported);
         },
@@ -6257,6 +6347,13 @@ export fn zgml_model_load_path(desc_ptr: ?*const zgml_model_load_desc, out_model
                 return compileErrorStatus(err);
             };
             break :blk .{ .data = .{ .smollm_135m = .{ .model = model } } };
+        },
+        smollm2_360m_kind => blk: {
+            const model = SmolLM2_360MModel.load(alloc, std.Io.Threaded.global_single_threaded.io(), path) catch |err| {
+                alloc.destroy(handle);
+                return compileErrorStatus(err);
+            };
+            break :blk .{ .data = .{ .smollm2_360m = .{ .model = model } } };
         },
         tiny_linear_kind, tiny_mlp_kind => {
             alloc.destroy(handle);
@@ -6303,6 +6400,13 @@ export fn zgml_model_load_safetensors_data(desc_ptr: ?*const zgml_safetensors_da
             };
             break :blk .{ .data = .{ .smollm_135m = .{ .model = model } } };
         },
+        smollm2_360m_kind => blk: {
+            const model = SmolLM2_360MModel.loadSafetensorsBytes(alloc, bytes) catch |err| {
+                alloc.destroy(handle);
+                return compileErrorStatus(err);
+            };
+            break :blk .{ .data = .{ .smollm2_360m = .{ .model = model } } };
+        },
         tiny_linear_kind, tiny_mlp_kind => {
             alloc.destroy(handle);
             return status(.unsupported);
@@ -6339,6 +6443,7 @@ export fn zgml_model_probe_safetensors_data(desc_ptr: ?*const zgml_safetensors_d
         tiny_llama_kind => fillLlamaModelInspection(out, tiny_llama_kind, tiny_llama_config),
         tiny_llama_2layer_kind => fillLlamaModelInspection(out, tiny_llama_2layer_kind, tiny_llama_2layer_config),
         smollm_135m_kind => fillLlamaModelInspection(out, smollm_135m_kind, smollm_135m_config),
+        smollm2_360m_kind => fillLlamaModelInspection(out, smollm2_360m_kind, smollm2_360m_config),
         else => return status(.unsupported),
     }
     return status(.ok);
@@ -6356,6 +6461,7 @@ export fn zgml_model_probe_safetensors_header(desc_ptr: ?*const zgml_safetensors
         tiny_llama_kind => fillLlamaModelInspection(out, tiny_llama_kind, tiny_llama_config),
         tiny_llama_2layer_kind => fillLlamaModelInspection(out, tiny_llama_2layer_kind, tiny_llama_2layer_config),
         smollm_135m_kind => fillLlamaModelInspection(out, smollm_135m_kind, smollm_135m_config),
+        smollm2_360m_kind => fillLlamaModelInspection(out, smollm2_360m_kind, smollm2_360m_config),
         else => return status(.unsupported),
     }
     return status(.ok);
@@ -6397,6 +6503,7 @@ export fn zgml_model_inspect(model: ?*zgml_model, out_inspection: ?*zgml_model_i
         .tiny_llama => fillLlamaModelInspection(out, tiny_llama_kind, tiny_llama_config),
         .tiny_llama_2layer => fillLlamaModelInspection(out, tiny_llama_2layer_kind, tiny_llama_2layer_config),
         .smollm_135m => fillLlamaModelInspection(out, smollm_135m_kind, smollm_135m_config),
+        .smollm2_360m => fillLlamaModelInspection(out, smollm2_360m_kind, smollm2_360m_config),
     }
     return status(.ok);
 }
@@ -6444,6 +6551,14 @@ export fn zgml_program_compile(model: ?*zgml_model, desc_ptr: ?*const zgml_compi
             };
             m.retain();
             break :blk .{ .data = .{ .smollm_135m = .{ .model = m, .program = program } } };
+        },
+        .smollm2_360m => |*llama| blk: {
+            const program = llama.model.compile(llamaCompileOptions(desc_ptr, backend, smollm2_360m_config.max_seq_len)) catch |err| {
+                alloc.destroy(handle);
+                return compileErrorStatus(err);
+            };
+            m.retain();
+            break :blk .{ .data = .{ .smollm2_360m = .{ .model = m, .program = program } } };
         },
     };
     out.* = @ptrCast(handle);
@@ -6602,6 +6717,7 @@ export fn zgml_program_get_requirements(program: ?*zgml_program, out_requirement
         .tiny_llama => |*llama| fillLlamaRequirements(out, tiny_llama_kind, llama.program.inspect()),
         .tiny_llama_2layer => |*llama| fillLlamaRequirements(out, tiny_llama_2layer_kind, llama.program.inspect()),
         .smollm_135m => |*llama| fillLlamaRequirements(out, smollm_135m_kind, llama.program.inspect()),
+        .smollm2_360m => |*llama| fillLlamaRequirements(out, smollm2_360m_kind, llama.program.inspect()),
     }
     return status(.ok);
 }
@@ -6636,6 +6752,10 @@ export fn zgml_llama_program_get_kv_cache_requirements(program: ?*zgml_program, 
             fillLlamaKvCacheRequirements(smollm_135m_config, out, smollm_135m_kind, llama.program.inspect()) catch |err| return compileErrorStatus(err);
             break :blk status(.ok);
         },
+        .smollm2_360m => |*llama| blk: {
+            fillLlamaKvCacheRequirements(smollm2_360m_config, out, smollm2_360m_kind, llama.program.inspect()) catch |err| return compileErrorStatus(err);
+            break :blk status(.ok);
+        },
     };
 }
 
@@ -6647,6 +6767,7 @@ fn fillProgramRequirementsForHandle(p: *ProgramHandle, out: *zgml_program_requir
         .tiny_llama => |*llama| fillLlamaRequirements(out, tiny_llama_kind, llama.program.inspect()),
         .tiny_llama_2layer => |*llama| fillLlamaRequirements(out, tiny_llama_2layer_kind, llama.program.inspect()),
         .smollm_135m => |*llama| fillLlamaRequirements(out, smollm_135m_kind, llama.program.inspect()),
+        .smollm2_360m => |*llama| fillLlamaRequirements(out, smollm2_360m_kind, llama.program.inspect()),
     }
 }
 
@@ -6682,6 +6803,11 @@ fn programBufferByteLenForHandle(p: *ProgramHandle, kind: u32) !usize {
             .smollm_135m => |*llama| blk: {
                 var requirements = zgml_llama_kv_cache_requirements{};
                 try fillLlamaKvCacheRequirements(smollm_135m_config, &requirements, smollm_135m_kind, llama.program.inspect());
+                break :blk if (kind == program_buffer_llama_k_cache) requirements.k_buffer_byte_len else requirements.v_buffer_byte_len;
+            },
+            .smollm2_360m => |*llama| blk: {
+                var requirements = zgml_llama_kv_cache_requirements{};
+                try fillLlamaKvCacheRequirements(smollm2_360m_config, &requirements, smollm2_360m_kind, llama.program.inspect());
                 break :blk if (kind == program_buffer_llama_k_cache) requirements.k_buffer_byte_len else requirements.v_buffer_byte_len;
             },
         },
@@ -6721,6 +6847,7 @@ export fn zgml_program_create_device_buffer(program: ?*zgml_program, kind: u32, 
         .tiny_llama => |*llama| llama.program.createDeviceBuffer(byte_len, access) catch |err| return compileErrorStatus(err),
         .tiny_llama_2layer => |*llama| llama.program.createDeviceBuffer(byte_len, access) catch |err| return compileErrorStatus(err),
         .smollm_135m => |*llama| llama.program.createDeviceBuffer(byte_len, access) catch |err| return compileErrorStatus(err),
+        .smollm2_360m => |*llama| llama.program.createDeviceBuffer(byte_len, access) catch |err| return compileErrorStatus(err),
     };
 
     const handle = alloc.create(BufferHandle) catch {
@@ -6891,6 +7018,10 @@ export fn zgml_program_inspect(program: ?*zgml_program, out_inspection: ?*zgml_p
             fillProgramInspection(out, llama.program.inspectExecutable());
             break :blk status(.ok);
         },
+        .smollm2_360m => |*llama| blk: {
+            fillProgramInspection(out, llama.program.inspectExecutable());
+            break :blk status(.ok);
+        },
     };
 }
 
@@ -6909,6 +7040,10 @@ export fn zgml_llama_program_inspect(program: ?*zgml_program, out_inspection: ?*
             break :blk status(.ok);
         },
         .smollm_135m => |*llama| blk: {
+            fillLlamaProgramInspection(out, llama.program.inspect());
+            break :blk status(.ok);
+        },
+        .smollm2_360m => |*llama| blk: {
             fillLlamaProgramInspection(out, llama.program.inspect());
             break :blk status(.ok);
         },
@@ -7003,6 +7138,18 @@ export fn zgml_session_bind(program: ?*zgml_program, desc_ptr: ?*const zgml_bind
             p.retain();
             handle.* = .{ .data = .{ .smollm_135m = .{ .program = p, .session = session, .output_buf = output_buf } } };
         },
+        .smollm2_360m => |*llama| {
+            const output_buf = parseLlamaBoundOutput(desc_ptr, smollm2_360m_config.vocab_size) catch |err| {
+                alloc.destroy(handle);
+                return compileErrorStatus(err);
+            };
+            const session = llama.program.bindExecutableDecode(.{}) catch |err| {
+                alloc.destroy(handle);
+                return compileErrorStatus(err);
+            };
+            p.retain();
+            handle.* = .{ .data = .{ .smollm2_360m = .{ .program = p, .session = session, .output_buf = output_buf } } };
+        },
     }
 
     out.* = @ptrCast(handle);
@@ -7024,7 +7171,7 @@ export fn zgml_session_bind_model(program: ?*zgml_program, model: ?*zgml_model, 
         .tiny_llama => |*llama| {
             const source = switch (m.data) {
                 .tiny_llama => |*source| source.model,
-                .tiny_linear, .tiny_mlp, .tiny_llama_2layer, .smollm_135m => {
+                .tiny_linear, .tiny_mlp, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => {
                     alloc.destroy(handle);
                     return status(.shape_mismatch);
                 },
@@ -7043,7 +7190,7 @@ export fn zgml_session_bind_model(program: ?*zgml_program, model: ?*zgml_model, 
         .tiny_llama_2layer => |*llama| {
             const source = switch (m.data) {
                 .tiny_llama_2layer => |*source| source.model,
-                .tiny_linear, .tiny_mlp, .tiny_llama, .smollm_135m => {
+                .tiny_linear, .tiny_mlp, .tiny_llama, .smollm_135m, .smollm2_360m => {
                     alloc.destroy(handle);
                     return status(.shape_mismatch);
                 },
@@ -7062,7 +7209,7 @@ export fn zgml_session_bind_model(program: ?*zgml_program, model: ?*zgml_model, 
         .smollm_135m => |*llama| {
             const source = switch (m.data) {
                 .smollm_135m => |*source| source.model,
-                .tiny_linear, .tiny_mlp, .tiny_llama, .tiny_llama_2layer => {
+                .tiny_linear, .tiny_mlp, .tiny_llama, .tiny_llama_2layer, .smollm2_360m => {
                     alloc.destroy(handle);
                     return status(.shape_mismatch);
                 },
@@ -7078,6 +7225,25 @@ export fn zgml_session_bind_model(program: ?*zgml_program, model: ?*zgml_model, 
             p.retain();
             handle.* = .{ .data = .{ .smollm_135m = .{ .program = p, .session = session, .output_buf = output_buf } } };
         },
+        .smollm2_360m => |*llama| {
+            const source = switch (m.data) {
+                .smollm2_360m => |*source| source.model,
+                .tiny_linear, .tiny_mlp, .tiny_llama, .tiny_llama_2layer, .smollm_135m => {
+                    alloc.destroy(handle);
+                    return status(.shape_mismatch);
+                },
+            };
+            const output_buf = parseLlamaBoundOutput(desc_ptr, smollm2_360m_config.vocab_size) catch |err| {
+                alloc.destroy(handle);
+                return compileErrorStatus(err);
+            };
+            const session = llama.program.bindModel(source, .{}) catch |err| {
+                alloc.destroy(handle);
+                return compileErrorStatus(err);
+            };
+            p.retain();
+            handle.* = .{ .data = .{ .smollm2_360m = .{ .program = p, .session = session, .output_buf = output_buf } } };
+        },
     }
 
     out.* = @ptrCast(handle);
@@ -7091,7 +7257,7 @@ export fn zgml_session_bind_model_buffers(program: ?*zgml_program, model: ?*zgml
     const m = modelHandle(model) orelse return status(.invalid_argument);
     switch (p.data) {
         .tiny_linear, .tiny_mlp, .module => {},
-        .tiny_llama, .tiny_llama_2layer, .smollm_135m => return bindLlamaSessionBuffers(p, m, desc, out_session),
+        .tiny_llama, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => return bindLlamaSessionBuffers(p, m, desc, out_session),
     }
 
     const bind_desc = zgml_bind_desc{
@@ -7114,13 +7280,13 @@ export fn zgml_session_bind_buffers(program: ?*zgml_program, desc_ptr: ?*const z
 
     switch (p.data) {
         .tiny_linear, .tiny_mlp, .module => {},
-        .tiny_llama, .tiny_llama_2layer, .smollm_135m => return bindLlamaSessionBuffers(p, null, desc, out_session),
+        .tiny_llama, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => return bindLlamaSessionBuffers(p, null, desc, out_session),
     }
 
     if (switch (p.data) {
         .tiny_mlp => bufferBindDescHasExternalResource(desc),
         .tiny_linear, .module => false,
-        .tiny_llama, .tiny_llama_2layer, .smollm_135m => unreachable,
+        .tiny_llama, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => unreachable,
     }) return status(.unsupported);
 
     const out = out_session orelse return status(.invalid_argument);
@@ -7148,7 +7314,7 @@ export fn zgml_session_bind_buffers(program: ?*zgml_program, desc_ptr: ?*const z
             };
             handle.* = .{ .data = .{ .module = session } };
         },
-        .tiny_llama, .tiny_llama_2layer, .smollm_135m => unreachable,
+        .tiny_llama, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => unreachable,
     }
     out.* = @ptrCast(handle);
     return status(.ok);
@@ -7387,7 +7553,7 @@ fn bindLlamaSessionLlamaBuffers(p: *ProgramHandle, source_model: ?*ModelHandle, 
             const session_result = if (source_model) |m| blk: {
                 const source = switch (m.data) {
                     .tiny_llama => |*source| source.model,
-                    .tiny_linear, .tiny_mlp, .tiny_llama_2layer, .smollm_135m => {
+                    .tiny_linear, .tiny_mlp, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => {
                         alloc.destroy(handle);
                         return status(.shape_mismatch);
                     },
@@ -7424,7 +7590,7 @@ fn bindLlamaSessionLlamaBuffers(p: *ProgramHandle, source_model: ?*ModelHandle, 
             const session_result = if (source_model) |m| blk: {
                 const source = switch (m.data) {
                     .tiny_llama_2layer => |*source| source.model,
-                    .tiny_linear, .tiny_mlp, .tiny_llama, .smollm_135m => {
+                    .tiny_linear, .tiny_mlp, .tiny_llama, .smollm_135m, .smollm2_360m => {
                         alloc.destroy(handle);
                         return status(.shape_mismatch);
                     },
@@ -7461,7 +7627,7 @@ fn bindLlamaSessionLlamaBuffers(p: *ProgramHandle, source_model: ?*ModelHandle, 
             const session_result = if (source_model) |m| blk: {
                 const source = switch (m.data) {
                     .smollm_135m => |*source| source.model,
-                    .tiny_linear, .tiny_mlp, .tiny_llama, .tiny_llama_2layer => {
+                    .tiny_linear, .tiny_mlp, .tiny_llama, .tiny_llama_2layer, .smollm2_360m => {
                         alloc.destroy(handle);
                         return status(.shape_mismatch);
                     },
@@ -7479,6 +7645,43 @@ fn bindLlamaSessionLlamaBuffers(p: *ProgramHandle, source_model: ?*ModelHandle, 
             };
             p.retain();
             handle.* = .{ .data = .{ .smollm_135m = .{
+                .program = p,
+                .session = session,
+                .output_buf = output_staging.output_buf,
+                .output_resource = output_staging.output_resource,
+                .output_is_resource = output_staging.output_resource != null,
+                .owns_output_buf = output_staging.owns_output_buf,
+            } } };
+        },
+        .smollm2_360m => |*llama| {
+            const context_len = llama.program.inspect().context_len;
+            var parsed = parseLlamaBufferBind(smollm2_360m_config, context_len, desc_ptr) catch |err| {
+                alloc.destroy(handle);
+                return compileErrorStatus(err);
+            };
+            const cache_ptr: ?*const LlamaCacheBindings(smollm2_360m_config) = if (parsed.cache_bindings) |*bindings| bindings else null;
+            const options = optionsWithCacheBindings(smollm2_360m_config, parsed.output.bind_options, cache_ptr);
+            const session_result = if (source_model) |m| blk: {
+                const source = switch (m.data) {
+                    .smollm2_360m => |*source| source.model,
+                    .tiny_linear, .tiny_mlp, .tiny_llama, .tiny_llama_2layer, .smollm_135m => {
+                        alloc.destroy(handle);
+                        return status(.shape_mismatch);
+                    },
+                };
+                break :blk llama.program.bindModel(source, options);
+            } else llama.program.bindExecutableDecode(options);
+            const session = session_result catch |err| {
+                alloc.destroy(handle);
+                return compileErrorStatus(err);
+            };
+            const output_staging = createLlamaOutputStaging(alloc, parsed.output, smollm2_360m_config.vocab_size) catch |err| {
+                session.deinit();
+                alloc.destroy(handle);
+                return compileErrorStatus(err);
+            };
+            p.retain();
+            handle.* = .{ .data = .{ .smollm2_360m = .{
                 .program = p,
                 .session = session,
                 .output_buf = output_staging.output_buf,
@@ -7510,7 +7713,7 @@ fn bindLlamaSessionBuffers(p: *ProgramHandle, source_model: ?*ModelHandle, desc:
             const session_result = if (source_model) |m| blk: {
                 const source = switch (m.data) {
                     .tiny_llama => |*source| source.model,
-                    .tiny_linear, .tiny_mlp, .tiny_llama_2layer, .smollm_135m => {
+                    .tiny_linear, .tiny_mlp, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => {
                         alloc.destroy(handle);
                         return status(.shape_mismatch);
                     },
@@ -7544,7 +7747,7 @@ fn bindLlamaSessionBuffers(p: *ProgramHandle, source_model: ?*ModelHandle, desc:
             const session_result = if (source_model) |m| blk: {
                 const source = switch (m.data) {
                     .tiny_llama_2layer => |*source| source.model,
-                    .tiny_linear, .tiny_mlp, .tiny_llama, .smollm_135m => {
+                    .tiny_linear, .tiny_mlp, .tiny_llama, .smollm_135m, .smollm2_360m => {
                         alloc.destroy(handle);
                         return status(.shape_mismatch);
                     },
@@ -7578,7 +7781,7 @@ fn bindLlamaSessionBuffers(p: *ProgramHandle, source_model: ?*ModelHandle, desc:
             const session_result = if (source_model) |m| blk: {
                 const source = switch (m.data) {
                     .smollm_135m => |*source| source.model,
-                    .tiny_linear, .tiny_mlp, .tiny_llama, .tiny_llama_2layer => {
+                    .tiny_linear, .tiny_mlp, .tiny_llama, .tiny_llama_2layer, .smollm2_360m => {
                         alloc.destroy(handle);
                         return status(.shape_mismatch);
                     },
@@ -7596,6 +7799,40 @@ fn bindLlamaSessionBuffers(p: *ProgramHandle, source_model: ?*ModelHandle, desc:
             };
             p.retain();
             handle.* = .{ .data = .{ .smollm_135m = .{
+                .program = p,
+                .session = session,
+                .output_buf = output_staging.output_buf,
+                .output_resource = output_staging.output_resource,
+                .output_is_resource = output_staging.output_resource != null,
+                .owns_output_buf = output_staging.owns_output_buf,
+            } } };
+        },
+        .smollm2_360m => |*llama| {
+            const bound = parseLlamaBufferBoundOutput(desc, smollm2_360m_config.vocab_size) catch |err| {
+                alloc.destroy(handle);
+                return compileErrorStatus(err);
+            };
+            const session_result = if (source_model) |m| blk: {
+                const source = switch (m.data) {
+                    .smollm2_360m => |*source| source.model,
+                    .tiny_linear, .tiny_mlp, .tiny_llama, .tiny_llama_2layer, .smollm_135m => {
+                        alloc.destroy(handle);
+                        return status(.shape_mismatch);
+                    },
+                };
+                break :blk llama.program.bindModel(source, bound.bind_options);
+            } else llama.program.bindExecutableDecode(bound.bind_options);
+            const session = session_result catch |err| {
+                alloc.destroy(handle);
+                return compileErrorStatus(err);
+            };
+            const output_staging = createLlamaOutputStaging(alloc, bound, smollm2_360m_config.vocab_size) catch |err| {
+                session.deinit();
+                alloc.destroy(handle);
+                return compileErrorStatus(err);
+            };
+            p.retain();
+            handle.* = .{ .data = .{ .smollm2_360m = .{
                 .program = p,
                 .session = session,
                 .output_buf = output_staging.output_buf,
@@ -8214,7 +8451,7 @@ export fn zgml_session_step(session: ?*zgml_session, desc_ptr: ?*const zgml_step
         .tiny_linear => |*linear| linear,
         .tiny_mlp => |*mlp| mlp,
         .module => |*module| module,
-        .tiny_llama, .tiny_llama_2layer, .smollm_135m => return status(.unsupported),
+        .tiny_llama, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => return status(.unsupported),
     };
     const p = deviceProgramRuntime(linear.program) orelse return status(.invalid_argument);
     if (p.backend == backend_webgpu) {
@@ -8822,7 +9059,7 @@ export fn zgml_session_step_direct(session: ?*zgml_session, input_ptr: ?[*]const
         .tiny_linear => |*linear| linear,
         .tiny_mlp => |*mlp| mlp,
         .module => |*module| module,
-        .tiny_llama, .tiny_llama_2layer, .smollm_135m => return status(.unsupported),
+        .tiny_llama, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => return status(.unsupported),
     };
     const p = deviceProgramRuntime(linear.program) orelse return status(.invalid_argument);
     if (!p.execution_supported) return status(.unsupported);
@@ -8881,7 +9118,7 @@ export fn zgml_session_step_no_output(session: ?*zgml_session, desc_ptr: ?*const
         .tiny_linear => |*linear| linear,
         .tiny_mlp => |*mlp| mlp,
         .module => |*module| module,
-        .tiny_llama, .tiny_llama_2layer, .smollm_135m => return status(.unsupported),
+        .tiny_llama, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => return status(.unsupported),
     };
     const p = deviceProgramRuntime(linear.program) orelse return status(.invalid_argument);
     if (p.backend == backend_webgpu) {
@@ -9055,6 +9292,44 @@ fn executeSmolLMTokens(
     };
 }
 
+fn executeSmolLM2Tokens(
+    session: *SmolLM2_360MSession,
+    tokens: []const usize,
+    output_policy: u32,
+    output: ?[*]f32,
+    output_len: usize,
+    bound_output: []f32,
+    bound_output_is_resource: bool,
+) !usize {
+    return switch (output_policy) {
+        execute_output_none => blk: {
+            if (output != null or output_len != 0) return error.ShapeMismatch;
+            if (tokens.len == 1) {
+                try session.advance(.{ .token = tokens[0] });
+            } else {
+                try session.advanceTokens(tokens);
+            }
+            break :blk 0;
+        },
+        execute_output_logits => blk: {
+            if (output == null and output_len == 0 and bound_output_is_resource) {
+                if (tokens.len == 1)
+                    try session.stepBoundOutput(.{ .token = tokens[0] })
+                else
+                    try session.prefillBoundOutput(tokens);
+                break :blk smollm2_360m_config.vocab_size;
+            }
+            const out = try llamaStepOutput(output, output_len, bound_output, smollm2_360m_config.vocab_size);
+            const logits = if (tokens.len == 1)
+                try session.stepInto(out, .{ .token = tokens[0] })
+            else
+                try session.prefillInto(out, tokens);
+            break :blk logits.len;
+        },
+        else => error.InvalidArgument,
+    };
+}
+
 export fn zgml_session_advance_token(session: ?*zgml_session, desc_ptr: ?*const zgml_token_advance_desc) c_int {
     const s = sessionHandle(session) orelse return status(.invalid_argument);
     const desc = desc_ptr orelse return status(.invalid_argument);
@@ -9099,27 +9374,31 @@ fn sessionBackend(s: *SessionHandle) u32 {
     return switch (s.data) {
         .tiny_linear => |*linear| switch (linear.program.data) {
             .tiny_linear => |*program| program.backend,
-            .tiny_mlp, .module, .tiny_llama, .tiny_llama_2layer, .smollm_135m => backend_auto,
+            .tiny_mlp, .module, .tiny_llama, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => backend_auto,
         },
         .tiny_mlp => |*mlp| switch (mlp.program.data) {
             .tiny_mlp => |*program| program.backend,
-            .tiny_linear, .module, .tiny_llama, .tiny_llama_2layer, .smollm_135m => backend_auto,
+            .tiny_linear, .module, .tiny_llama, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => backend_auto,
         },
         .module => |*module| switch (module.program.data) {
             .module => |*program| program.backend,
-            .tiny_linear, .tiny_mlp, .tiny_llama, .tiny_llama_2layer, .smollm_135m => backend_auto,
+            .tiny_linear, .tiny_mlp, .tiny_llama, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => backend_auto,
         },
         .tiny_llama => |*llama| switch (llama.program.data) {
             .tiny_llama => |*program| @intCast(backendIdForLlamaBackend(program.program.inspectExecutable().backend)),
-            .tiny_linear, .tiny_mlp, .module, .tiny_llama_2layer, .smollm_135m => backend_auto,
+            .tiny_linear, .tiny_mlp, .module, .tiny_llama_2layer, .smollm_135m, .smollm2_360m => backend_auto,
         },
         .tiny_llama_2layer => |*llama| switch (llama.program.data) {
             .tiny_llama_2layer => |*program| @intCast(backendIdForLlamaBackend(program.program.inspectExecutable().backend)),
-            .tiny_linear, .tiny_mlp, .module, .tiny_llama, .smollm_135m => backend_auto,
+            .tiny_linear, .tiny_mlp, .module, .tiny_llama, .smollm_135m, .smollm2_360m => backend_auto,
         },
         .smollm_135m => |*llama| switch (llama.program.data) {
             .smollm_135m => |*program| @intCast(backendIdForLlamaBackend(program.program.inspectExecutable().backend)),
-            .tiny_linear, .tiny_mlp, .module, .tiny_llama, .tiny_llama_2layer => backend_auto,
+            .tiny_linear, .tiny_mlp, .module, .tiny_llama, .tiny_llama_2layer, .smollm2_360m => backend_auto,
+        },
+        .smollm2_360m => |*llama| switch (llama.program.data) {
+            .smollm2_360m => |*program| @intCast(backendIdForLlamaBackend(program.program.inspectExecutable().backend)),
+            .tiny_linear, .tiny_mlp, .module, .tiny_llama, .tiny_llama_2layer, .smollm_135m => backend_auto,
         },
     };
 }
@@ -9167,6 +9446,19 @@ fn executeTokensHandle(session: ?*zgml_session, s: *SessionHandle, desc: *const 
             var token_storage: [smollm_135m_config.max_seq_len]usize = undefined;
             const tokens = copyTokenWindow(raw_tokens, &token_storage) catch |err| return compileErrorStatus(err);
             break :blk executeSmolLMTokens(
+                llama.session,
+                tokens,
+                desc.output_policy,
+                desc.output,
+                desc.output_len,
+                llama.output_buf,
+                llama.output_is_resource,
+            ) catch |err| return compileErrorStatus(err);
+        },
+        .smollm2_360m => |*llama| blk: {
+            var token_storage: [smollm2_360m_config.max_seq_len]usize = undefined;
+            const tokens = copyTokenWindow(raw_tokens, &token_storage) catch |err| return compileErrorStatus(err);
+            break :blk executeSmolLM2Tokens(
                 llama.session,
                 tokens,
                 desc.output_policy,
@@ -9259,6 +9551,12 @@ fn refreshBoundResourceLogits(s: *SessionHandle) !void {
             const bytes = std.mem.sliceAsBytes(llama.output_buf[0..smollm_135m_config.vocab_size]);
             try readDeviceBuffer(.{ .program = llama.program }, resource, 0, bytes);
         },
+        .smollm2_360m => |*llama| {
+            const resource = llama.output_resource orelse return;
+            if (llama.output_buf.len < smollm2_360m_config.vocab_size) return error.InvalidArgument;
+            const bytes = std.mem.sliceAsBytes(llama.output_buf[0..smollm2_360m_config.vocab_size]);
+            try readDeviceBuffer(.{ .program = llama.program }, resource, 0, bytes);
+        },
     }
 }
 
@@ -9276,6 +9574,7 @@ fn sampleBoundToken(s: *SessionHandle, top_k: u32, seed: u32, temperature: f32) 
         .tiny_llama => |*llama| try sampleLogits(&sample_desc, llama.output_buf, tiny_llama_config.vocab_size),
         .tiny_llama_2layer => |*llama| try sampleLogits(&sample_desc, llama.output_buf, tiny_llama_2layer_config.vocab_size),
         .smollm_135m => |*llama| try sampleLogits(&sample_desc, llama.output_buf, smollm_135m_config.vocab_size),
+        .smollm2_360m => |*llama| try sampleLogits(&sample_desc, llama.output_buf, smollm2_360m_config.vocab_size),
     };
     return sampleTopKToken(logits, top_k, seed, temperature);
 }
@@ -9286,6 +9585,7 @@ fn argmaxBoundToken(s: *SessionHandle) !zgml_token_argmax_result {
         .tiny_llama => |*llama| try argmaxLogits(null, llama.output_buf, tiny_llama_config.vocab_size),
         .tiny_llama_2layer => |*llama| try argmaxLogits(null, llama.output_buf, tiny_llama_2layer_config.vocab_size),
         .smollm_135m => |*llama| try argmaxLogits(null, llama.output_buf, smollm_135m_config.vocab_size),
+        .smollm2_360m => |*llama| try argmaxLogits(null, llama.output_buf, smollm2_360m_config.vocab_size),
     };
     return argmaxToken(logits);
 }
@@ -9330,6 +9630,14 @@ fn validateGenerateCapacity(s: *SessionHandle, prompt_len: usize, output_len: us
             const final_position = std.math.add(usize, llama.session.position(), required_steps) catch return error.ShapeMismatch;
             if (final_position > context_len) return error.SequenceTooLong;
         },
+        .smollm2_360m => |*llama| {
+            const context_len = switch (llama.program.data) {
+                .smollm2_360m => |*program| program.program.inspect().context_len,
+                else => return error.InvalidArgument,
+            };
+            const final_position = std.math.add(usize, llama.session.position(), required_steps) catch return error.ShapeMismatch;
+            if (final_position > context_len) return error.SequenceTooLong;
+        },
     }
 }
 
@@ -9350,6 +9658,7 @@ export fn zgml_session_argmax_token(session: ?*zgml_session, desc_ptr: ?*const z
         .tiny_llama => |*llama| argmaxLogits(desc_ptr, llama.output_buf, tiny_llama_config.vocab_size) catch |err| return compileErrorStatus(err),
         .tiny_llama_2layer => |*llama| argmaxLogits(desc_ptr, llama.output_buf, tiny_llama_2layer_config.vocab_size) catch |err| return compileErrorStatus(err),
         .smollm_135m => |*llama| argmaxLogits(desc_ptr, llama.output_buf, smollm_135m_config.vocab_size) catch |err| return compileErrorStatus(err),
+        .smollm2_360m => |*llama| argmaxLogits(desc_ptr, llama.output_buf, smollm2_360m_config.vocab_size) catch |err| return compileErrorStatus(err),
     };
     result.* = argmaxToken(logits);
     return status(.ok);
@@ -9369,6 +9678,7 @@ export fn zgml_session_sample_token(session: ?*zgml_session, desc_ptr: ?*const z
         .tiny_llama => |*llama| sampleLogits(desc, llama.output_buf, tiny_llama_config.vocab_size) catch |err| return compileErrorStatus(err),
         .tiny_llama_2layer => |*llama| sampleLogits(desc, llama.output_buf, tiny_llama_2layer_config.vocab_size) catch |err| return compileErrorStatus(err),
         .smollm_135m => |*llama| sampleLogits(desc, llama.output_buf, smollm_135m_config.vocab_size) catch |err| return compileErrorStatus(err),
+        .smollm2_360m => |*llama| sampleLogits(desc, llama.output_buf, smollm2_360m_config.vocab_size) catch |err| return compileErrorStatus(err),
     };
     result.* = sampleTopKToken(logits, desc.top_k, desc.seed, desc.temperature) catch |err| return compileErrorStatus(err);
     return status(.ok);
@@ -9495,6 +9805,7 @@ export fn zgml_session_position(session: ?*zgml_session, out_position: ?*usize) 
         .tiny_llama => |*llama| llama.session.position(),
         .tiny_llama_2layer => |*llama| llama.session.position(),
         .smollm_135m => |*llama| llama.session.position(),
+        .smollm2_360m => |*llama| llama.session.position(),
     };
     return status(.ok);
 }
@@ -9510,6 +9821,7 @@ export fn zgml_session_inspect(session: ?*zgml_session, out_inspection: ?*zgml_s
         .tiny_llama => |*llama| fillLlamaSessionInspection(out, tiny_llama_kind, llama.session.inspect()),
         .tiny_llama_2layer => |*llama| fillLlamaSessionInspection(out, tiny_llama_2layer_kind, llama.session.inspect()),
         .smollm_135m => |*llama| fillLlamaSessionInspection(out, smollm_135m_kind, llama.session.inspect()),
+        .smollm2_360m => |*llama| fillLlamaSessionInspection(out, smollm2_360m_kind, llama.session.inspect()),
     }
     if (sessionBackend(s) == backend_webgpu) {
         var host_position: usize = 0;
@@ -9535,6 +9847,7 @@ export fn zgml_session_reset(session: ?*zgml_session) c_int {
         .tiny_llama => |*llama| llama.session.reset(),
         .tiny_llama_2layer => |*llama| llama.session.reset(),
         .smollm_135m => |*llama| llama.session.reset(),
+        .smollm2_360m => |*llama| llama.session.reset(),
     }
     return status(.ok);
 }
@@ -17912,6 +18225,18 @@ test "C ABI supported checkpoint catalog exposes compiled-in envelopes" {
     try std.testing.expectEqual(@as(u64, smollm_135m_config.n_heads), inspection.n_heads);
     try std.testing.expectEqual(@as(u64, smollm_135m_config.n_kv_heads), inspection.n_kv_heads);
     try std.testing.expectEqual(@as(u64, smollm_135m_config.d_ff), inspection.d_ff);
+    try std.testing.expectEqual(@as(u64, 1), inspection.tied_lm_head);
+
+    inspection = .{};
+    try std.testing.expectEqual(status(.ok), zgml_supported_checkpoint_inspect(3, &inspection));
+    try std.testing.expectEqual(smollm2_360m_kind, inspection.model_kind);
+    try std.testing.expectEqual(@as(u64, smollm2_360m_config.vocab_size), inspection.vocab_size);
+    try std.testing.expectEqual(@as(u64, smollm2_360m_config.max_seq_len), inspection.max_seq_len);
+    try std.testing.expectEqual(@as(u64, smollm2_360m_config.d_model), inspection.d_model);
+    try std.testing.expectEqual(@as(u64, smollm2_360m_config.n_layers), inspection.n_layers);
+    try std.testing.expectEqual(@as(u64, smollm2_360m_config.n_heads), inspection.n_heads);
+    try std.testing.expectEqual(@as(u64, smollm2_360m_config.n_kv_heads), inspection.n_kv_heads);
+    try std.testing.expectEqual(@as(u64, smollm2_360m_config.d_ff), inspection.d_ff);
     try std.testing.expectEqual(@as(u64, 1), inspection.tied_lm_head);
 
     inspection = .{ .model_kind = 99, .vocab_size = 123 };

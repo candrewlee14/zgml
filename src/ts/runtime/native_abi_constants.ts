@@ -12,6 +12,7 @@ export function adapterModelKindAliases(modelKinds: NumericAbiMap) {
     tinyMlpKind: modelKinds.tinyMlp,
     moduleKind: modelKinds.module,
     llamaFamilyKind: modelKinds.llamaFamily,
+    smollm2_360mKind: modelKinds.smollm2_360m,
   });
 }
 

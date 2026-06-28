@@ -33,6 +33,7 @@ export type LlamaFamilySurfaceOptions = Readonly<{
   autoKind: unknown;
   tinyLlamaKind: unknown;
   smollm135mKind: unknown;
+  smollm2_360mKind: unknown;
   llamaModelFamilyFacade: LlamaModelFamilyFacade;
   llamaProgramFacade: LlamaProgramFacade;
   bindLlamaSessionHandle: LlamaSurfaceCallback;
@@ -147,6 +148,9 @@ export type LlamaFamilySurface = Readonly<{
   SmolLM135MModel: SurfaceClass<PublicApi.SmolLM135MModel, LlamaModelConstructorArgs> & Pick<typeof PublicApi.SmolLM135MModel, "load" | "loadSafetensorsData">;
   SmolLM135MProgram: SurfaceClass<PublicApi.SmolLM135MProgram, LlamaProgramConstructorArgs>;
   SmolLM135MSession: SurfaceClass<PublicApi.SmolLM135MSession, LlamaSessionConstructorArgs>;
+  SmolLM2_360MModel: SurfaceClass<PublicApi.SmolLM2_360MModel, LlamaModelConstructorArgs> & Pick<typeof PublicApi.SmolLM2_360MModel, "load" | "loadSafetensorsData">;
+  SmolLM2_360MProgram: SurfaceClass<PublicApi.SmolLM2_360MProgram, LlamaProgramConstructorArgs>;
+  SmolLM2_360MSession: SurfaceClass<PublicApi.SmolLM2_360MSession, LlamaSessionConstructorArgs>;
 }>;
 
 export function createLlamaFamilySurface(options: LlamaFamilySurfaceOptions): LlamaFamilySurface {
@@ -154,6 +158,7 @@ export function createLlamaFamilySurface(options: LlamaFamilySurfaceOptions): Ll
     autoKind,
     tinyLlamaKind,
     smollm135mKind,
+    smollm2_360mKind,
     llamaModelFamilyFacade,
     llamaProgramFacade,
     bindLlamaSessionHandle,
@@ -620,6 +625,45 @@ export function createLlamaFamilySurface(options: LlamaFamilySurfaceOptions): Ll
     static vocabSize = 49152;
   }
 
+  class SmolLM2_360MModel extends LlamaModel {
+    static load(modelPath: unknown) {
+      return llamaModelFamilyFacade.load(smollm2_360mKind, modelPath, (handle: unknown) => new SmolLM2_360MModel(handle));
+    }
+
+    static loadSafetensorsData(data: unknown) {
+      return llamaModelFamilyFacade.loadSafetensorsData(smollm2_360mKind, data, (handle: unknown) => new SmolLM2_360MModel(handle));
+    }
+
+    static probe(source: unknown) {
+      return llamaModelFamilyFacade.probe("smollm2-360m", source);
+    }
+
+    static probeSafetensorsHeader(header: unknown) {
+      return llamaModelFamilyFacade.probeHeader("smollm2-360m", header);
+    }
+
+    compile(optionsForCompile = {}) {
+      return llamaModelFamilyFacade.compile(this, optionsForCompile, (programHandle: unknown) => new SmolLM2_360MProgram(programHandle));
+    }
+  }
+
+  class SmolLM2_360MProgram extends LlamaProgram {
+    bind(optionsForBind = {}) {
+      return llamaProgramFacade.bind(this, optionsForBind, bindLlamaSessionHandle, (
+        sessionHandle: unknown,
+        inspection: { readonly vocabSize: number },
+        boundOutput: unknown,
+        ownedOutput: unknown,
+        layout: unknown,
+        kvLayout: unknown,
+      ) => new SmolLM2_360MSession(sessionHandle, inspection.vocabSize, boundOutput, ownedOutput, layout, kvLayout));
+    }
+  }
+
+  class SmolLM2_360MSession extends LlamaSession {
+    static vocabSize = 49152;
+  }
+
   return Object.freeze({
     TinyLlamaModel,
     TinyLlamaProgram,
@@ -630,6 +674,9 @@ export function createLlamaFamilySurface(options: LlamaFamilySurfaceOptions): Ll
     SmolLM135MModel,
     SmolLM135MProgram,
     SmolLM135MSession,
+    SmolLM2_360MModel,
+    SmolLM2_360MProgram,
+    SmolLM2_360MSession,
   }) as unknown as LlamaFamilySurface;
 }
 

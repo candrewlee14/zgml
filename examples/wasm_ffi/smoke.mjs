@@ -19,6 +19,7 @@ const tinyLinearKind = 1;
 const tinyLlamaKind = 2;
 const smollm135mKind = 3;
 const tinyLlama2LayerKind = 4;
+const smollm2_360mKind = 8;
 const backendCpu = 1;
 const backendWebGpu = 3;
 const tinyLlamaVocabSize = 8;
@@ -4875,6 +4876,20 @@ function expectSmolLMCheckpointInspection(inspection, label) {
   }
 }
 
+function expectSmolLM2CheckpointInspection(inspection, label) {
+  if (
+    u32(inspection, 0) !== smollm2_360mKind ||
+    u64(inspection, 24) !== 49152n ||
+    u64(inspection, 32) !== 8192n ||
+    u64(inspection, 40) !== 960n ||
+    u64(inspection, 48) !== 32n ||
+    u64(inspection, 64) !== 5n ||
+    u64(inspection, 96) !== 1n
+  ) {
+    throw new Error(`unexpected ${label} SmolLM2 checkpoint inspection`);
+  }
+}
+
 function expectTinyLlamaLoadedModelStep(model, label) {
   let program = 0;
   let session = 0;
@@ -5003,7 +5018,7 @@ function expectTinyLlama2LayerNativeKvBinding(model, label) {
 
 function checkSupportedCheckpointCatalog() {
   const count = Number(exports.zgml_supported_checkpoint_count());
-  if (count !== 3) throw new Error(`expected 3 supported checkpoint envelopes, got ${count}`);
+  if (count !== 4) throw new Error(`expected 4 supported checkpoint envelopes, got ${count}`);
 
   const out = keep(alloc(modelInspectionSize), modelInspectionSize);
   zero(out, modelInspectionSize);
@@ -5027,6 +5042,10 @@ function checkSupportedCheckpointCatalog() {
   zero(out, modelInspectionSize);
   check(exports.zgml_supported_checkpoint_inspect(2, out));
   expectSmolLMCheckpointInspection(out, "supported catalog");
+
+  zero(out, modelInspectionSize);
+  check(exports.zgml_supported_checkpoint_inspect(3, out));
+  expectSmolLM2CheckpointInspection(out, "supported catalog");
 
   writeU32(out, 0, 99);
   writeU32(out, 24, 123);

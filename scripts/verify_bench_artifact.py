@@ -49,6 +49,18 @@ EXPECTED_PARITY_ROWS = (
     ("Metal Q8_0 prompt", "llama_cpp_metal_q8_0", "q8_0", "prompt"),
     ("Metal Q8_0 decode", "llama_cpp_metal_q8_0", "q8_0", "decode"),
 )
+LAPTOP_LLM_PYTORCH_FIELDS = (
+    "schema",
+    "createdAt",
+    "command",
+    "suiteId",
+    "modelId",
+    "prompt",
+    "platform",
+    "status",
+    "pytorch",
+    "zgml",
+)
 
 
 def require(errors, cond, message):
@@ -984,9 +996,75 @@ def verify_full_run_artifact(data, path):
     return errors
 
 
+def positive_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def verify_laptop_llm_pytorch_artifact(data, path):
+    errors = []
+    require_exact_fields(errors, data, LAPTOP_LLM_PYTORCH_FIELDS, f"{path}: laptop LLM PyTorch artifact top-level")
+    require(errors, data.get("schema") == "zgml.laptop-llm-pytorch-comparison.v1", f"{path}: schema must be zgml.laptop-llm-pytorch-comparison.v1")
+    require(errors, data.get("command") == "scripts/check_laptop_llm_pytorch_comparison.cjs", f"{path}: command must be the laptop LLM comparison script")
+    require(errors, data.get("suiteId") == "llm.smollm2_360m.instruct.q8_0", f"{path}: suiteId must be llm.smollm2_360m.instruct.q8_0")
+    require(errors, data.get("modelId") == "HuggingFaceTB/SmolLM2-360M-Instruct", f"{path}: modelId must be HuggingFaceTB/SmolLM2-360M-Instruct")
+    require(errors, isinstance(data.get("createdAt"), str) and "T" in data["createdAt"] and data["createdAt"].endswith("Z"), f"{path}: createdAt must be a UTC timestamp")
+    require(errors, isinstance(data.get("prompt"), str) and data["prompt"], f"{path}: prompt must be non-empty")
+
+    status = data.get("status")
+    require(errors, isinstance(status, dict), f"{path}: status must be an object")
+    if isinstance(status, dict):
+        require(errors, status.get("pytorchReady") is True, f"{path}: status.pytorchReady must be true")
+        require(errors, status.get("zgmlProbeReady") is True, f"{path}: status.zgmlProbeReady must be true")
+        require(errors, status.get("zgmlReady") is True, f"{path}: status.zgmlReady must be true")
+        require(errors, status.get("comparisonReady") is True, f"{path}: status.comparisonReady must be true")
+
+    pytorch = data.get("pytorch")
+    zgml = data.get("zgml")
+    require(errors, isinstance(pytorch, dict), f"{path}: pytorch must be an object")
+    require(errors, isinstance(zgml, dict), f"{path}: zgml must be an object")
+    if not isinstance(pytorch, dict) or not isinstance(zgml, dict):
+        return errors
+
+    require(errors, pytorch.get("modelId") == data.get("modelId"), f"{path}: pytorch.modelId must match modelId")
+    require(errors, isinstance(pytorch.get("modelPath"), str) and pytorch["modelPath"].endswith(".safetensors"), f"{path}: pytorch.modelPath must be a safetensors path")
+    require(errors, isinstance(pytorch.get("promptTokens"), int) and pytorch["promptTokens"] > 0, f"{path}: pytorch.promptTokens must be positive")
+    prompt_ids = pytorch.get("promptTokenIds")
+    require(errors, isinstance(prompt_ids, list) and len(prompt_ids) == pytorch.get("promptTokens"), f"{path}: pytorch.promptTokenIds must match promptTokens")
+    if isinstance(prompt_ids, list):
+        require(errors, all(isinstance(token, int) and token >= 0 for token in prompt_ids), f"{path}: pytorch.promptTokenIds must be non-negative integers")
+    require(errors, isinstance(pytorch.get("decodeTokens"), int) and pytorch["decodeTokens"] > 0, f"{path}: pytorch.decodeTokens must be positive")
+    require(errors, isinstance(pytorch.get("prefillIters"), int) and pytorch["prefillIters"] > 0, f"{path}: pytorch.prefillIters must be positive")
+    for key in ("loadMs", "prefillMs", "prefillTokS", "decodeMsPerToken", "decodeTokS"):
+        require(errors, positive_number(pytorch.get(key)), f"{path}: pytorch.{key} must be positive")
+    require(errors, positive_number(pytorch.get("rssLoadDeltaBytes")), f"{path}: pytorch.rssLoadDeltaBytes must be positive")
+
+    require(errors, zgml.get("supported") is True, f"{path}: zgml.supported must be true")
+    require(errors, zgml.get("probeReady") is True, f"{path}: zgml.probeReady must be true")
+    require(errors, zgml.get("executableReady") is True, f"{path}: zgml.executableReady must be true")
+    require(errors, zgml.get("stage") == "execute", f"{path}: zgml.stage must be execute")
+    require(errors, isinstance(zgml.get("contextLength"), int) and zgml["contextLength"] >= pytorch.get("promptTokens", 0), f"{path}: zgml.contextLength must cover the prompt")
+    for key in ("probeMs", "loadMs", "compileMs", "bindMs", "prefillMs", "prefillTokS", "decodeMsPerToken", "decodeTokS"):
+        require(errors, positive_number(zgml.get(key)), f"{path}: zgml.{key} must be positive")
+    probe = zgml.get("probe")
+    require(errors, isinstance(probe, dict), f"{path}: zgml.probe must be an object")
+    if isinstance(probe, dict):
+        require(errors, probe.get("modelKind") == "smollm2-360m", f"{path}: zgml.probe.modelKind must be smollm2-360m")
+        require(errors, probe.get("vocabSize") == 49152, f"{path}: zgml.probe.vocabSize must be 49152")
+    require(errors, isinstance(zgml.get("firstToken"), int), f"{path}: zgml.firstToken must be an integer")
+    pytorch_tokens = pytorch.get("generatedTokenIds")
+    zgml_tokens = zgml.get("generatedTokenIds")
+    require(errors, isinstance(pytorch_tokens, list) and len(pytorch_tokens) == pytorch.get("decodeTokens"), f"{path}: pytorch.generatedTokenIds must match decodeTokens")
+    require(errors, isinstance(zgml_tokens, list) and len(zgml_tokens) == pytorch.get("decodeTokens"), f"{path}: zgml.generatedTokenIds must match decodeTokens")
+    require(errors, pytorch_tokens == zgml_tokens, f"{path}: generated token IDs must match PyTorch")
+    return errors
+
+
 def verify_artifact(path):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
+
+    if data.get("schema") == "zgml.laptop-llm-pytorch-comparison.v1":
+        return verify_laptop_llm_pytorch_artifact(data, path)
 
     if data.get("benchmark") == "smollm-135m-stencil":
         return verify_stencil_artifact(data, path)

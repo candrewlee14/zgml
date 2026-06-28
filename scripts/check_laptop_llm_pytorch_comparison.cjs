@@ -99,6 +99,7 @@ rss_after_load = process.memory_info().rss
 
 inputs = tokenizer(prompt, return_tensors="pt")
 prompt_tokens = int(inputs["input_ids"].shape[1])
+prompt_token_ids = [int(x) for x in inputs["input_ids"][0].tolist()]
 
 with torch.inference_mode():
     warm = model(**inputs, use_cache=True)
@@ -134,6 +135,7 @@ print(json.dumps({
     "downloadMs": download_ms,
     "loadMs": load_ms,
     "promptTokens": prompt_tokens,
+    "promptTokenIds": prompt_token_ids,
     "prefillIters": prefill_iters,
     "prefillMs": prefill_ms,
     "prefillTokS": prompt_tokens / (prefill_ms / 1000.0),
@@ -167,10 +169,13 @@ function runPytorch() {
   return JSON.parse(jsonLine);
 }
 
-function runZgmlProbe(modelPath) {
+function runZgmlProbe(modelPath, promptTokenIds) {
   if (!existsSync(nodeEntry)) {
     return { supported: false, stage: "load-runtime", error: "dist/node.cjs missing; run npm run build:package" };
   }
+  let model = null;
+  let program = null;
+  let session = null;
   try {
     const zgml = require(nodeEntry);
     const started = performance.now();
@@ -178,20 +183,69 @@ function runZgmlProbe(modelPath) {
     const probeMs = performance.now() - started;
     const loadStarted = performance.now();
     try {
-      const model = zgml.loadModel(modelPath, { modelKind: "auto" });
+      model = zgml.loadModel(modelPath, { modelKind: "auto" });
       const loadMs = performance.now() - loadStarted;
-      if (model && typeof model.dispose === "function") model.dispose();
-      return { supported: true, probeReady: true, executableReady: true, stage: "load", probeMs, loadMs, probe };
+      const contextLength = Math.max(32, promptTokenIds.length + decodeTokens + 1);
+      const compileStarted = performance.now();
+      program = model.compile({ backend: "cpu", contextLength });
+      const compileMs = performance.now() - compileStarted;
+      const bindStarted = performance.now();
+      session = program.bind({ output: true });
+      const bindMs = performance.now() - bindStarted;
+      const warm = session.execute_tokens_argmax(promptTokenIds, { tokensLen: promptTokenIds.length });
+      session.reset();
+
+      const prefillStarted = performance.now();
+      let prefill = warm;
+      for (let i = 0; i < prefillIters; i += 1) {
+        prefill = session.execute_tokens_argmax(promptTokenIds, { tokensLen: promptTokenIds.length });
+        session.reset();
+      }
+      const prefillMs = (performance.now() - prefillStarted) / prefillIters;
+
+      let next = prefill.token;
+      const generated = [];
+      session.execute_tokens_argmax(promptTokenIds, { tokensLen: promptTokenIds.length });
+      const decodeStarted = performance.now();
+      for (let i = 0; i < decodeTokens; i += 1) {
+        const result = session.execute_tokens_argmax([next], { tokensLen: 1 });
+        next = result.token;
+        generated.push(next);
+      }
+      const decodeMsPerToken = (performance.now() - decodeStarted) / decodeTokens;
+
+      return {
+        supported: true,
+        probeReady: true,
+        executableReady: true,
+        stage: "execute",
+        probeMs,
+        loadMs,
+        compileMs,
+        bindMs,
+        contextLength,
+        prefillMs,
+        prefillTokS: promptTokenIds.length / (prefillMs / 1000.0),
+        decodeMsPerToken,
+        decodeTokS: 1000.0 / decodeMsPerToken,
+        firstToken: prefill.token,
+        generatedTokenIds: generated,
+        probe,
+      };
     } catch (error) {
       return {
         supported: false,
         probeReady: true,
         executableReady: false,
-        stage: "load",
+        stage: model == null ? "load" : program == null ? "compile" : session == null ? "bind" : "execute",
         probeMs,
         probe,
         error: error && error.message ? error.message : String(error),
       };
+    } finally {
+      if (session && typeof session.dispose === "function") session.dispose();
+      if (program && typeof program.dispose === "function") program.dispose();
+      if (model && typeof model.dispose === "function") model.dispose();
     }
   } catch (error) {
     return {
@@ -205,7 +259,7 @@ function runZgmlProbe(modelPath) {
 }
 
 const pytorch = runPytorch();
-const zgml = runZgmlProbe(pytorch.modelPath);
+const zgml = runZgmlProbe(pytorch.modelPath, pytorch.promptTokenIds);
 const comparisonReady = zgml.executableReady === true;
 const artifact = {
   schema: "zgml.laptop-llm-pytorch-comparison.v1",
@@ -253,6 +307,10 @@ console.log([
   `zgml=${zgml.executableReady ? "supported" : zgml.probeReady ? "probe-only" : "unsupported"}`,
   `zgml_stage=${zgml.stage}`,
   `zgml_model=${zgml.probe && zgml.probe.modelKind ? zgml.probe.modelKind : "none"}`,
+  `zgml_prefill=${round(zgml.prefillTokS)}tok/s`,
+  `zgml_decode=${round(zgml.decodeTokS)}tok/s`,
+  `zgml_load=${round(zgml.loadMs)}ms`,
+  `zgml_compile=${round(zgml.compileMs)}ms`,
   `zgml_error=${zgml.error ? JSON.stringify(zgml.error) : "none"}`,
   `artifact=${artifactPath ? artifactPath.replace(`${root}/`, "") : "disabled"}`,
 ].join(" "));

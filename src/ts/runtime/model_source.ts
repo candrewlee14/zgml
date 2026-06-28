@@ -12,7 +12,7 @@ declare const TextEncoder: {
 };
 
 type AnyRecord = Record<string, any>;
-type LoadModelKind = "auto" | "tiny-llama" | "tiny-llama-2layer" | "smollm-135m";
+type LoadModelKind = "auto" | "tiny-llama" | "tiny-llama-2layer" | "smollm-135m" | "smollm2-360m";
 type LoadModelOptions = string | { kind?: string; modelKind?: string };
 type BytesSource = Uint8Array | ArrayBuffer;
 type BivariantCallback<Args extends readonly unknown[], Return> = {
@@ -129,6 +129,10 @@ export function normalizeLoadModelKind(options: LoadModelOptions = {}): LoadMode
     case "smollm135m":
     case "smollm-135m":
       return "smollm-135m";
+    case "smollm2":
+    case "smollm2360m":
+    case "smollm2-360m":
+      return "smollm2-360m";
     default:
       throw new Error(`unknown zgml model load kind: ${kind}`);
   }
@@ -144,6 +148,8 @@ export function modelLoadKindId(kind: LoadModelKind): number {
       return modelKinds.tinyLlama2Layer;
     case "smollm-135m":
       return modelKinds.smollm135m;
+    case "smollm2-360m":
+      return modelKinds.smollm2_360m;
     default:
       throw new Error("unreachable model load kind");
   }

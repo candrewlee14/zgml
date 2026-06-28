@@ -90,6 +90,7 @@ export type AdapterLlamaFamilySurfaceOptions = Readonly<{
   autoKind: LlamaFamilySurfaceOptions["autoKind"];
   tinyLlamaKind: LlamaFamilySurfaceOptions["tinyLlamaKind"];
   smollm135mKind: LlamaFamilySurfaceOptions["smollm135mKind"];
+  smollm2_360mKind: LlamaFamilySurfaceOptions["smollm2_360mKind"];
   llamaModelFamilyFacade: LlamaFamilySurfaceOptions["llamaModelFamilyFacade"];
   llamaProgramFacade: LlamaFamilySurfaceOptions["llamaProgramFacade"];
   bindLlamaSessionHandle: LlamaFamilySurfaceOptions["bindLlamaSessionHandle"];
@@ -105,6 +106,7 @@ export function createAdapterLlamaFamilySurface(options: AdapterLlamaFamilySurfa
     autoKind: options.autoKind,
     tinyLlamaKind: options.tinyLlamaKind,
     smollm135mKind: options.smollm135mKind,
+    smollm2_360mKind: options.smollm2_360mKind,
     llamaModelFamilyFacade: options.llamaModelFamilyFacade,
     llamaProgramFacade: options.llamaProgramFacade,
     bindLlamaSessionHandle: options.bindLlamaSessionHandle,

@@ -464,6 +464,7 @@ const {
   tinyLlama2LayerKind,
   tinyMlpKind,
   moduleKind,
+  smollm2_360mKind,
 } = adapterModelKindAliases(modelKinds);
 const ok = 0;
 const {
@@ -782,7 +783,10 @@ export type LoadModelKind =
   | "tinyllama2layer"
   | "smollm"
   | "smollm135m"
-  | "smollm-135m";
+  | "smollm-135m"
+  | "smollm2"
+  | "smollm2360m"
+  | "smollm2-360m";
 
 export type LoadModelOptions = PublicLoadModelOptions;
 
@@ -3178,10 +3182,14 @@ const {
   SmolLM135MModel,
   SmolLM135MProgram,
   SmolLM135MSession,
+  SmolLM2_360MModel,
+  SmolLM2_360MProgram,
+  SmolLM2_360MSession,
 } = createAdapterLlamaFamilySurface({
   autoKind,
   tinyLlamaKind,
   smollm135mKind,
+  smollm2_360mKind,
   llamaModelFamilyFacade,
   llamaProgramFacade,
   bindLlamaSessionHandle,
@@ -3202,6 +3210,9 @@ export {
   SmolLM135MModel,
   SmolLM135MProgram,
   SmolLM135MSession,
+  SmolLM2_360MModel,
+  SmolLM2_360MProgram,
+  SmolLM2_360MSession,
 };
 
 ({ modelHandleForBind, modelHandleForCompatibility } = createAdapterModelHandlePolicy({
@@ -3210,6 +3221,7 @@ export {
   TinyMlpModel,
   TinyLlamaModel,
   SmolLM135MModel,
+  SmolLM2_360MModel,
   LlamaModel,
   assertAlive,
   nullHandle: 0,
@@ -3241,9 +3253,11 @@ modelSourceFacadeSlot.bind(createAdapterModelSourceFacade({
   loadModelPath,
   loadSafetensorsDataHandle,
   tinyLlama2LayerKind,
+  smollm2_360mKind,
   LlamaModel,
   TinyLlamaModel,
   SmolLM135MModel,
+  SmolLM2_360MModel,
 }));
 
 export const supportedCheckpointModels: () => readonly ModelInspection[] = (
@@ -3253,10 +3267,12 @@ export const supportedCheckpointModels: () => readonly ModelInspection[] = (
 type LoadedLlamaModel =
   InstanceType<typeof LlamaModel> |
   InstanceType<typeof TinyLlamaModel> |
-  InstanceType<typeof SmolLM135MModel>;
+  InstanceType<typeof SmolLM135MModel> |
+  InstanceType<typeof SmolLM2_360MModel>;
 
 export const TinyLinear = TinyLinearModel;
 export const TinyMlp = TinyMlpModel;
 export const TinyLlama = TinyLlamaModel;
 export const SmolLM135M = SmolLM135MModel;
+export const SmolLM2_360M = SmolLM2_360MModel;
 export const Llama = LlamaModel;

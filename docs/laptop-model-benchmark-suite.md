@@ -71,15 +71,16 @@ LLM artifact for `llm.smollm2_360m.instruct.q8_0`.
 
 Latest local result:
 
-| Model | PyTorch prefill | PyTorch decode | PyTorch load | zgml |
-| --- | ---: | ---: | ---: | --- |
-| SmolLM2-360M-Instruct | 359.43 tok/s | 64.65 tok/s | 224.35 ms | probe-only: `llama-family`, load unsupported |
+| Model | PyTorch prefill | PyTorch decode | PyTorch load | zgml prefill | zgml decode | zgml load | zgml compile | zgml |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| SmolLM2-360M-Instruct | 378.86 tok/s | 68.84 tok/s | 238.71 ms | 81.26 tok/s | 80.51 tok/s | 2272.05 ms | 1978.65 ms | executable: `smollm2-360m`, generated IDs match PyTorch |
 
-That is not a zgml loss on speed yet; it is the execution gap made explicit.
-The native model path now recognizes the PyTorch-compatible BF16 safetensors
-checkpoint as a LLaMA-family model from its Hugging Face `config.json` and
-validates the tensor envelope in about 0.55 ms, but dynamic LLaMA-family
-load/compile is still pending before there is an honest speed ratio.
+This is now an honest execution comparison, not a probe-only placeholder. The
+native model path recognizes the PyTorch-compatible BF16 safetensors checkpoint
+from its Hugging Face `config.json`, loads it into the compile-time specialized
+LLaMA execution path, compiles a CPU session, and generates matching token IDs
+for the benchmark prompt. Load/compile latency and prompt prefill throughput are
+still the obvious next optimization targets.
 
 ## Benchmark Output Contract
 

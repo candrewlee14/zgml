@@ -17,6 +17,7 @@ pub fn loadWeight2DGeneric(
     switch (meta.dtype) {
         .f32 => transposeRowToColGeneric(T, dst, sf.getTensorF32(meta.offset_start, meta.offset_end), rows, cols),
         .f16 => transposeRowToColGeneric(T, dst, sf.getTensorF16(meta.offset_start, meta.offset_end), rows, cols),
+        .bf16 => transposeRowToColBf16(T, dst, sf.getTensorU16(meta.offset_start, meta.offset_end), rows, cols),
         else => return error.UnsupportedDtype,
     }
 }
@@ -32,6 +33,7 @@ pub fn loadWeight1DGeneric(
     switch (meta.dtype) {
         .f32 => copyGeneric(T, dst, sf.getTensorF32(meta.offset_start, meta.offset_end)),
         .f16 => copyGeneric(T, dst, sf.getTensorF16(meta.offset_start, meta.offset_end)),
+        .bf16 => copyBf16(T, dst, sf.getTensorU16(meta.offset_start, meta.offset_end)),
         else => return error.UnsupportedDtype,
     }
 }
@@ -48,6 +50,22 @@ fn transposeRowToColGeneric(comptime T: type, dst: []T, src: anytype, rows: usiz
 /// Copy with float type conversion.
 fn copyGeneric(comptime T: type, dst: []T, src: anytype) void {
     for (dst, src) |*d, s| d.* = @floatCast(s);
+}
+
+fn bf16ToF32(bits: u16) f32 {
+    return @bitCast(@as(u32, bits) << 16);
+}
+
+fn transposeRowToColBf16(comptime T: type, dst: []T, src: []const u16, rows: usize, cols: usize) void {
+    for (0..rows) |r| {
+        for (0..cols) |c| {
+            dst[c * rows + r] = @floatCast(bf16ToF32(src[r * cols + c]));
+        }
+    }
+}
+
+fn copyBf16(comptime T: type, dst: []T, src: []const u16) void {
+    for (dst, src) |*d, s| d.* = @floatCast(bf16ToF32(s));
 }
 
 /// Format a layer-scoped tensor name: "{prefix}{layer}.{suffix}".

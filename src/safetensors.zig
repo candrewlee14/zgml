@@ -93,6 +93,13 @@ pub const SafetensorsFile = struct {
         return @as([*]const f16, @ptrCast(@alignCast(bytes.ptr)))[0..n];
     }
 
+    /// Get tensor data as raw 16-bit elements, used for BF16 conversion.
+    pub fn getTensorU16(self: *const SafetensorsFile, offset_start: usize, offset_end: usize) []const u16 {
+        const bytes = self.getTensorBytes(offset_start, offset_end);
+        const n = bytes.len / @sizeOf(u16);
+        return @as([*]const u16, @ptrCast(@alignCast(bytes.ptr)))[0..n];
+    }
+
     /// Simple JSON key lookup — finds "key": and returns the value.
     /// Works for simple cases in safetensors headers.
     pub fn findTensorMeta(self: *const SafetensorsFile, name: []const u8) ?TensorMeta {

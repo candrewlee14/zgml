@@ -124,6 +124,8 @@ static void touch_current_abi_surface(void) {
         ZGML_MODEL_TINY_LLAMA_2LAYER,
         ZGML_MODEL_TINY_MLP,
         ZGML_MODEL_MODULE,
+        ZGML_MODEL_LLAMA_FAMILY,
+        ZGML_MODEL_SMOLLM2_360M,
     };
     const uint32_t tiny_mlp_activations[] = {
         ZGML_TINY_MLP_ACTIVATION_RELU,
@@ -381,8 +383,8 @@ int main(void) {
         failed = 1;
     }
     size_t supported_count = zgml_supported_checkpoint_count();
-    if (!failed && supported_count != 3) {
-        fprintf(stderr, "expected 3 supported checkpoint envelopes, got %zu\n", supported_count);
+    if (!failed && supported_count != 4) {
+        fprintf(stderr, "expected 4 supported checkpoint envelopes, got %zu\n", supported_count);
         failed = 1;
     }
     zgml_model_inspection supported_checkpoint = {0};
@@ -440,6 +442,27 @@ int main(void) {
         supported_checkpoint.tied_lm_head != 1
     )) {
         fprintf(stderr, "unexpected SmolLM supported checkpoint envelope: kind=%u vocab=%llu d_model=%llu layers=%llu kv_heads=%llu tied=%llu\n",
+            supported_checkpoint.model_kind,
+            (unsigned long long)supported_checkpoint.vocab_size,
+            (unsigned long long)supported_checkpoint.d_model,
+            (unsigned long long)supported_checkpoint.n_layers,
+            (unsigned long long)supported_checkpoint.n_kv_heads,
+            (unsigned long long)supported_checkpoint.tied_lm_head);
+        failed = 1;
+    }
+    supported_checkpoint = (zgml_model_inspection){0};
+    if (!failed) {
+        failed |= expect_status("zgml_supported_checkpoint_inspect", zgml_supported_checkpoint_inspect(3, &supported_checkpoint));
+    }
+    if (!failed && (
+        supported_checkpoint.model_kind != ZGML_MODEL_SMOLLM2_360M ||
+        supported_checkpoint.vocab_size != 49152 ||
+        supported_checkpoint.d_model != 960 ||
+        supported_checkpoint.n_layers != 32 ||
+        supported_checkpoint.n_kv_heads != 5 ||
+        supported_checkpoint.tied_lm_head != 1
+    )) {
+        fprintf(stderr, "unexpected SmolLM2 supported checkpoint envelope: kind=%u vocab=%llu d_model=%llu layers=%llu kv_heads=%llu tied=%llu\n",
             supported_checkpoint.model_kind,
             (unsigned long long)supported_checkpoint.vocab_size,
             (unsigned long long)supported_checkpoint.d_model,

@@ -22,6 +22,7 @@ export type AdapterModelHandlePolicyOptions<THandle = NativeHandle, THelpers = u
   TinyMlpModel: ModelConstructor;
   TinyLlamaModel: ModelConstructor;
   SmolLM135MModel: ModelConstructor;
+  SmolLM2_360MModel: ModelConstructor;
   LlamaModel: ModelConstructor;
   assertAlive(handle: THandle, label: string): void;
   nullHandle?: THandle | null;
@@ -33,6 +34,7 @@ export function createAdapterModelHandlePolicy<THandle = NativeHandle, THelpers 
   const bindableModelClasses = Object.freeze([
     options.TinyLlamaModel,
     options.SmolLM135MModel,
+    options.SmolLM2_360MModel,
     options.LlamaModel,
   ]);
   const compatibleModelClasses = Object.freeze([

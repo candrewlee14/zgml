@@ -7823,7 +7823,10 @@ export type LoadModelKind =
   | "tinyllama2layer"
   | "smollm"
   | "smollm135m"
-  | "smollm-135m";
+  | "smollm-135m"
+  | "smollm2"
+  | "smollm2360m"
+  | "smollm2-360m";
 
 export type LoadModelOptions = {
   kind?: LoadModelKind;
@@ -8006,7 +8009,7 @@ export type ModelInspection = Readonly<{
 export type ProgramRequirements = Readonly<{
   kind: "zgml.program.requirements";
   signature: string;
-  modelKind: "tiny-linear" | "tiny-mlp" | "module" | "tiny-llama" | "tiny-llama-2layer" | "smollm-135m" | `unknown:${number}`;
+  modelKind: "tiny-linear" | "tiny-mlp" | "module" | "tiny-llama" | "tiny-llama-2layer" | "smollm-135m" | "smollm2-360m" | `unknown:${number}`;
   scalarBytes: number;
   tokenIdBytes: number;
   inputLen: number;
@@ -9071,6 +9074,12 @@ export declare class SmolLM135MModel extends TinyLlamaModel {
 }
 export declare class SmolLM135MProgram extends TinyLlamaProgram {}
 export declare class SmolLM135MSession extends TinyLlamaSession {}
+export declare class SmolLM2_360MModel extends TinyLlamaModel {
+  static load(path: string): SmolLM2_360MModel;
+  static loadSafetensorsData(data: Uint8Array | ArrayBuffer): SmolLM2_360MModel;
+}
+export declare class SmolLM2_360MProgram extends TinyLlamaProgram {}
+export declare class SmolLM2_360MSession extends TinyLlamaSession {}
 export declare class LlamaModel extends TinyLlamaModel {}
 export declare class LlamaProgram extends TinyLlamaProgram {}
 export declare class LlamaSession extends TinyLlamaSession {}
@@ -9079,6 +9088,7 @@ export declare const TinyLinear: typeof TinyLinearModel;
 export declare const TinyMlp: typeof TinyMlpModel;
 export declare const TinyLlama: typeof TinyLlamaModel;
 export declare const SmolLM135M: typeof SmolLM135MModel;
+export declare const SmolLM2_360M: typeof SmolLM2_360MModel;
 export declare const Llama: typeof LlamaModel;
 
 export declare const frontendManifest: FrontendManifest;
@@ -9090,7 +9100,7 @@ export declare function probeModel(source: LoadModelSource, options?: LoadModelO
 export declare function probeSafetensorsData(data: Uint8Array | ArrayBuffer, options?: LoadModelOptions | LoadModelKind): ModelInspection;
 export declare function probeSafetensorsHeader(header: string | Uint8Array, options?: LoadModelOptions | LoadModelKind): ModelInspection;
 export declare function supportedCheckpointModels(): readonly ModelInspection[];
-export declare function loadModel(source: LoadModelSource, options?: LoadModelOptions | LoadModelKind): LlamaModel | TinyLlamaModel | SmolLM135MModel;
-export declare function loadSafetensorsData(data: Uint8Array | ArrayBuffer, options?: LoadModelOptions | LoadModelKind): LlamaModel | TinyLlamaModel | SmolLM135MModel;
+export declare function loadModel(source: LoadModelSource, options?: LoadModelOptions | LoadModelKind): LlamaModel | TinyLlamaModel | SmolLM135MModel | SmolLM2_360MModel;
+export declare function loadSafetensorsData(data: Uint8Array | ArrayBuffer, options?: LoadModelOptions | LoadModelKind): LlamaModel | TinyLlamaModel | SmolLM135MModel | SmolLM2_360MModel;
 
 export declare const webgpuInterop: WebGpuInteropSymbols;

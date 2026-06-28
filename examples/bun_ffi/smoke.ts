@@ -479,10 +479,11 @@ const supportedCheckpoints = supportedCheckpointModels();
 const supportedTinyLlama = supportedCheckpoints.find((model) => model.modelKind === "tiny-llama");
 const supportedTinyLlama2Layer = supportedCheckpoints.find((model) => model.modelKind === "tiny-llama-2layer");
 const supportedSmolLM = supportedCheckpoints.find((model) => model.modelKind === "smollm-135m");
+const supportedSmolLM2 = supportedCheckpoints.find((model) => model.modelKind === "smollm2-360m");
 if (
   !Object.isFrozen(supportedCheckpoints) ||
   supportedCheckpoints.some((model) => !Object.isFrozen(model)) ||
-  supportedCheckpoints.length !== 3 ||
+  supportedCheckpoints.length !== 4 ||
   !supportedTinyLlama ||
   supportedTinyLlama.vocabSize !== 8 ||
   supportedTinyLlama.dModel !== 4 ||
@@ -500,7 +501,13 @@ if (
   supportedSmolLM.dModel !== 576 ||
   supportedSmolLM.nLayers !== 30 ||
   supportedSmolLM.nKvHeads !== 3 ||
-  !supportedSmolLM.tiedLmHead
+  !supportedSmolLM.tiedLmHead ||
+  !supportedSmolLM2 ||
+  supportedSmolLM2.vocabSize !== 49152 ||
+  supportedSmolLM2.dModel !== 960 ||
+  supportedSmolLM2.nLayers !== 32 ||
+  supportedSmolLM2.nKvHeads !== 5 ||
+  !supportedSmolLM2.tiedLmHead
 ) {
   throw new Error(`unexpected supported checkpoint catalog: ${json(supportedCheckpoints)}`);
 }

@@ -262,6 +262,7 @@ const {
   tinyLlama2LayerKind,
   tinyMlpKind,
   moduleKind,
+  smollm2_360mKind,
 } = adapterModelKindAliases(modelKinds);
 const {
   bufferStorageExternalResource,
@@ -954,10 +955,14 @@ const {
   SmolLM135MModel,
   SmolLM135MProgram,
   SmolLM135MSession,
+  SmolLM2_360MModel,
+  SmolLM2_360MProgram,
+  SmolLM2_360MSession,
 } = createAdapterLlamaFamilySurface({
   autoKind,
   tinyLlamaKind,
   smollm135mKind,
+  smollm2_360mKind,
   llamaModelFamilyFacade,
   llamaProgramFacade,
   bindLlamaSessionHandle,
@@ -996,6 +1001,7 @@ const {
   TinyMlpModel,
   TinyLlamaModel,
   SmolLM135MModel,
+  SmolLM2_360MModel,
   LlamaModel,
   assertAlive,
 }));
@@ -2062,9 +2068,11 @@ modelSourceFacadeSlot.bind(createAdapterModelSourceFacade({
   loadModelPath,
   loadSafetensorsDataHandle,
   tinyLlama2LayerKind,
+  smollm2_360mKind,
   LlamaModel,
   TinyLlamaModel,
   SmolLM135MModel,
+  SmolLM2_360MModel,
 }));
 
 module.exports = createAdapterPublicRuntimeExports({
@@ -2310,6 +2318,7 @@ module.exports = createAdapterPublicRuntimeExports({
   TinyMlp: TinyMlpModel,
   TinyLlama: TinyLlamaModel,
   SmolLM135M: SmolLM135MModel,
+  SmolLM2_360M: SmolLM2_360MModel,
   Llama: LlamaModel,
   probeModel,
   probeSafetensorsData,
@@ -2329,6 +2338,9 @@ module.exports = createAdapterPublicRuntimeExports({
   SmolLM135MModel,
   SmolLM135MProgram,
   SmolLM135MSession,
+  SmolLM2_360MModel,
+  SmolLM2_360MProgram,
+  SmolLM2_360MSession,
   LlamaModel,
   LlamaProgram,
   LlamaSession,
