@@ -32,7 +32,9 @@ avoid advanced deployment/evidence names while still using the native-backed
 root package.
 `zgml.nativeCore()` is the typed runtime proof for the boundary: the friendly
 API is TypeScript, tensor runtime and hot-path execution are Zig through the C
-ABI, and supported fixed-shape training uses Zig FFI kernels.
+ABI, module Programs compile through the Zig module compiler with native
+Program-inspection evidence, and supported fixed-shape training uses Zig FFI
+kernels.
 
 ## User-Facing Capabilities
 

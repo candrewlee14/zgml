@@ -5282,6 +5282,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     nativeCoreEvidence.boundary?.userApi !== "typescript" ||
     nativeCoreEvidence.boundary?.tensorRuntime !== "zig" ||
     nativeCoreEvidence.boundary?.ffi !== "c-abi" ||
+    nativeCoreEvidence.boundary?.moduleCompiler !== "zig-module-program" ||
+    nativeCoreEvidence.boundary?.compileEvidence !== "native-program-inspection" ||
     nativeCoreEvidence.boundary?.hotPath !== "program-session" ||
     nativeCoreEvidence.boundary?.training !== "zig-ffi-kernels" ||
     nativeCoreEvidence.runtimePath !== "JS/TS API -> Zig C ABI -> Program/Session kernels" ||
