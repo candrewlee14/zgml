@@ -184,19 +184,21 @@ async function main() {
 
   const model = createModel();
   const optimizer = optim.adam(model, { lr: 0.001 });
+  const criterion = loss.crossEntropyLoss({ classes: 10 });
   const before = evaluate(model, testLoader);
 
-  const fit = train.fit(optimizer, trainLoader, (batch) => {
-    if (!batch.target) throw new Error("MNIST training batch requires targets");
-    return loss.crossEntropy(model.forward(batch.input), batch.target, { classes: 10 });
-  }, {
+  const fit = model.fit(trainLoader, {
+    optimizer,
+    loss: criterion,
     epochs,
-    zeroGrad: true,
   });
 
   const after = evaluate(model, testLoader);
   if (!train.isTrainFitEvidence(fit) || fit.steps !== Math.ceil(trainLimit / batchSize) * epochs) {
     throw new Error(`MNIST fit returned unexpected evidence: ${JSON.stringify(fit)}`);
+  }
+  if (fit.native !== true || fit.compiledPlan?.loweredBy !== "zig-ffi") {
+    throw new Error(`MNIST expected model.fit to auto-select native Zig training, got ${JSON.stringify(fit.compiledPlan)}`);
   }
   if (!(after.meanLoss < before.meanLoss)) {
     throw new Error(`MNIST expected held-out loss to improve; before=${before.meanLoss}, after=${after.meanLoss}`);
@@ -231,6 +233,8 @@ async function main() {
     `test=${testLimit}`,
     `epochs=${epochs}`,
     `steps=${fit.steps}`,
+    `native=${fit.native === true}`,
+    `lowered=${fit.compiledPlan?.loweredBy ?? "none"}`,
     `loss=${before.meanLoss.toFixed(4)}->${after.meanLoss.toFixed(4)}`,
     `accuracy=${(after.accuracy * 100).toFixed(2)}%`,
     `compiledClass=${compiledClass}`,

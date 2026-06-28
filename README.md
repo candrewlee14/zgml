@@ -69,8 +69,9 @@ void out;
 
 `zgml.forInference(...)` is the friendly TS entry into a native Zig-backed
 Program/Session. `zgml.native(...)` remains a short alias.
-`model.fitNative(...)` is the fail-closed training sibling of `model.fit(...)`
-for supported Zig FFI training kernels.
+`model.fit(...)` auto-selects supported Zig FFI training kernels for fixed-shape
+module batches; `model.fitNative(...)` is the fail-closed sibling when native
+training is required.
 `torch` remains available as a PyTorch-compatible alias for this same friendly namespace, but
 `zgml` is the canonical package identity.
 

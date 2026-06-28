@@ -7335,13 +7335,22 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       maxSteps: 1,
       requireNative: true,
     });
+    const moduleMethodFitModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
+    const moduleMethodFitOptimizer = adapter.optim.sgd(moduleMethodFitModel, { lr: 0.05 });
+    const moduleMethodFitEvidence = moduleMethodFitModel.fit(shuffledBatches, {
+      optimizer: moduleMethodFitOptimizer,
+      loss: fitModuleCriterion,
+      maxSteps: 1,
+    });
     if (
       nativeFitModuleEvidence.kind !== "zgml.train.fit" ||
       nativeFitModuleEvidence.steps !== 1 ||
       nativeFitModuleEvidence.native !== true ||
-      nativeFitModuleEvidence.backend !== "cpu"
+      nativeFitModuleEvidence.backend !== "cpu" ||
+      moduleMethodFitEvidence.native !== true ||
+      moduleMethodFitEvidence.compiledPlan?.loweredBy !== "zig-ffi"
     ) {
-      throw new Error(`${label} expected train.fitModule requireNative to route supported Linear+MSE training through native Zig`);
+      throw new Error(`${label} expected train.fitModule and module.fit to route supported Linear+MSE training through native Zig`);
     }
     const trainFitNativeModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
     const trainFitNativeOptimizer = adapter.optim.sgd(trainFitNativeModel, { lr: 0.05 });
