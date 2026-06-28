@@ -1343,6 +1343,7 @@ pub const CommandStreamPolicy = struct {
         policy.fuse_semantic_ffn_sublayer_single_dispatch = true;
         policy.fuse_semantic_ffn_sublayer_width_parallel = true;
         policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch = false;
+        policy.fuse_semantic_ffn_sublayer_input_bridge_width_parallel = true;
         return policy;
     }
 
@@ -9616,7 +9617,7 @@ test "semantic input bridge direct serial lowering is diagnostic opt-in" {
     try std.testing.expect(throughput_policy.fuse_semantic_ffn_sublayer_input_row_chain);
     try std.testing.expect(throughput_policy.fuse_semantic_ffn_sublayer_width_parallel);
     try std.testing.expect(!throughput_policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch);
-    try std.testing.expect(!throughput_policy.fuse_semantic_ffn_sublayer_input_bridge_width_parallel);
+    try std.testing.expect(throughput_policy.fuse_semantic_ffn_sublayer_input_bridge_width_parallel);
 
     const direct_serial_policy = CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeDirectSerialCandidate();
     try std.testing.expect(direct_serial_policy.fuse_semantic_ffn_sublayer_input_row_chain);

@@ -10703,21 +10703,66 @@ const CompiledProgram = struct {
             .partial_cols = output_tiles,
         };
 
-        const stage_buffers = [_]DeviceBuffer{
+        const input_q_is_src0 = input_residual.src0 == input_q.dst and input_residual.src0_offset == input_q.dst_offset;
+        const input_stage_params = QMatmulRowChainParams{
+            .M = plan.input_params.M,
+            .N = plan.input_params.N,
+            .K = plan.input_params.K,
+            .block_size = plan.input_params.block_size,
+            .input_offset = plan.input_params.input_offset,
+            .input_row_stride = plan.input_params.input_row_stride,
+            .ew_op = @intFromEnum(input_residual.op),
+            .ew_is_swapped = if (input_q_is_src0) 0 else 1,
+            .ew_secondary_offset = plan.bridge.input_secondary_offset,
+            .ew_dst_offset = plan.scratch_layout.output_element_offset,
+            .write_ew_output = 1,
+            .rms_eps = input_rn.eps,
+            .scale_src_offset = input_rp.src_offset,
+            .scaled_dst_offset = plan.scratch_layout.input_element_offset,
+            .partial_dst_offset = partial_offset,
+            .partial_cols = output_tiles,
+        };
+        const input_stage_partial_buffers = [_]DeviceBuffer{
             input_w.data,
             input_w.scales,
             view.device_bufs[input_q.input],
             view.device_bufs[plan.bridge.input_secondary_buf],
+            scratch_buffer,
+            scratch_buffer,
+            scratch_buffer,
+        };
+        exec.profile.recordQMatmulRowChainWidthParallelTiledSpill(
+            input_stage_params.M,
+            input_stage_params.N,
+            input_stage_params.K,
+            ROW_CHAIN_TILE,
+            ROW_CHAIN_WIDTH_LANES,
+            true,
+            true,
+        );
+        exec.profile.recordSemanticWidthScratchRuntimeUse(checkedF32Bytes(partial_elements_u64) orelse return false);
+        exec.encodeKernel(
+            .qmatmul_row_chain_width_partials_f32,
+            &input_stage_partial_buffers,
+            input_stage_params,
+            7,
+            .{ .gx = std.math.divCeil(u32, input_stage_params.M, ROW_CHAIN_TILE) catch return false, .gy = output_tiles },
+            SEMANTIC_FFN_THREADS,
+        );
+
+        const input_stage_finalize_buffers = [_]DeviceBuffer{
+            scratch_buffer,
+            scratch_buffer,
             view.device_bufs[input_rp.src],
             scratch_buffer,
         };
         exec.encodeKernel(
-            .qmatmul_semantic_ffn_input_bridge_stage_input_f32,
-            &stage_buffers,
-            params,
-            6,
-            .{ .gx = params.M },
-            SEMANTIC_FFN_INPUT_BRIDGE_THREADS,
+            .qmatmul_row_chain_tiled_finalize_tiles_f32,
+            &input_stage_finalize_buffers,
+            input_stage_params,
+            4,
+            .{ .gx = std.math.divCeil(u32, input_stage_params.M, ROW_CHAIN_TILE) catch return false, .gy = output_tiles },
+            MATMUL_THREADS,
         );
 
         var pair_params = std.mem.zeroes(QMatmulPairFusedEwParams);

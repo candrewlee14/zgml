@@ -1276,9 +1276,27 @@ three (`decomposed_extra=2`, `pair=0`, `tail=2`), but throughput regressed to
 `absorbed=1.63x` versus the retained decomposed path's recent `~2.70x`
 evidence. The probe was not retained as a default lowering. The checker still
 recognizes that three-dispatch shape as a diagnostic profile so future staged
-experiments are classified accurately, but the next production target remains a
-truly faster direct width-parallel input-bridge kernel rather than this
-row-owned prefix staging.
+experiments are classified accurately, but this row-owned prefix staging was
+not the production path.
+A June 28, 2026 direct-width follow-up moved the direct input bridge onto the
+same width-partial row-chain input staging path as the faster absorbed probe
+instead of the old row-owned input projection kernel. The direct-width
+candidate still uses five dispatches, but the physical work is now the intended
+staged direct-width shape: width stage input, paired gate/up product,
+width-partial down, and row-tiled finalize, all over backend-owned scratch. A
+fresh three-attempt input-bridge gate passes with `direct_width=2.78x`, median
+`2.77x`, worst `2.72x`, `direct_width_gate=ready`, and
+`direct_width_vs_absorbed=1.05`, while the retained absorbed lane is `2.64x`
+median and `2.57x` worst. The semantic prompt policy now enables that
+direct-width input bridge by default for the Q8 prompt semantic lane; the
+full-model three-attempt Q8 prompt gate stays promoted with
+`semantic_speedup=1.21x`, median `1.14x`, worst `1.10x`,
+`semantic_direct_width_parallel=30`, and zero fallback pair/tail dispatches. A
+fresh cheap ggml smoke records absolute Q8 prompt throughput at
+`4714.165 tok/s`, though the reported parity is only `34.032%` because that
+smoke's llama.cpp reference also rose to `13852.130 tok/s`. Treat this as a
+real direct-width promotion and a better Q8 prompt absolute lane, not as ggml
+parity.
 The qsemantic-throughput and qsemantic input-bridge readbacks follow the same
 stability rule as the other noisy perf lanes:
 `qsemantic-throughput-results:` and `qsemantic-input-bridge-results:` prefer the
