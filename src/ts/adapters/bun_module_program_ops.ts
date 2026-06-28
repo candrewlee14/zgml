@@ -4,6 +4,7 @@ import {
 } from "./bun_abi_words.js";
 import {
   attachProgramCompileEvidence,
+  moduleProgramEvidenceWithNativeRequirements,
 } from "../runtime/module_program_evidence.js";
 import {
   moduleProgramAbiDescriptorFields,
@@ -25,6 +26,9 @@ type ModuleProgramArtifacts = {
     readonly opWords: BigUint64Array | null;
     readonly opCount: number;
   };
+};
+type ProgramWithRequirements = {
+  requirements?: () => ProgramRequirements;
 };
 
 type BunModuleProgramSymbols = Readonly<{
@@ -68,18 +72,40 @@ export function createBunModuleProgramOps<TProgram>(options: BunModuleProgramOps
     return moduleDesc;
   }
 
+  function moduleProgramRequirementsForArtifacts(
+    artifacts: ModuleProgramArtifacts,
+    compileOptions: unknown = {},
+  ): ProgramRequirements {
+    const out = new BigUint64Array(16);
+    check(symbols.moduleProgramGetRequirements(moduleProgramAbiDesc(artifacts.packed), compileDesc(compileOptions), out));
+    return programRequirementsFromAbiWords(out);
+  }
+
+  function nativeRequirementsForProgram(
+    program: TProgram,
+    artifacts: ModuleProgramArtifacts,
+    compileOptions: unknown = {},
+  ): ProgramRequirements {
+    const requirements = (program as ProgramWithRequirements | null)?.requirements;
+    if (typeof requirements === "function") return requirements.call(program) as ProgramRequirements;
+    return moduleProgramRequirementsForArtifacts(artifacts, compileOptions);
+  }
+
   function compileModuleProgram(spec: unknown, compileOptions: unknown = {}): TProgram {
     const out = handleOut();
     const artifacts = moduleProgramCompileArtifactsFromCompiledSpec(spec);
     check(symbols.moduleProgramCompile(moduleProgramAbiDesc(artifacts.packed), compileDesc(compileOptions), out));
-    return createProgram(readHandle(out), artifacts.desc, artifacts.evidence);
+    const program = createProgram(readHandle(out), artifacts.desc, artifacts.evidence);
+    const requirements = nativeRequirementsForProgram(program, artifacts, compileOptions);
+    return attachProgramCompileEvidence(
+      program,
+      moduleProgramEvidenceWithNativeRequirements(artifacts.evidence, requirements, artifacts.desc),
+    );
   }
 
   function moduleProgramRequirements(spec: unknown, compileOptions: unknown = {}): ProgramRequirements {
-    const out = new BigUint64Array(16);
     const artifacts = moduleProgramCompileArtifactsFromCompiledSpec(spec);
-    check(symbols.moduleProgramGetRequirements(moduleProgramAbiDesc(artifacts.packed), compileDesc(compileOptions), out));
-    return programRequirementsFromAbiWords(out);
+    return moduleProgramRequirementsForArtifacts(artifacts, compileOptions);
   }
 
   return Object.freeze({

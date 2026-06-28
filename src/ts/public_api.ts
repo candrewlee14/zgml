@@ -3526,6 +3526,13 @@ export type ProgramCompileEvidence = Readonly<{
   nativeCore: "zig-module-program";
   modelKind: "module";
   layerCount: number;
+  inputLen?: number;
+  outputLen?: number;
+  weightsLen?: number;
+  biasLen?: number;
+  nativeRequirements?: ProgramRequirements;
+  nativeRequirementsSignature?: string;
+  nativeRequirementsSource?: "zig-module-program";
   irSignature: string;
   kernelPlanSignature: string;
   memoryLayoutSignature: string;

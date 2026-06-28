@@ -1,5 +1,6 @@
 import {
   attachProgramCompileEvidence,
+  moduleProgramEvidenceWithNativeRequirements,
 } from "../runtime/module_program_evidence.js";
 import {
   programBindDescriptorRecord,
@@ -39,6 +40,9 @@ type ProgramNativeBufferBindFields = {
   readonly inputLen: number;
   readonly output?: { readonly handle: NativeHandle } | null;
   readonly outputLen: number;
+};
+type ProgramWithRequirements = {
+  requirements?: () => ProgramRequirements;
 };
 
 type NodeModuleProgramSymbols = Readonly<{
@@ -83,20 +87,42 @@ export function createNodeModuleProgramOps<TProgram>(options: NodeModuleProgramO
     };
   }
 
+  function moduleProgramRequirementsForArtifacts(
+    artifacts: ModuleProgramArtifacts,
+    compileOptions: unknown = {},
+  ): ProgramRequirements {
+    const abiDesc = moduleProgramAbiDesc(artifacts.packed);
+    const out: Record<string, unknown> = {};
+    check(symbols.moduleProgramGetRequirements(abiDesc.desc, compileDesc(compileOptions), out));
+    return programRequirementsFromAbiRecord(out);
+  }
+
+  function nativeRequirementsForProgram(
+    program: TProgram,
+    artifacts: ModuleProgramArtifacts,
+    compileOptions: unknown = {},
+  ): ProgramRequirements {
+    const requirements = (program as ProgramWithRequirements | null)?.requirements;
+    if (typeof requirements === "function") return requirements.call(program) as ProgramRequirements;
+    return moduleProgramRequirementsForArtifacts(artifacts, compileOptions);
+  }
+
   function compileModuleProgram(spec: unknown, compileOptions: unknown = {}): TProgram {
     const out = handleOut();
     const artifacts = moduleProgramCompileArtifactsFromCompiledSpec(spec);
     const abiDesc = moduleProgramAbiDesc(artifacts.packed);
     check(symbols.moduleProgramCompile(abiDesc.desc, compileDesc(compileOptions), out));
-    return createProgram(readHandle(out, "program"), artifacts.desc, artifacts.evidence);
+    const program = createProgram(readHandle(out, "program"), artifacts.desc, artifacts.evidence);
+    const requirements = nativeRequirementsForProgram(program, artifacts, compileOptions);
+    return attachProgramCompileEvidence(
+      program,
+      moduleProgramEvidenceWithNativeRequirements(artifacts.evidence, requirements, artifacts.desc),
+    );
   }
 
   function moduleProgramRequirements(spec: unknown, compileOptions: unknown = {}): ProgramRequirements {
     const artifacts = moduleProgramCompileArtifactsFromCompiledSpec(spec);
-    const abiDesc = moduleProgramAbiDesc(artifacts.packed);
-    const out: Record<string, unknown> = {};
-    check(symbols.moduleProgramGetRequirements(abiDesc.desc, compileDesc(compileOptions), out));
-    return programRequirementsFromAbiRecord(out);
+    return moduleProgramRequirementsForArtifacts(artifacts, compileOptions);
   }
 
   function bufferBindDescForTinyLinear(desc: ProgramBindingDesc, params: ProgramBindingsInput): Record<string, unknown> {

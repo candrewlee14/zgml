@@ -6755,6 +6755,38 @@ expectSame(kernelPlanPolicy.bufferLayoutSignature(traceArtifacts.kernelPlan.buff
 expectSame(traceArtifacts.kernelPlan.signature, compilerSignatures.compilerSignatureEvidence(traceArtifacts.ir, traceArtifacts.kernelPlan).kernelPlanSignature, "trace compiler kernel plan signature evidence");
 const programCompileSpec = traceCompiler.compiledSequentialModuleSpecFromTrace([{ path: "0" }], irOnlyTrace, traceArtifacts);
 const programCompileEvidence = traceCompiler.programCompileEvidenceFromCompiledSpec(programCompileSpec);
+const nativeModuleRequirements = Object.freeze({
+  kind: "zgml.program.requirements",
+  signature: "module-native-requirements-smoke",
+  modelKind: "module",
+  scalarBytes: 4,
+  tokenIdBytes: 4,
+  inputLen: 2,
+  inputByteLength: 8,
+  outputLen: 3,
+  weightsLen: 6,
+  weightsByteLength: 24,
+  biasLen: 3,
+  biasByteLength: 12,
+  parameterLen: 9,
+  parameterByteLength: 36,
+  logitsLen: 0,
+  outputByteLength: 12,
+  contextLen: 0,
+  batch: 0,
+  maxTokenWindow: 0,
+});
+const nativeRequirementsEvidence = moduleProgramEvidence.moduleProgramEvidenceWithNativeRequirements(programCompileEvidence, nativeModuleRequirements, programCompileSpec.desc);
+expectSame(nativeRequirementsEvidence.nativeRequirements, nativeModuleRequirements, "module Program compile evidence retains native requirements");
+expectSame(nativeRequirementsEvidence.nativeRequirementsSource, "zig-module-program", "module Program compile evidence records native requirements source");
+expectSame(nativeRequirementsEvidence.inputLen, nativeModuleRequirements.inputLen, "module Program compile evidence uses native input len");
+expectSame(nativeRequirementsEvidence.signature, compilerSignatures.programCompileEvidenceSignature(nativeRequirementsEvidence), "module Program native requirements evidence signature");
+expectSame(compilerSignatures.isProgramCompileEvidence(nativeRequirementsEvidence), true, "module Program native requirements evidence predicate");
+expectThrow(
+  () => moduleProgramEvidence.moduleProgramEvidenceWithNativeRequirements(programCompileEvidence, Object.freeze({ ...nativeModuleRequirements, weightsLen: 7 }), programCompileSpec.desc),
+  "module Program native requirements drift: weightsLen TS=6 Zig=7",
+  "module Program native requirements reject TS/Zig length drift",
+);
 expectSame(Object.isFrozen(programCompileEvidence), true, "program compile evidence frozen");
 expectSame(Object.isFrozen(programCompileEvidence.compilerSignatures), true, "program compile evidence signatures frozen");
 expectSame(programCompileEvidence.signature, compilerSignatures.programCompileEvidenceSignature(programCompileEvidence), "program compile evidence signature");

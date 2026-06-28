@@ -5368,6 +5368,10 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       inferenceExecutionPlan.canExecute !== true ||
       inferenceExecutionPlan.executionMode !== "executable" ||
       inferenceCompileEvidence?.nativeCore !== "zig-module-program" ||
+      inferenceCompileEvidence.nativeRequirementsSource !== "zig-module-program" ||
+      inferenceCompileEvidence.nativeRequirements?.inputLen !== inference.program.inputLen() ||
+      inferenceCompileEvidence.nativeRequirements?.outputLen !== inference.program.outputLen() ||
+      inferenceCompileEvidence.nativeRequirementsSignature !== inferenceCompileEvidence.nativeRequirements?.signature ||
       inferenceSupport.supported !== true ||
       inferenceExplanation.supported !== true ||
       inferencePreflight.supported !== true ||

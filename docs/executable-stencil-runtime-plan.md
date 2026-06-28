@@ -100,9 +100,12 @@ The module Program boundary now also has a native descriptor requirements probe:
 `zgml_compile_desc` as `zgml_module_program_compile`, runs Zig's module compiler,
 and returns `zgml_program_requirements` without asking the TS side to re-derive
 native buffer lengths. The Node and Bun bridges expose that as an internal
-`moduleProgramRequirements` helper. This is the intended split in miniature:
-TypeScript packages an ergonomic `nn`/`compile` API and Zig remains the
-authority for executable Program requirements.
+`moduleProgramRequirements` helper, and successful module Program compiles now
+attach those Zig-derived requirements to the retained compile evidence. The TS
+evidence layer rejects descriptor/native length drift before treating the
+Program as proven. This is the intended split in miniature: TypeScript packages
+an ergonomic `nn`/`compile` API and Zig remains the authority for executable
+Program requirements.
 
 The short rule is:
 
