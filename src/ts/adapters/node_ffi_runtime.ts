@@ -112,6 +112,7 @@ const {
 } = require("./native_eager_surface.js");
 const {
   nativeEagerRoutingActivationEnabled,
+  nativeEagerRoutingUnaryOpEnabled,
   nodeNativeEagerRoutingPolicy,
 } = require("./native_eager_routing_policy.js");
 const {
@@ -330,8 +331,10 @@ const {
   isGradEnabled,
   nativeEagerMatmulInto: (output, lhs, rhs, options) => nativeEager.matmulInto(output, lhs, rhs, options),
   nativeEagerBmmInto: (output, lhs, rhs, options) => nativeEager.bmmInto(output, lhs, rhs, options),
+  nativeEagerBmmMinMultiplyAdds: nodeNativeEagerRoutingPolicy.tensorMath.bmmMinMultiplyAdds,
   nativeEagerElementwiseInto: (output, lhs, rhs, options) => nativeEager.elementwiseInto(output, lhs, rhs, options),
   nativeEagerElementwiseMinLength: nodeNativeEagerRoutingPolicy.tensorMath.elementwiseMinLength,
+  nativeEagerUnaryOpEnabled: (op) => nativeEagerRoutingUnaryOpEnabled(nodeNativeEagerRoutingPolicy, op),
   nativeEagerActivationInto: (output, input, options) => nativeEager.activationInto(output, input, options),
   nativeEagerActivationMinLength: nodeNativeEagerRoutingPolicy.tensorMath.activationMinLength,
   nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(nodeNativeEagerRoutingPolicy, activation),

@@ -937,10 +937,13 @@ function checkPackageExports(errors) {
     "nodeNativeEagerRoutingPolicy",
     "bunNativeEagerRoutingPolicy",
     "nativeEagerRoutingActivationEnabled",
+    "nativeEagerRoutingUnaryOpEnabled",
+    "bmmMinMultiplyAdds: 512",
     "elementwiseMinLength: 512",
     "activationMinLength: 65536",
     "disabledActivations: [\"relu\"]",
     "disabledActivations: []",
+    "disabledUnaryOps: []",
   ]) {
     if (!nativeEagerRoutingPolicySource.includes(required)) {
       errors.push(`src/ts/adapters/native_eager_routing_policy.ts must keep inspectable Node/Bun native eager routing policy: ${required}`);
@@ -995,7 +998,9 @@ function checkPackageExports(errors) {
     "nodeNativeEagerRoutingPolicy",
     "const nativeEagerSurface = createAdapterNativeEagerSurface({",
     "f32: (value, label) => f32(value, label)",
+    "nativeEagerBmmMinMultiplyAdds: nodeNativeEagerRoutingPolicy.tensorMath.bmmMinMultiplyAdds",
     "nativeEagerElementwiseMinLength: nodeNativeEagerRoutingPolicy.tensorMath.elementwiseMinLength",
+    "nativeEagerUnaryOpEnabled: (op) => nativeEagerRoutingUnaryOpEnabled(nodeNativeEagerRoutingPolicy, op)",
     "nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(nodeNativeEagerRoutingPolicy, activation)",
     "routingPolicy: nodeNativeEagerRoutingPolicy",
     "args.transposedWeights",
@@ -1035,7 +1040,9 @@ function checkPackageExports(errors) {
     "bunNativeEagerRoutingPolicy",
     "const nativeEagerSurface = createAdapterNativeEagerSurface({",
     "f32: (value) => f32(value as TensorLike)",
+    "nativeEagerBmmMinMultiplyAdds: bunNativeEagerRoutingPolicy.tensorMath.bmmMinMultiplyAdds",
     "nativeEagerElementwiseMinLength: bunNativeEagerRoutingPolicy.tensorMath.elementwiseMinLength",
+    "nativeEagerUnaryOpEnabled: (op) => nativeEagerRoutingUnaryOpEnabled(bunNativeEagerRoutingPolicy, op)",
     "nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(bunNativeEagerRoutingPolicy, activation)",
     "nativeEagerClampInto: (output, input, options) => nativeEager.clampInto(output, input, options)",
     "routingPolicy: bunNativeEagerRoutingPolicy",

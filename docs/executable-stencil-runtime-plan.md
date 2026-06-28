@@ -784,12 +784,34 @@ Current checked progress:
   broadcast-plan tax and vectorizing the native comparison condition: Node
   reports `where_batched` module speedup `213.80x`, Bun reports `189.48x`, and
   both carry zero measured diff against the reference.
+  Bun now has an explicit native-eager routing policy instead of silently
+  inheriting Node's thresholds. A June 28, 2026 retest corrected an overly
+  conservative one-attempt read: with the normal three-attempt median selection,
+  useful-sized public `Tensor.bmm` and public unary Tensor helpers both stay on
+  the Zig native-eager route. The final full Bun artifact,
+  `native-eager-20260628T140445Z-53279`, passed with `row_coverage=44/44`,
+  `missing=none`, and a fresh native library. Public `bmm_batched` measured
+  module `1.16x` while comparing direct native against an already-native public
+  eager baseline; public unary rows stayed above their module floor
+  (`0.97x` to `5.31x`) while direct native rows stayed at or above `1.05x`.
+  Profitable larger lanes remain strongly native too: row broadcasts are around
+  `190x` public module speedup, fused Linear+activation rows range from about
+  `38x` to `106x`, softmax/log-softmax are about `10x`/`18x`, and `where` is
+  about `195x`. That keeps "almost all core tensor math in Zig" true for the
+  supported no-grad/native-eager lanes while preserving runtime policy evidence
+  for future cases where a host's FFI boundary really loses. This is the
+  intended product split: JS/TS remains the ergonomic API, Zig remains the
+  explicit core primitive/Program substrate, and runtime-specific routing
+  chooses the faster public path with evidence instead of treating either TS or
+  native as a belief system.
   The native eager adapter policy now lives in
-  `src/ts/adapters/native_eager_surface.ts`: Node and Bun share tensor coercion,
-  shape inference, output validation, public aliases, and activation mapping,
-  while the concrete runtimes only provide the host-specific ABI calls and
-  status checks. That keeps the first native eager lane extensible without
-  duplicating user-facing semantics in each FFI adapter.
+  `src/ts/adapters/native_eager_surface.ts` and
+  `src/ts/adapters/native_eager_routing_policy.ts`: Node and Bun share tensor
+  coercion, shape inference, output validation, public aliases, activation
+  mapping, and policy evidence, while the concrete runtimes only provide the
+  host-specific ABI calls, routing-policy injection, and status checks. That
+  keeps the first native eager lane extensible without duplicating user-facing
+  semantics in each FFI adapter.
   Native eager microscope runs now write ignored
   `bench-results/native-eager/native-eager-*.json` artifacts, and
   `bench:status` reports both the latest native eager artifact and a

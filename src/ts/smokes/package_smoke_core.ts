@@ -422,9 +422,12 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const routingPolicy = nativeEager.routingPolicy;
   const routingPolicyAlias = nativeEagerAlias.routing_policy;
   const expectedRuntime = label.includes("bun") ? "bun" : "node";
+  const expectedBmmMinMultiplyAdds = 512;
   const expectedElementwiseMinLength = 512;
   const expectedActivationMinLength = expectedRuntime === "bun" ? 65536 : 512;
   const expectedDisabledActivations = expectedRuntime === "node" ? "relu" : "";
+  const expectedDisabledUnaryOps = "";
+  const expectedDisabledUnaryOpsSignature = "";
   if (
     !Object.isFrozen(routingPolicy) ||
     routingPolicyAlias !== routingPolicy ||
@@ -433,14 +436,18 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     routingPolicy.nativeCore !== "zig-c-abi" ||
     routingPolicy.tensorMath.matmul !== "native" ||
     routingPolicy.tensorMath.softmax !== "native" ||
+    routingPolicy.tensorMath.bmmMinMultiplyAdds !== expectedBmmMinMultiplyAdds ||
     routingPolicy.tensorMath.elementwiseMinLength !== expectedElementwiseMinLength ||
     routingPolicy.tensorMath.activationMinLength !== expectedActivationMinLength ||
     routingPolicy.tensorMath.reduceMinLength !== 512 ||
     routingPolicy.tensorMath.disabledActivations.join("|") !== expectedDisabledActivations ||
+    routingPolicy.tensorMath.disabledUnaryOps.join("|") !== expectedDisabledUnaryOps ||
     !routingPolicy.signature.includes(`runtime=${expectedRuntime}`) ||
+    !routingPolicy.signature.includes(`bmmMinMultiplyAdds=${expectedBmmMinMultiplyAdds}`) ||
     !routingPolicy.signature.includes(`elementwiseMin=${expectedElementwiseMinLength}`) ||
     !routingPolicy.signature.includes(`activationMin=${expectedActivationMinLength}`) ||
-    !routingPolicy.signature.includes(`disabledActivations=${expectedDisabledActivations || "none"}`)
+    !routingPolicy.signature.includes(`disabledActivations=${expectedDisabledActivations || "none"}`) ||
+    !routingPolicy.signature.includes(`disabledUnaryOps=${expectedDisabledUnaryOpsSignature || "none"}`)
   ) {
     throw new Error(`${label} expected nativeEager routing policy evidence`);
   }

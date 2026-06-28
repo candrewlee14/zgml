@@ -81,6 +81,7 @@ type NativeEagerActivationInto = (
   options: Readonly<{ activation: string }>,
 ) => Float32Array;
 type NativeEagerActivationEnabled = (activation: string, outputLength: number) => boolean;
+type NativeEagerUnaryOpEnabled = (op: string, outputLength: number) => boolean;
 type NativeEagerWhereInto = (
   output: Float32Array,
   condition: unknown,
@@ -133,8 +134,10 @@ export type TensorMathHelpersOptions = Readonly<{
   isGradEnabled?: () => boolean;
   nativeEagerMatmulInto?: NativeEagerMatmulInto;
   nativeEagerBmmInto?: NativeEagerBmmInto;
+  nativeEagerBmmMinMultiplyAdds?: number;
   nativeEagerElementwiseInto?: NativeEagerElementwiseInto;
   nativeEagerElementwiseMinLength?: number;
+  nativeEagerUnaryOpEnabled?: NativeEagerUnaryOpEnabled;
   nativeEagerActivationInto?: NativeEagerActivationInto;
   nativeEagerActivationMinLength?: number;
   nativeEagerActivationEnabled?: NativeEagerActivationEnabled;
@@ -159,8 +162,14 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   const scalarTensor = options.scalarTensor;
   const nativeEagerMatmulInto = options.nativeEagerMatmulInto;
   const nativeEagerBmmInto = options.nativeEagerBmmInto;
+  const nativeEagerBmmMinMultiplyAdds = Number.isSafeInteger(options.nativeEagerBmmMinMultiplyAdds) && Number(options.nativeEagerBmmMinMultiplyAdds) >= 0
+    ? Number(options.nativeEagerBmmMinMultiplyAdds)
+    : 512;
   const nativeEagerElementwiseInto = options.nativeEagerElementwiseInto;
   const nativeEagerActivationInto = options.nativeEagerActivationInto;
+  const nativeEagerUnaryOpEnabled = typeof options.nativeEagerUnaryOpEnabled === "function"
+    ? options.nativeEagerUnaryOpEnabled
+    : () => true;
   const nativeEagerActivationEnabled = typeof options.nativeEagerActivationEnabled === "function"
     ? options.nativeEagerActivationEnabled
     : () => true;
@@ -251,6 +260,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   function nativeElementwiseUnaryInto(output: Float32Array, tensor: TensorMathTensor, op: string) {
     if (typeof nativeEagerElementwiseInto !== "function") return false;
     if (output.length < nativeEagerElementwiseMinLength) return false;
+    if (!nativeEagerUnaryOpEnabled(op, output.length)) return false;
     nativeEagerElementwiseInto(output, tensor, null, { op });
     return true;
   }
@@ -961,8 +971,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     }
     const out = new Float32Array(batch * lhsRows * rhsCols);
     const gradEnabled = gradModeEnabled();
-    const nativeBmmMinMultiplyAdds = 512;
-    const useNativeBmm = typeof nativeEagerBmmInto === "function" && batch * lhsRows * lhsCols * rhsCols >= nativeBmmMinMultiplyAdds;
+    const useNativeBmm = typeof nativeEagerBmmInto === "function" && batch * lhsRows * lhsCols * rhsCols >= nativeEagerBmmMinMultiplyAdds;
     if (useNativeBmm) {
       nativeEagerBmmInto(out, tensor, rhsTensor ?? rhs, {
         batch,
@@ -971,7 +980,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
         cols: rhsCols,
       });
     } else {
-      const useNative = typeof nativeEagerMatmulInto === "function" && lhsRows * lhsCols * rhsCols >= nativeBmmMinMultiplyAdds;
+      const useNative = typeof nativeEagerMatmulInto === "function" && lhsRows * lhsCols * rhsCols >= nativeEagerBmmMinMultiplyAdds;
       for (let b = 0; b < batch; b += 1) {
         const lhsBatchOffset = b * lhsRows * lhsCols;
         const rhsBatchOffset = b * rhsRows * rhsCols;

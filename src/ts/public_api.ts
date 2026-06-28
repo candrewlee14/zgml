@@ -2295,6 +2295,17 @@ export type NativeEagerPool2dIntoOptions = Readonly<{
   count_include_pad?: boolean;
 }>;
 export type NativeEagerRoutingActivation = "relu" | "gelu" | "silu" | "sigmoid" | "tanh";
+export type NativeEagerRoutingUnaryOp =
+  | "abs"
+  | "exp"
+  | "expm1"
+  | "log"
+  | "log1p"
+  | "neg"
+  | "recip"
+  | "rsqrt"
+  | "sqr"
+  | "sqrt";
 export type NativeEagerRoutingPolicy = Readonly<{
   kind: "zgml.native-eager-routing-policy";
   runtime: "node" | "bun";
@@ -2303,10 +2314,12 @@ export type NativeEagerRoutingPolicy = Readonly<{
   tensorMath: Readonly<{
     matmul: "native";
     softmax: "native";
+    bmmMinMultiplyAdds: number;
     elementwiseMinLength: number;
     activationMinLength: number;
     reduceMinLength: number;
     disabledActivations: readonly NativeEagerRoutingActivation[];
+    disabledUnaryOps: readonly NativeEagerRoutingUnaryOp[];
   }>;
   signature: string;
 }>;

@@ -78,8 +78,10 @@ export type AdapterTensorRuntimeSurfaceOptions<
   isGradEnabled: TensorHostSurfaceOptions<TTensor, TNativeBuffer>["isGradEnabled"];
   nativeEagerMatmulInto?: NativeEagerMatmulInto;
   nativeEagerBmmInto?: NativeEagerBmmInto;
+  nativeEagerBmmMinMultiplyAdds?: number;
   nativeEagerElementwiseInto?: NativeEagerElementwiseInto;
   nativeEagerElementwiseMinLength?: number;
+  nativeEagerUnaryOpEnabled?: (op: string, outputLength: number) => boolean;
   nativeEagerActivationInto?: NativeEagerActivationInto;
   nativeEagerActivationMinLength?: number;
   nativeEagerActivationEnabled?: NativeEagerActivationEnabled;
@@ -152,8 +154,10 @@ export function createAdapterTensorRuntimeSurface<
     isGradEnabled: options.isGradEnabled,
     nativeEagerMatmulInto: options.nativeEagerMatmulInto,
     nativeEagerBmmInto: options.nativeEagerBmmInto,
+    nativeEagerBmmMinMultiplyAdds: options.nativeEagerBmmMinMultiplyAdds,
     nativeEagerElementwiseInto: options.nativeEagerElementwiseInto,
     nativeEagerElementwiseMinLength: options.nativeEagerElementwiseMinLength,
+    nativeEagerUnaryOpEnabled: options.nativeEagerUnaryOpEnabled,
     nativeEagerActivationInto: options.nativeEagerActivationInto,
     nativeEagerActivationMinLength: options.nativeEagerActivationMinLength,
     nativeEagerActivationEnabled: options.nativeEagerActivationEnabled,

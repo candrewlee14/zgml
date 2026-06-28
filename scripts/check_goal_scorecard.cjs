@@ -1071,14 +1071,14 @@ function checkScripts() {
     "native_eager: PublicNativeEagerNamespace",
   ]);
   requireIncludes(read("src/ts/core/tensor_math.ts"), "src/ts/core/tensor_math.ts", "grad-compatible Tensor.bmm native eager bridge", [
-    "const nativeBmmMinMultiplyAdds = 512",
+    "const nativeEagerBmmMinMultiplyAdds = Number.isSafeInteger(options.nativeEagerBmmMinMultiplyAdds)",
     "const useNativeBmm = typeof nativeEagerBmmInto === \"function\"",
-    "batch * lhsRows * lhsCols * rhsCols >= nativeBmmMinMultiplyAdds",
+    "batch * lhsRows * lhsCols * rhsCols >= nativeEagerBmmMinMultiplyAdds",
     "nativeEagerBmmInto(out, tensor, rhsTensor ?? rhs",
     "nativeEagerActivationEnabled(activation, output.length)",
     "nativeReduceDimTensor(tensor, dim",
     "const useNative = typeof nativeEagerMatmulInto === \"function\"",
-    "lhsRows * lhsCols * rhsCols >= nativeBmmMinMultiplyAdds",
+    "lhsRows * lhsCols * rhsCols >= nativeEagerBmmMinMultiplyAdds",
     "out.subarray(outBatchOffset, outBatchOffset + lhsRows * rhsCols)",
     "tensor.data.subarray(lhsBatchOffset, lhsBatchOffset + lhsRows * lhsCols)",
     "rhs.subarray(rhsBatchOffset, rhsBatchOffset + rhsRows * rhsCols)",
@@ -1091,12 +1091,17 @@ function checkScripts() {
     "nodeNativeEagerRoutingPolicy",
     "bunNativeEagerRoutingPolicy",
     "nativeEagerRoutingActivationEnabled",
+    "nativeEagerRoutingUnaryOpEnabled",
+    "bmmMinMultiplyAdds: 512",
     "elementwiseMinLength: 512",
     "activationMinLength: 65536",
     "disabledActivations: [\"relu\"]",
     "disabledActivations: []",
+    "disabledUnaryOps: []",
   ]);
   requireIncludes(read("src/ts/adapters/node_ffi_runtime.ts"), "src/ts/adapters/node_ffi_runtime.ts", "Node native eager activation dispatch policy", [
+    "nativeEagerBmmMinMultiplyAdds: nodeNativeEagerRoutingPolicy.tensorMath.bmmMinMultiplyAdds",
+    "nativeEagerUnaryOpEnabled: (op) => nativeEagerRoutingUnaryOpEnabled(nodeNativeEagerRoutingPolicy, op)",
     "nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(nodeNativeEagerRoutingPolicy, activation)",
     "nativeEagerReduceDimInto: (output, input, options) => nativeEager.reduceDimInto(output, input, options)",
     "nativeEagerArgReduceDimInto: (output, input, options) => nativeEager.argReduceDimInto(output, input, options)",
@@ -1109,6 +1114,8 @@ function checkScripts() {
     "routingPolicy: nodeNativeEagerRoutingPolicy",
   ]);
   requireIncludes(read("src/ts/adapters/bun_ffi_runtime.ts"), "src/ts/adapters/bun_ffi_runtime.ts", "Bun native eager activation dispatch policy", [
+    "nativeEagerBmmMinMultiplyAdds: bunNativeEagerRoutingPolicy.tensorMath.bmmMinMultiplyAdds",
+    "nativeEagerUnaryOpEnabled: (op) => nativeEagerRoutingUnaryOpEnabled(bunNativeEagerRoutingPolicy, op)",
     "nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(bunNativeEagerRoutingPolicy, activation)",
     "nativeEagerClampInto: (output, input, options) => nativeEager.clampInto(output, input, options)",
     "nativeEagerReduceDimInto: (output, input, options) => nativeEager.reduceDimInto(output, input, options)",

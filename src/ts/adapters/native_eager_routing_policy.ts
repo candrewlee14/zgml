@@ -5,6 +5,17 @@ export type NativeEagerRoutingActivation =
   | "silu"
   | "sigmoid"
   | "tanh";
+export type NativeEagerRoutingUnaryOp =
+  | "abs"
+  | "exp"
+  | "expm1"
+  | "log"
+  | "log1p"
+  | "neg"
+  | "recip"
+  | "rsqrt"
+  | "sqr"
+  | "sqrt";
 
 export type NativeEagerRoutingPolicy = Readonly<{
   kind: "zgml.native-eager-routing-policy";
@@ -14,10 +25,12 @@ export type NativeEagerRoutingPolicy = Readonly<{
   tensorMath: Readonly<{
     matmul: "native";
     softmax: "native";
+    bmmMinMultiplyAdds: number;
     elementwiseMinLength: number;
     activationMinLength: number;
     reduceMinLength: number;
     disabledActivations: readonly NativeEagerRoutingActivation[];
+    disabledUnaryOps: readonly NativeEagerRoutingUnaryOp[];
   }>;
   signature: string;
 }>;
@@ -29,10 +42,12 @@ function policySignature(runtime: NativeEagerRoutingRuntime, tensorMath: NativeE
     `core=zig-c-abi`,
     `matmul=${tensorMath.matmul}`,
     `softmax=${tensorMath.softmax}`,
+    `bmmMinMultiplyAdds=${tensorMath.bmmMinMultiplyAdds}`,
     `elementwiseMin=${tensorMath.elementwiseMinLength}`,
     `activationMin=${tensorMath.activationMinLength}`,
     `reduceMin=${tensorMath.reduceMinLength}`,
     `disabledActivations=${tensorMath.disabledActivations.join(",") || "none"}`,
+    `disabledUnaryOps=${tensorMath.disabledUnaryOps.join(",") || "none"}`,
   ].join("|");
 }
 
@@ -43,6 +58,7 @@ function routingPolicy(
   const tensorMath = Object.freeze({
     ...tensorMathPolicy,
     disabledActivations: Object.freeze([...tensorMathPolicy.disabledActivations]),
+    disabledUnaryOps: Object.freeze([...tensorMathPolicy.disabledUnaryOps]),
   });
   return Object.freeze({
     kind: "zgml.native-eager-routing-policy",
@@ -57,19 +73,23 @@ function routingPolicy(
 export const nodeNativeEagerRoutingPolicy = routingPolicy("node", {
   matmul: "native",
   softmax: "native",
+  bmmMinMultiplyAdds: 512,
   elementwiseMinLength: 512,
   activationMinLength: 512,
   reduceMinLength: 512,
   disabledActivations: ["relu"],
+  disabledUnaryOps: [],
 });
 
 export const bunNativeEagerRoutingPolicy = routingPolicy("bun", {
   matmul: "native",
   softmax: "native",
+  bmmMinMultiplyAdds: 512,
   elementwiseMinLength: 512,
   activationMinLength: 65536,
   reduceMinLength: 512,
   disabledActivations: [],
+  disabledUnaryOps: [],
 });
 
 export function nativeEagerRoutingActivationEnabled(
@@ -77,4 +97,11 @@ export function nativeEagerRoutingActivationEnabled(
   activation: string,
 ) {
   return !policy.tensorMath.disabledActivations.includes(activation as NativeEagerRoutingActivation);
+}
+
+export function nativeEagerRoutingUnaryOpEnabled(
+  policy: NativeEagerRoutingPolicy,
+  op: string,
+) {
+  return !policy.tensorMath.disabledUnaryOps.includes(op as NativeEagerRoutingUnaryOp);
 }

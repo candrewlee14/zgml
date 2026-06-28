@@ -152,6 +152,7 @@ import {
 import {
   bunNativeEagerRoutingPolicy,
   nativeEagerRoutingActivationEnabled,
+  nativeEagerRoutingUnaryOpEnabled,
 } from "./native_eager_routing_policy.js";
 import {
   createAdapterNativeCoreSurface,
@@ -1167,8 +1168,10 @@ const {
   isGradEnabled: projectedIsGradEnabled,
   nativeEagerMatmulInto: (output, lhs, rhs, options) => nativeEager.matmulInto(output, lhs, rhs, options),
   nativeEagerBmmInto: (output, lhs, rhs, options) => nativeEager.bmmInto(output, lhs, rhs, options),
+  nativeEagerBmmMinMultiplyAdds: bunNativeEagerRoutingPolicy.tensorMath.bmmMinMultiplyAdds,
   nativeEagerElementwiseInto: (output, lhs, rhs, options) => nativeEager.elementwiseInto(output, lhs, rhs, options),
   nativeEagerElementwiseMinLength: bunNativeEagerRoutingPolicy.tensorMath.elementwiseMinLength,
+  nativeEagerUnaryOpEnabled: (op) => nativeEagerRoutingUnaryOpEnabled(bunNativeEagerRoutingPolicy, op),
   nativeEagerActivationInto: (output, input, options) => nativeEager.activationInto(output, input, options),
   nativeEagerActivationMinLength: bunNativeEagerRoutingPolicy.tensorMath.activationMinLength,
   nativeEagerActivationEnabled: (activation) => nativeEagerRoutingActivationEnabled(bunNativeEagerRoutingPolicy, activation),
