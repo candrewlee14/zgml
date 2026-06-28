@@ -354,8 +354,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const plan = broadcastPlan(tensor.shape, rhsShape, label);
     const out = new Float32Array(shapeProduct(plan.shape));
     const needsGrad = gradEnabled && (tensor.requiresGrad || Boolean(rhsTensor && rhsTensor.requiresGrad));
-    if (!gradEnabled && nativeElementwiseBinaryInto(out, tensor, rhsTensor, rhs, rhsShape, nativeOp)) {
-      // Native eager elementwise currently accepts same-shape or scalar RHS. General broadcasting stays in TS.
+    if (nativeElementwiseBinaryInto(out, tensor, rhsTensor, rhs, rhsShape, nativeOp)) {
+      // Native eager elementwise owns supported forward paths; TS still records the dynamic backward closure.
     } else {
       for (let i = 0; i < out.length; i += 1) out[i] = op(tensor.data[plan.lhsIndex[i]], rhs[plan.rhsIndex[i]]);
     }
@@ -451,8 +451,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const otherPlan = broadcastPlan(otherShape, resultPlan.shape, "where other");
     const out = new Float32Array(shapeProduct(resultPlan.shape));
     const needsGrad = gradEnabled && (Boolean(inputTensor && inputTensor.requiresGrad) || Boolean(otherTensor && otherTensor.requiresGrad));
-    if (!needsGrad && nativeWhereInto(out, condition, inputTensor, inputData, inputShape, otherTensor, otherData, otherShape, resultPlan.shape)) {
-      // Native eager where currently accepts result-shaped condition and scalar/same-shape values. General broadcasting stays in TS.
+    if (nativeWhereInto(out, condition, inputTensor, inputData, inputShape, otherTensor, otherData, otherShape, resultPlan.shape)) {
+      // Native eager where owns supported forward paths; TS keeps value-gradient routing.
     } else {
       for (let i = 0; i < out.length; i += 1) {
         out[i] = condition.data[conditionPlan.lhsIndex[i]] !== 0
@@ -696,7 +696,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const out = new Float32Array(lhsRows * rhsCols);
     const gradEnabled = gradModeEnabled();
     const needsGrad = gradEnabled && (tensor.requiresGrad || Boolean(rhsTensor && rhsTensor.requiresGrad));
-    if (!gradEnabled && typeof nativeEagerMatmulInto === "function") {
+    if (typeof nativeEagerMatmulInto === "function") {
       nativeEagerMatmulInto(out, tensor, rhsTensor ?? rhs, {
         rows: lhsRows,
         shared: lhsCols,
@@ -940,10 +940,10 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const TensorClass = tensorClass();
     const out = new Float32Array(tensor.length);
     const gradEnabled = gradModeEnabled();
-    if (!gradEnabled && nativeActivation && nativeActivationUnaryInto(out, tensor, nativeActivation)) {
-      // Native eager activation owns proved no-grad tensor-sized activation paths.
-    } else if (!gradEnabled && nativeOp && nativeElementwiseUnaryInto(out, tensor, nativeOp)) {
-      // Native eager elementwise owns the no-grad tensor-sized path for supported unary ops.
+    if (nativeActivation && nativeActivationUnaryInto(out, tensor, nativeActivation)) {
+      // Native eager activation owns supported forward paths; TS still records the dynamic backward closure.
+    } else if (nativeOp && nativeElementwiseUnaryInto(out, tensor, nativeOp)) {
+      // Native eager elementwise owns supported forward paths; TS still records the dynamic backward closure.
     } else {
       for (let i = 0; i < out.length; i += 1) out[i] = fn(tensor.data[i]);
     }
