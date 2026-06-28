@@ -300,8 +300,12 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     return true;
   }
 
+  function needsTensorGrad(tensor: TensorMathTensor) {
+    return gradModeEnabled() && tensor.requiresGrad;
+  }
+
   function nativeClamp(tensor: TensorMathTensor, minValue: number, maxValue: number, hasMin: boolean, hasMax: boolean) {
-    if (gradModeEnabled()) return null;
+    if (needsTensorGrad(tensor)) return null;
     if (typeof nativeEagerClampInto !== "function") return null;
     if (tensor.length < nativeEagerElementwiseMinLength) return null;
     const TensorClass = tensorClass();
@@ -346,7 +350,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function nativeReduceDimTensor(tensor: TensorMathTensor, dim: number, label: string, op: string) {
-    if (gradModeEnabled()) return null;
+    if (needsTensorGrad(tensor)) return null;
     if (typeof nativeEagerReduceDimInto !== "function") return null;
     if (tensor.length < nativeEagerReduceMinLength) return null;
     const plan = dimReductionPlan(tensor.shape, dim, label);
@@ -365,7 +369,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function nativeArgReduceDimTensor(tensor: TensorMathTensor, dim: number, label: string, op: "argmax" | "argmin") {
-    if (gradModeEnabled()) return null;
+    if (needsTensorGrad(tensor)) return null;
     if (typeof nativeEagerArgReduceDimInto !== "function") return null;
     if (tensor.length < nativeEagerReduceMinLength) return null;
     const plan = dimReductionPlan(tensor.shape, dim, label);
@@ -683,7 +687,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function sqr(tensor: TensorMathTensor) {
-    if (!gradModeEnabled()) {
+    if (!needsTensorGrad(tensor)) {
       const TensorClass = tensorClass();
       const out = new Float32Array(tensor.length);
       if (nativeElementwiseUnaryInto(out, tensor, "sqr")) return new TensorClass(out, tensor.shape);
@@ -696,7 +700,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
   }
 
   function nativePowSpecialization(tensor: TensorMathTensor, exponent: number) {
-    if (gradModeEnabled()) return null;
+    if (needsTensorGrad(tensor)) return null;
     const nativeOp =
       exponent === 2 ? "sqr" :
       exponent === -1 ? "recip" :
@@ -1392,7 +1396,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const TensorClass = tensorClass();
     const plan = dimReductionPlan(tensor.shape, dim, "softmaxDim");
     const gradEnabled = gradModeEnabled();
-    if (!gradEnabled) {
+    if (!needsTensorGrad(tensor)) {
       const native = nativeSoftmaxDim(tensor, dim, false);
       if (native !== null) return native;
     }
@@ -1436,7 +1440,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     const TensorClass = tensorClass();
     const plan = dimReductionPlan(tensor.shape, dim, "logSoftmaxDim");
     const gradEnabled = gradModeEnabled();
-    if (!gradEnabled) {
+    if (!needsTensorGrad(tensor)) {
       const native = nativeSoftmaxDim(tensor, dim, true);
       if (native !== null) return native;
     }
@@ -1746,7 +1750,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
 
   function sum(tensor: TensorMathTensor, dim?: number) {
     if (dim !== undefined) return sumDim(tensor, dim);
-    if (!gradModeEnabled()) {
+    if (!needsTensorGrad(tensor)) {
       const native = nativeReduceScalar(tensor, "sum");
       if (native !== null) return native;
     }
@@ -1767,7 +1771,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
 
   function max(tensor: TensorMathTensor, dim?: number) {
     if (dim !== undefined) return maxDim(tensor, dim);
-    if (!gradModeEnabled()) {
+    if (!needsTensorGrad(tensor)) {
       const native = nativeReduceScalar(tensor, "max");
       if (native !== null) return native;
     }
@@ -1792,7 +1796,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
 
   function min(tensor: TensorMathTensor, dim?: number) {
     if (dim !== undefined) return minDim(tensor, dim);
-    if (!gradModeEnabled()) {
+    if (!needsTensorGrad(tensor)) {
       const native = nativeReduceScalar(tensor, "min");
       if (native !== null) return native;
     }
@@ -1833,7 +1837,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
 
   function mean(tensor: TensorMathTensor, dim?: number) {
     if (dim !== undefined) return meanDim(tensor, dim);
-    if (!gradModeEnabled()) {
+    if (!needsTensorGrad(tensor)) {
       const native = nativeReduceScalar(tensor, "mean");
       if (native !== null) return native;
     }
@@ -1844,7 +1848,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
 
   function prod(tensor: TensorMathTensor, dim?: number) {
     if (dim !== undefined) return prodDim(tensor, dim);
-    if (!gradModeEnabled()) {
+    if (!needsTensorGrad(tensor)) {
       const native = nativeReduceScalar(tensor, "prod");
       if (native !== null) return native;
     }

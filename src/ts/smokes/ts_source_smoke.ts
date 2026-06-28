@@ -885,6 +885,122 @@ Array.from(noGradNativeSoftmax.logSoftmax(softmaxInput).data).forEach((value, in
   -2.407606, -1.407606, -0.407606,
 ][index], 1e-6, "tensor math no-grad native logSoftmax hook"));
 expectSame(nativeSoftmaxCalls, ["softmax", "logSoftmax"], "tensor math no-grad native softmax hook count");
+const gradEnabledNativeNoGradCalls: string[] = [];
+const gradEnabledNativeNoGrad = createTensorMathHelpers({
+  getTensorClass: () => TensorDataSmokeTensor,
+  f32: tensorData.f32,
+  addTensorGrad: tensorData.addTensorGrad,
+  scalarTensor: (value, requiresGrad = false) =>
+    new TensorDataSmokeTensor(Float32Array.of(value), [1], { requiresGrad }),
+  isGradEnabled: () => true,
+  nativeEagerElementwiseMinLength: 0,
+  nativeEagerReduceMinLength: 0,
+  nativeEagerElementwiseInto(output, input, _rhs, options) {
+    gradEnabledNativeNoGradCalls.push(options.op);
+    const data = input.data ?? input;
+    for (let i = 0; i < output.length; i += 1) {
+      switch (options.op) {
+        case "sqr": output[i] = data[i] * data[i]; break;
+        default: throw new Error(`unexpected grad-enabled native elementwise op ${options.op}`);
+      }
+    }
+    return output;
+  },
+  nativeEagerClampInto(output, input, options) {
+    gradEnabledNativeNoGradCalls.push("clamp");
+    const data = input.data ?? input;
+    for (let i = 0; i < output.length; i += 1) {
+      let value = data[i];
+      if (options.min !== undefined) value = Math.max(value, options.min);
+      if (options.max !== undefined) value = Math.min(value, options.max);
+      output[i] = value;
+    }
+    return output;
+  },
+  nativeEagerReduceInto(output, input, options) {
+    gradEnabledNativeNoGradCalls.push(options.op);
+    const data = input.data;
+    output[0] = Array.from(data).reduce((acc, value) => acc + value, 0);
+    return output;
+  },
+  nativeEagerReduceDimInto(output, input, options) {
+    gradEnabledNativeNoGradCalls.push(`dim:${options.op}`);
+    const data = input.data;
+    for (let outer = 0; outer < options.outer; outer += 1) {
+      for (let inner = 0; inner < options.inner; inner += 1) {
+        let acc = 0;
+        for (let reduce = 0; reduce < options.reduce; reduce += 1) {
+          acc += data[(outer * options.reduce + reduce) * options.inner + inner];
+        }
+        output[outer * options.inner + inner] = acc;
+      }
+    }
+    return output;
+  },
+  nativeEagerArgReduceDimInto(output, input, options) {
+    gradEnabledNativeNoGradCalls.push(`arg:${options.op}`);
+    const data = input.data;
+    for (let outer = 0; outer < options.outer; outer += 1) {
+      for (let inner = 0; inner < options.inner; inner += 1) {
+        let bestValue = data[(outer * options.reduce) * options.inner + inner];
+        let bestIndex = 0;
+        for (let reduce = 1; reduce < options.reduce; reduce += 1) {
+          const value = data[(outer * options.reduce + reduce) * options.inner + inner];
+          if (value > bestValue) {
+            bestValue = value;
+            bestIndex = reduce;
+          }
+        }
+        output[outer * options.inner + inner] = bestIndex;
+      }
+    }
+    return output;
+  },
+  nativeEagerSoftmaxInto(output, input, options) {
+    gradEnabledNativeNoGradCalls.push(options.logSoftmax ? "logSoftmax" : "softmax");
+    const data = input.data;
+    for (let row = 0; row < 2; row += 1) {
+      const base = row * 3;
+      const max = Math.max(data[base], data[base + 1], data[base + 2]);
+      const e0 = Math.exp(data[base] - max);
+      const e1 = Math.exp(data[base + 1] - max);
+      const e2 = Math.exp(data[base + 2] - max);
+      const denom = e0 + e1 + e2;
+      if (options.logSoftmax) {
+        const logDenom = Math.log(denom);
+        output[base] = data[base] - max - logDenom;
+        output[base + 1] = data[base + 1] - max - logDenom;
+        output[base + 2] = data[base + 2] - max - logDenom;
+      } else {
+        output[base] = e0 / denom;
+        output[base + 1] = e1 / denom;
+        output[base + 2] = e2 / denom;
+      }
+    }
+    return output;
+  },
+});
+expectSame(gradEnabledNativeNoGrad.clamp(
+  new TensorDataSmokeTensor(Float32Array.of(-2, -1, 0, 3), [2, 2]),
+  -1,
+  2,
+).data, [-1, -1, 0, 2], "tensor math grad-enabled no-grad tensor native clamp hook");
+expectSame(gradEnabledNativeNoGrad.pow(
+  new TensorDataSmokeTensor(Float32Array.of(1, -2, 3, -4), [2, 2]),
+  2,
+).data, [1, 4, 9, 16], "tensor math grad-enabled no-grad tensor native pow hook");
+expectSame(gradEnabledNativeNoGrad.sum(reduceInput).data, [5.5], "tensor math grad-enabled no-grad tensor native scalar reduce hook");
+expectSame(gradEnabledNativeNoGrad.sumDim(reduceDimInput, 1).data, [6, 15], "tensor math grad-enabled no-grad tensor native dim reduce hook");
+expectSame(gradEnabledNativeNoGrad.argmaxDim(argReduceDimInput, 1).data, [1, 2], "tensor math grad-enabled no-grad tensor native arg reduce hook");
+expectCloseValues(gradEnabledNativeNoGrad.softmax(softmaxInput).data, [
+  0.09003057, 0.24472847, 0.66524096,
+  0.09003057, 0.24472847, 0.66524096,
+], "tensor math grad-enabled no-grad tensor native softmax hook");
+expectCloseValues(gradEnabledNativeNoGrad.logSoftmax(softmaxInput).data, [
+  -2.407606, -1.407606, -0.407606,
+  -2.407606, -1.407606, -0.407606,
+], "tensor math grad-enabled no-grad tensor native logSoftmax hook");
+expectSame(gradEnabledNativeNoGradCalls, ["clamp", "sqr", "sum", "dim:sum", "arg:argmax", "softmax", "logSoftmax"], "tensor math grad-enabled no-grad native hook count");
 const red = new TensorDataSmokeTensor(Float32Array.of(1, 2, 3, 4, 5, 6), [2, 3], { requiresGrad: true });
 const summed = tensorMath.sumDim(red, 1);
 expectSame({ data: summed.data, shape: summed.shape }, { data: [6, 15], shape: [2, 1] }, "tensor math sumDim");

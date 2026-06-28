@@ -556,7 +556,7 @@ export function createEmbeddingModuleClass(options: SharedEmbeddingModuleClassOp
 export type SharedConv2dModuleClassOptions = Readonly<
   SingleModuleCompileCoreHooksInput & Pick<
     Conv2dModuleClassOptions,
-    "Tensor" | "addTensorGrad" | "isGradEnabled" | "requirePositiveInteger" | "defaultedF32" | "zerosF32" | "makeParameter" | "parameterView" | "moduleCompileSupport"
+    "Tensor" | "addTensorGrad" | "isGradEnabled" | "requirePositiveInteger" | "defaultedF32" | "zerosF32" | "makeParameter" | "parameterView" | "nativeEagerConv2dInto" | "moduleCompileSupport"
   > & Pick<Conv2dModuleClassOptions, "parameterNames" | "parameterInfos" | "parameterInfo" | "zeroGrad" | "setRequiresGrad" | "stateDict" | "loadStateDict">
 >;
 
@@ -565,7 +565,7 @@ export function createConv2dModuleClass(options: SharedConv2dModuleClassOptions)
 }
 
 export type SharedMaxPool2dModuleClassOptions = Readonly<
-  SingleModuleCompileCoreHooksInput & Pick<PoolingModuleClassOptions, "Tensor" | "addTensorGrad" | "isGradEnabled">
+  SingleModuleCompileCoreHooksInput & Pick<PoolingModuleClassOptions, "Tensor" | "addTensorGrad" | "isGradEnabled" | "nativeEagerPool2dInto">
 >;
 
 export function createMaxPool2dModuleClass(options: SharedMaxPool2dModuleClassOptions) {
