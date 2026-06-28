@@ -252,6 +252,7 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
     compileTrainingStep: options.compileTrainingStep,
   });
   const fitModuleFromTrain = lossTrainHelpers.train.fit as (target: unknown, batches: unknown, options?: unknown) => unknown;
+  const fitNativeModuleFromTrain = lossTrainHelpers.train.fitNative as (target: unknown, batches: unknown, options?: unknown) => unknown;
   const evaluateModuleFromTrain = lossTrainHelpers.train.evaluateModule as (
     target: unknown,
     batches: unknown,
@@ -332,6 +333,7 @@ export function createAdapterFrontendNamespaces<TTensor = unknown>(options: Adap
     bindingPlanForModuleBindings: options.bindingPlanForModuleBindings,
     requireBindingPlanForModuleBindings: options.requireBindingPlanForModuleBindings,
     fitModule: (target: unknown, batches: unknown, fitOptions = {}) => fitModuleFromTrain(target, batches, fitOptions),
+    fitNativeModule: (target: unknown, batches: unknown, fitOptions = {}) => fitNativeModuleFromTrain(target, batches, fitOptions),
     evaluateModule: (target: unknown, batches: unknown, criterion: unknown, evaluateOptions = {}) => (
       evaluateModuleFromTrain(target, batches, criterion, evaluateOptions)
     ),

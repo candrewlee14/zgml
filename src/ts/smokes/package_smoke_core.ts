@@ -7357,13 +7357,29 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       loss: fitModuleCriterion,
       maxSteps: 1,
     });
+    const moduleMethodFitNativeModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
+    const moduleMethodFitNativeOptimizer = adapter.optim.sgd(moduleMethodFitNativeModel, { lr: 0.05 });
+    const moduleMethodFitNativeEvidence = moduleMethodFitNativeModel.fitNative(shuffledBatches, {
+      optimizer: moduleMethodFitNativeOptimizer,
+      loss: fitModuleCriterion,
+      maxSteps: 1,
+    });
+    const moduleMethodFitNativeSnakeEvidence = moduleMethodFitNativeModel.fit_native(shuffledBatches, {
+      optimizer: moduleMethodFitNativeOptimizer,
+      loss: fitModuleCriterion,
+      maxSteps: 1,
+    });
     if (
       trainFitNativeEvidence.native !== true ||
       trainFitNativeEvidence.compiledPlan?.loweredBy !== "zig-ffi" ||
       rootFitNativeEvidence.native !== true ||
-      rootFitNativeEvidence.compiledPlan?.loweredBy !== "zig-ffi"
+      rootFitNativeEvidence.compiledPlan?.loweredBy !== "zig-ffi" ||
+      moduleMethodFitNativeEvidence.native !== true ||
+      moduleMethodFitNativeEvidence.compiledPlan?.loweredBy !== "zig-ffi" ||
+      moduleMethodFitNativeSnakeEvidence.native !== true ||
+      moduleMethodFitNativeSnakeEvidence.compiledPlan?.loweredBy !== "zig-ffi"
     ) {
-      throw new Error(`${label} expected train.fitNative and zgml.fitNative to require native Zig training`);
+      throw new Error(`${label} expected train.fitNative, zgml.fitNative, and module.fitNative to require native Zig training`);
     }
   }
   if (

@@ -4476,6 +4476,20 @@ const moduleMethodFitEvidence: TrainFitEvidence = checkpointModel.fit(tensorData
   loss: new nn.MSELoss(),
   maxSteps: 1,
 });
+const moduleMethodFitNativeEvidence: TrainFitEvidence = checkpointModel.fitNative(tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+const moduleMethodFitNativeSnakeEvidence: TrainFitEvidence = checkpointModel.fit_native(tensorDatasetBatches, {
+  optimizer: checkpointOptimizer,
+  loss: new nn.MSELoss(),
+  maxSteps: 1,
+  inputShape: [1, 2] as const,
+});
+void moduleMethodFitNativeEvidence;
+void moduleMethodFitNativeSnakeEvidence;
 const moduleMethodEvalEvidence: TrainEvaluateEvidence = checkpointModel.evaluate(tensorDatasetBatches, new nn.MSELoss(), {
   maxSteps: 1,
 });

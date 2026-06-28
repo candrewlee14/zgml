@@ -200,10 +200,11 @@ API, Zig-owned execution core, no mirrored Zig product frontend.
 The same rule now applies to the training happy path: modules expose
 `model.fit(loader, { optimizer, loss, ... })`, `model.evaluate(...)`, and
 `model.predict(...)` as TS-authored convenience methods over the single
-`train.fit`/`train.fitNative`/`train.evaluateModule`/`train.predictModule`
+`train.fit`/`model.fitNative`/`train.fitNative`/`train.evaluateModule`/`train.predictModule`
 policy. When the shape matches a supported native training plan, that path still
 lowers through `compileTrainingStep` to the Zig FFI kernel and returns
-`loweredBy: "zig-ffi"` evidence. Use `train.fitNative` / `zgml.fitNative` when a
+`loweredBy: "zig-ffi"` evidence. Use `model.fitNative`, `train.fitNative`, or
+`zgml.fitNative` when a
 caller wants this native route to fail closed instead of falling back to eager
 TS autograd. The product API gets simpler without moving the hot training step
 back into JavaScript.

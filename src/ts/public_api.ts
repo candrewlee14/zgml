@@ -3815,6 +3815,14 @@ export interface NnModule {
     loss?: unknown;
     criterion?: unknown;
   }): TrainFitEvidence;
+  fitNative(batches: Iterable<unknown>, options: TrainFitOptions & {
+    optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void };
+    loss?: unknown;
+    criterion?: unknown;
+    requireNative?: true;
+    require_native?: true;
+  }): TrainFitEvidence;
+  fit_native: NnModule["fitNative"];
   evaluate(batches: Iterable<unknown>, criterion: unknown, options?: TrainEvaluateOptions): TrainEvaluateEvidence;
   evalModule(batches: Iterable<unknown>, criterion: unknown, options?: TrainEvaluateOptions): TrainEvaluateEvidence;
   eval_module(batches: Iterable<unknown>, criterion: unknown, options?: TrainEvaluateOptions): TrainEvaluateEvidence;

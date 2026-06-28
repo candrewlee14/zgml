@@ -83,6 +83,8 @@ export type NnModulePrototype = {
   placeParameters?: (program: unknown, placementOptions?: ModuleParameterPlacementOptions) => unknown;
   place_parameters?: (this: NnModulePrototype, program: unknown, placementOptions?: ModuleParameterPlacementOptions) => unknown;
   fit?: (this: NnModulePrototype, batches: unknown, fitOptions?: TrainFitOptions) => unknown;
+  fitNative?: (this: NnModulePrototype, batches: unknown, fitOptions?: TrainFitOptions) => unknown;
+  fit_native?: (this: NnModulePrototype, batches: unknown, fitOptions?: TrainFitOptions) => unknown;
   evaluate?: (this: NnModulePrototype, batches: unknown, criterion: unknown, evaluateOptions?: TrainEvaluateOptions) => unknown;
   evalModule?: (this: NnModulePrototype, batches: unknown, criterion: unknown, evaluateOptions?: TrainEvaluateOptions) => unknown;
   eval_module?: (this: NnModulePrototype, batches: unknown, criterion: unknown, evaluateOptions?: TrainEvaluateOptions) => unknown;
@@ -111,6 +113,7 @@ export type NnCompileEvidenceMethodHooks = Readonly<{
   canCompileModule: (target: NnModulePrototype, compileOptions?: CompileOptions) => boolean;
   nativeInferenceForModule: (target: NnModulePrototype, compileOptions?: CompileOptions, bindOptions?: unknown) => unknown;
   fitModule?: (target: NnModulePrototype, batches: unknown, fitOptions?: TrainFitOptions) => unknown;
+  fitNativeModule?: (target: NnModulePrototype, batches: unknown, fitOptions?: TrainFitOptions) => unknown;
   evaluateModule?: (target: NnModulePrototype, batches: unknown, criterion: unknown, evaluateOptions?: TrainEvaluateOptions) => unknown;
   predictModule?: (target: NnModulePrototype, batches: unknown, predictOptions?: TrainPredictOptions) => unknown;
 }>;
@@ -133,6 +136,7 @@ export function installNnCompileEvidenceMethods(constructors: readonly NnModuleP
   const canCompileModule = options.canCompileModule;
   const nativeInferenceForModule = options.nativeInferenceForModule;
   const fitModule = options.fitModule;
+  const fitNativeModule = options.fitNativeModule;
   const evaluateModule = options.evaluateModule;
   const predictModule = options.predictModule;
   if (
@@ -239,6 +243,11 @@ export function installNnCompileEvidenceMethods(constructors: readonly NnModuleP
       if (typeof fitModule !== "function") throw new Error("nn.Module.fit requires a train.fit runtime");
       return fitModule(this, batches, fitOptions);
     };
+    proto.fitNative = function fitNative(this: NnModulePrototype, batches: unknown, fitOptions: TrainFitOptions = {}) {
+      if (typeof fitNativeModule !== "function") throw new Error("nn.Module.fitNative requires a train.fitNative runtime");
+      return fitNativeModule(this, batches, fitOptions);
+    };
+    proto.fit_native = proto.fitNative;
     proto.evaluate = function evaluate(this: NnModulePrototype, batches: unknown, criterion: unknown, evaluateOptions: TrainEvaluateOptions = {}) {
       if (typeof evaluateModule !== "function") throw new Error("nn.Module.evaluate requires a train.evaluateModule runtime");
       return evaluateModule(this, batches, criterion, evaluateOptions);
