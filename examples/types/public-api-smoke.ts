@@ -4492,10 +4492,12 @@ const modelFirstFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpointMode
 const rootFitEvidence: TrainFitEvidence<"adam"> = fit(checkpointModel, tensorDatasetBatches, modelFirstFitOptions);
 const rootFitModuleEvidence: TrainFitEvidence<"adam"> = fitModule(checkpointOptimizer, checkpointModel, tensorDatasetBatches, new nn.MSELoss(), { maxSteps: 1 });
 const rootFitModuleSnakeEvidence: TrainFitEvidence<"adam"> = fit_module(checkpointOptimizer, checkpointModel, tensorDatasetBatches, new nn.MSELoss(), { maxSteps: 1 });
+const optimizerFirstModuleFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpointOptimizer, checkpointModel, tensorDatasetBatches, new nn.MSELoss(), { maxSteps: 1 });
 const zgmlFitEvidence: TrainFitEvidence<"adam"> = zgml.fit(checkpointModel, tensorDatasetBatches, modelFirstFitOptions);
 void rootFitEvidence;
 void rootFitModuleEvidence;
 void rootFitModuleSnakeEvidence;
+void optimizerFirstModuleFitEvidence;
 void zgmlFitEvidence;
 const modelFirstNativeFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpointModel, tensorDatasetBatches, {
   optimizer: checkpointOptimizer,
@@ -4508,6 +4510,12 @@ const modelFirstNativeFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpoi
   num_classes: 1,
 });
 const modelFirstNativeFitPlan: CompiledTrainingPlan | null | undefined = modelFirstNativeFitEvidence.compiledPlan;
+const optimizerFirstNativeFitEvidence: TrainFitEvidence<"adam"> = train.fit(checkpointOptimizer, checkpointModel, tensorDatasetBatches, new nn.MSELoss(), {
+  maxSteps: 1,
+  requireNative: true,
+  inputShape: [1, 2] as const,
+});
+const optimizerFirstNativeFitPlan: CompiledTrainingPlan | null | undefined = optimizerFirstNativeFitEvidence.compiledPlan;
 const modelFirstFitNativeEvidence: TrainFitEvidence<"adam"> = train.fitNative(checkpointModel, tensorDatasetBatches, {
   optimizer: checkpointOptimizer,
   loss: new nn.MSELoss(),
@@ -4527,6 +4535,7 @@ const rootFitNativeAliasEvidence: TrainFitEvidence<"adam"> = zgml.fitNative(chec
   inputShape: [1, 2] as const,
 });
 void modelFirstFitNativeEvidence;
+void optimizerFirstNativeFitPlan;
 void rootFitNativeEvidence;
 void rootFitNativeAliasEvidence;
 const moduleMethodFitEvidence: TrainFitEvidence = checkpointModel.fit(tensorDatasetBatches, {

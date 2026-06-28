@@ -1691,7 +1691,30 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     });
   }
 
-  function fit(targetOrOptimizer: unknown, batches: unknown, lossFnOrOptions: unknown, fitOptions: TrainFitOptions = {}) {
+  function fit(
+    targetOrOptimizer: unknown,
+    moduleOrBatches: unknown,
+    batchesOrLossFnOrOptions: unknown,
+    criterionOrOptions: unknown = {},
+    maybeFitOptions: TrainFitOptions = {},
+  ) {
+    if (
+      targetOrOptimizer &&
+      typeof (targetOrOptimizer as LossTrainOptimizer).step === "function" &&
+      moduleOrBatches &&
+      typeof (moduleOrBatches as AnyRecord).forward === "function"
+    ) {
+      return fitModule(
+        targetOrOptimizer as LossTrainOptimizer,
+        moduleOrBatches,
+        batchesOrLossFnOrOptions,
+        criterionOrOptions,
+        maybeFitOptions,
+      );
+    }
+    const batches = moduleOrBatches;
+    const lossFnOrOptions = batchesOrLossFnOrOptions;
+    const fitOptions = criterionOrOptions as TrainFitOptions;
     const maybeOptions = isRecord(lossFnOrOptions) ? lossFnOrOptions : null;
     if (isCompiledTrainingStep(targetOrOptimizer)) {
       const options = maybeOptions ? maybeOptions as TrainFitOptions : fitOptions;

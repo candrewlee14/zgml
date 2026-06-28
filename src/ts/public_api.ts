@@ -5720,6 +5720,13 @@ export interface TrainNamespace {
     lossFn: (batch: Batch, context: TrainFitContext) => Tensor,
     options?: TrainFitOptions<Kind>,
   ): TrainFitEvidence<Kind>;
+  fit<const Kind extends OptimizerStateKind, Target extends NnModule, Batch>(
+    optimizer: Optimizer<Kind>,
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    criterion: TrainSupervisedCriterion<Target, Batch>,
+    options?: TrainFitOptions<Kind>,
+  ): TrainFitEvidence<Kind>;
   fit<Batch extends { input: TensorLike; target: TensorLike | IndexLike }>(
     compiled: CompiledTrainingStep,
     batches: Iterable<Batch>,
@@ -5734,6 +5741,13 @@ export interface TrainNamespace {
     optimizer: { step(): void; zeroGrad?(options?: ZeroGradOptions): void },
     batches: Iterable<Batch>,
     lossFn: (batch: Batch, context: TrainFitContext) => Tensor,
+    options?: TrainFitOptions,
+  ): TrainFitEvidence;
+  fit<Target extends NnModule, Batch>(
+    optimizer: { step(): void; zeroGrad?(options?: ZeroGradOptions): void },
+    module: Target,
+    batches: Iterable<TrainSupervisedBatch<Target, Batch>>,
+    criterion: TrainSupervisedCriterion<Target, Batch>,
     options?: TrainFitOptions,
   ): TrainFitEvidence;
   fit<Target extends NnModule, Batch>(
