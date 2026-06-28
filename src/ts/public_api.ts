@@ -7153,6 +7153,9 @@ export type PublicTorchNamespace = Readonly<{
   }>;
   loss: PublicLossNamespace;
   train: PublicTrainNamespace;
+  fit: PublicTrainNamespace["fit"];
+  fitModule: PublicTrainNamespace["fitModule"];
+  fit_module: PublicTrainNamespace["fit_module"];
   fitNative: PublicTrainNamespace["fitNative"];
   fit_native: PublicTrainNamespace["fit_native"];
   checkpoint: PublicCheckpointNamespace;
@@ -7187,6 +7190,9 @@ export type PublicSimpleNamespace = Readonly<Pick<PublicZgmlNamespace,
   | "data"
   | "loss"
   | "train"
+  | "fit"
+  | "fitModule"
+  | "fit_module"
   | "fitNative"
   | "fit_native"
   | "checkpoint"
@@ -7215,6 +7221,9 @@ export declare const trainingStep: PublicCompileNamespace["trainingStep"];
 export declare const training_step: PublicCompileNamespace["training_step"];
 export declare const compileForTraining: PublicCompileNamespace["compileForTraining"];
 export declare const compile_for_training: PublicCompileNamespace["compile_for_training"];
+export declare const fit: PublicTrainNamespace["fit"];
+export declare const fitModule: PublicTrainNamespace["fitModule"];
+export declare const fit_module: PublicTrainNamespace["fit_module"];
 export declare const fitNative: PublicTrainNamespace["fitNative"];
 export declare const fit_native: PublicTrainNamespace["fit_native"];
 export declare const nativeEager: PublicNativeEagerNamespace;

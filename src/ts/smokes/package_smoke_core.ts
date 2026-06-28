@@ -7342,15 +7342,32 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       loss: fitModuleCriterion,
       maxSteps: 1,
     });
+    const rootFitModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
+    const rootFitOptimizer = adapter.optim.sgd(rootFitModel, { lr: 0.05 });
+    const rootFitEvidence = adapter.fit(rootFitModel, shuffledBatches, {
+      optimizer: rootFitOptimizer,
+      loss: fitModuleCriterion,
+      maxSteps: 1,
+    });
+    const rootFitModuleModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
+    const rootFitModuleOptimizer = adapter.optim.sgd(rootFitModuleModel, { lr: 0.05 });
+    const rootFitModuleEvidence = adapter.fitModule(rootFitModuleOptimizer, rootFitModuleModel, shuffledBatches, fitModuleCriterion, {
+      maxSteps: 1,
+      requireNative: true,
+    });
     if (
       nativeFitModuleEvidence.kind !== "zgml.train.fit" ||
       nativeFitModuleEvidence.steps !== 1 ||
       nativeFitModuleEvidence.native !== true ||
       nativeFitModuleEvidence.backend !== "cpu" ||
       moduleMethodFitEvidence.native !== true ||
-      moduleMethodFitEvidence.compiledPlan?.loweredBy !== "zig-ffi"
+      moduleMethodFitEvidence.compiledPlan?.loweredBy !== "zig-ffi" ||
+      rootFitEvidence.native !== true ||
+      rootFitEvidence.compiledPlan?.loweredBy !== "zig-ffi" ||
+      rootFitModuleEvidence.native !== true ||
+      rootFitModuleEvidence.compiledPlan?.loweredBy !== "zig-ffi"
     ) {
-      throw new Error(`${label} expected train.fitModule and module.fit to route supported Linear+MSE training through native Zig`);
+      throw new Error(`${label} expected root fit, root fitModule, train.fitModule, and module.fit to route supported Linear+MSE training through native Zig`);
     }
     const trainFitNativeModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
     const trainFitNativeOptimizer = adapter.optim.sgd(trainFitNativeModel, { lr: 0.05 });

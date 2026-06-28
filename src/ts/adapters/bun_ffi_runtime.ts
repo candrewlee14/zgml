@@ -2697,6 +2697,9 @@ export const simple = Object.freeze({
   data,
   loss,
   train,
+  fit: train.fit,
+  fitModule: train.fitModule,
+  fit_module: train.fit_module,
   fitNative: train.fitNative,
   fit_native: train.fit_native,
   checkpoint,
@@ -2824,6 +2827,9 @@ export const trainingStep = compile.trainingStep;
 export const training_step = compile.training_step;
 export const compileForTraining = compile.compileForTraining;
 export const compile_for_training = compile.compile_for_training;
+export const fit = train.fit;
+export const fitModule = train.fitModule;
+export const fit_module = train.fit_module;
 export const fitNative = train.fitNative;
 export const fit_native = train.fit_native;
 

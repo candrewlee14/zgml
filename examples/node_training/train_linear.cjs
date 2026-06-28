@@ -5,6 +5,7 @@ const {
   checkpoint,
   compile,
   data,
+  fit: zgmlFit,
   initial_seed,
   loss,
   manualSeed,
@@ -165,19 +166,19 @@ const ergonomicNativeOptimizer = optim.sgd(ergonomicNativeModel, { lr: 0.04 });
 const ergonomicNativeBatches = data.dataLoader(samples, { batchSize: 4, shuffle: false });
 const ergonomicNativeCriterion = loss.mseLoss();
 const ergonomicNativeBefore = scalar(loss.mse(ergonomicNativeModel.forward(tensor([1, -1], [1, 2])), tensor([2.5], [1, 1])));
-const ergonomicNativeFit = train.fitModule(
-  ergonomicNativeOptimizer,
+const ergonomicNativeFit = zgmlFit(
   ergonomicNativeModel,
   ergonomicNativeBatches,
-  ergonomicNativeCriterion,
   {
+    optimizer: ergonomicNativeOptimizer,
+    loss: ergonomicNativeCriterion,
     epochs: 80,
     requireNative: true,
   },
 );
 const ergonomicNativeAfter = scalar(loss.mse(ergonomicNativeModel.forward(tensor([1, -1], [1, 2])), tensor([2.5], [1, 1])));
 if (ergonomicNativeFit.native !== true || ergonomicNativeFit.backend !== "cpu") {
-  throw new Error("train.fitModule should automatically compile supported linear MSE training through the native Zig path");
+  throw new Error("root fit should automatically compile supported linear MSE training through the native Zig path");
 }
 if (
   ergonomicNativeFit.compiledPlan?.loweredBy !== "zig-ffi" ||
@@ -193,7 +194,7 @@ if (
   ergonomicNativeFit.nativeBulk !== true ||
   ergonomicNativeFit.bulkResult?.kernel !== "zgml_train_linear_mse_sgd_f32_bulk"
 ) {
-  throw new Error("native train.fitModule must return native bulk fit evidence");
+  throw new Error("native root fit must return native bulk fit evidence");
 }
 if (!(ergonomicNativeAfter < ergonomicNativeBefore * 0.02)) {
   throw new Error(`expected native train.fitModule to reduce held-out loss sharply; before=${ergonomicNativeBefore}, after=${ergonomicNativeAfter}`);
