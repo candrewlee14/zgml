@@ -1029,8 +1029,50 @@ const {
   uninitializedMessage: "Node Module compiler surface is not initialized",
 });
 
-function nativeEagerLinearInto(output, input, weights, options) {
-  return nativeEager.linearInto(output, input, weights, options);
+function trustedNativeEagerData(value, label) {
+  if (value instanceof Float32Array) return value;
+  if (value && typeof value === "object" && value.data instanceof Float32Array) return value.data;
+  return f32(value, label);
+}
+
+function nativeEagerLinearInto(output, input, weights, options = {}) {
+  const batch = options.batch;
+  const inFeatures = options.inFeatures;
+  const outFeatures = options.outFeatures;
+  if (
+    !Number.isSafeInteger(batch) ||
+    !Number.isSafeInteger(inFeatures) ||
+    !Number.isSafeInteger(outFeatures) ||
+    batch <= 0 ||
+    inFeatures <= 0 ||
+    outFeatures <= 0
+  ) {
+    return nativeEager.linearInto(output, input, weights, options);
+  }
+  const inputData = trustedNativeEagerData(input, "native eager linear input");
+  const weightData = trustedNativeEagerData(weights, "native eager linear weights");
+  const biasValue = options.bias;
+  const biasData = biasValue === undefined || biasValue === null
+    ? null
+    : trustedNativeEagerData(biasValue, "native eager linear bias");
+  const expectedOutput = batch * outFeatures;
+  const linearSymbol = options.weightLayout === "out-in" || options.transposedWeights === true
+    ? nodeSymbolGroups.nativeEager.eagerLinearTransposedWeightsF32
+    : nodeSymbolGroups.nativeEager.eagerLinearF32;
+  check(linearSymbol(
+    inputData,
+    inputData.length,
+    weightData,
+    weightData.length,
+    biasData,
+    biasData ? biasData.length : 0,
+    output,
+    expectedOutput,
+    batch,
+    inFeatures,
+    outFeatures,
+  ));
+  return output;
 }
 
 function nativeEagerLinearActivationInto(output, input, weights, options) {

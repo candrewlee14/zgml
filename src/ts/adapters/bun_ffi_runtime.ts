@@ -2042,8 +2042,53 @@ const packedSequentialProgramParameters = bunModuleCompilerSurface.packedSequent
   spec: CompiledSequentialProgramSpec,
 ) => ModuleBindings;
 
-function nativeEagerLinearInto(output: Float32Array, input: unknown, weights: unknown, options?: Record<string, unknown>) {
-  return nativeEager.linearInto(output, input as TensorLike, weights as TensorLike, options);
+function trustedNativeEagerData(value: unknown, label: string) {
+  if (value instanceof Float32Array) return value;
+  if (value && typeof value === "object" && (value as { data?: unknown }).data instanceof Float32Array) {
+    return (value as { data: Float32Array }).data;
+  }
+  void label;
+  return f32(value as TensorLike);
+}
+
+function nativeEagerLinearInto(output: Float32Array, input: unknown, weights: unknown, options: Record<string, unknown> = {}) {
+  const batch = options.batch;
+  const inFeatures = options.inFeatures;
+  const outFeatures = options.outFeatures;
+  if (
+    !Number.isSafeInteger(batch) ||
+    !Number.isSafeInteger(inFeatures) ||
+    !Number.isSafeInteger(outFeatures) ||
+    Number(batch) <= 0 ||
+    Number(inFeatures) <= 0 ||
+    Number(outFeatures) <= 0
+  ) {
+    return nativeEager.linearInto(output, input as TensorLike, weights as TensorLike, options);
+  }
+  const inputData = trustedNativeEagerData(input, "native eager linear input");
+  const weightData = trustedNativeEagerData(weights, "native eager linear weights");
+  const biasValue = options.bias;
+  const biasData = biasValue === undefined || biasValue === null
+    ? null
+    : trustedNativeEagerData(biasValue, "native eager linear bias");
+  const expectedOutput = Number(batch) * Number(outFeatures);
+  const linearSymbol = options.weightLayout === "out-in" || options.transposedWeights === true
+    ? bunSymbolGroups.nativeEager.eagerLinearTransposedWeightsF32
+    : bunSymbolGroups.nativeEager.eagerLinearF32;
+  check(linearSymbol(
+    inputData,
+    BigInt(inputData.length),
+    weightData,
+    BigInt(weightData.length),
+    biasData,
+    BigInt(biasData ? biasData.length : 0),
+    output,
+    BigInt(expectedOutput),
+    BigInt(Number(batch)),
+    BigInt(Number(inFeatures)),
+    BigInt(Number(outFeatures)),
+  ));
+  return output;
 }
 
 function nativeEagerLinearActivationInto(output: Float32Array, input: unknown, weights: unknown, options: Record<string, unknown>) {

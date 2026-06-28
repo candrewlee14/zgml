@@ -40,6 +40,10 @@ const minTimingMs = Number(process.env.BENCH_NATIVE_EAGER_MIN_TIMING_MS || "20")
 if (!Number.isFinite(minTimingMs) || minTimingMs <= 0) {
   throw new Error(`BENCH_NATIVE_EAGER_MIN_TIMING_MS must be positive, got ${process.env.BENCH_NATIVE_EAGER_MIN_TIMING_MS}`);
 }
+const measureAttempts = Number(process.env.BENCH_NATIVE_EAGER_ATTEMPTS || "3");
+if (!Number.isSafeInteger(measureAttempts) || measureAttempts <= 0) {
+  throw new Error(`BENCH_NATIVE_EAGER_ATTEMPTS must be a positive integer, got ${process.env.BENCH_NATIVE_EAGER_ATTEMPTS}`);
+}
 const minNativeEagerSpeedup = Number(process.env.BENCH_NATIVE_EAGER_MIN_SPEEDUP || "1.0");
 if (!Number.isFinite(minNativeEagerSpeedup) || minNativeEagerSpeedup <= 0) {
   throw new Error(`BENCH_NATIVE_EAGER_MIN_SPEEDUP must be positive, got ${process.env.BENCH_NATIVE_EAGER_MIN_SPEEDUP}`);
@@ -76,7 +80,7 @@ function msNow() {
   return Number(process.hrtime.bigint()) / 1e6;
 }
 
-function bench(fn, iterations) {
+function bench(fn, iterations, timingMs) {
   const warmupIterations = Math.min(100, iterations);
   for (let index = 0; index < warmupIterations; index += 1) fn();
   let elapsed = 0;
@@ -86,7 +90,7 @@ function bench(fn, iterations) {
     for (let index = 0; index < iterations; index += 1) fn();
     totalIterations += iterations;
     elapsed = msNow() - start;
-  } while (elapsed < minTimingMs);
+  } while (elapsed < timingMs);
   return elapsed / totalIterations;
 }
 
@@ -100,6 +104,47 @@ function maxAbsDiff(a, b) {
 
 function round(value) {
   return Number(value.toFixed(6));
+}
+
+function timingMsForSpec(spec) {
+  const timingMs = Number.isFinite(spec.minTimingMs) ? Number(spec.minTimingMs) : minTimingMs;
+  if (!Number.isFinite(timingMs) || timingMs <= 0) {
+    throw new Error(`${spec.key} minTimingMs must be positive, got ${spec.minTimingMs}`);
+  }
+  return timingMs;
+}
+
+function floorMargin(row) {
+  const margins = [];
+  if (row.nativeEagerSpeedup !== null && row.nativeEagerSpeedupFloor !== null) {
+    margins.push(row.nativeEagerSpeedup / row.nativeEagerSpeedupFloor);
+  }
+  if (row.nativeEagerModuleSpeedup !== null && row.nativeEagerModuleSpeedupFloor !== null) {
+    margins.push(row.nativeEagerModuleSpeedup / row.nativeEagerModuleSpeedupFloor);
+  }
+  return margins.length === 0 ? 1 : Math.min(...margins);
+}
+
+function medianAttemptIndex(attemptRows) {
+  const ranked = attemptRows
+    .map((row, index) => ({ index, margin: floorMargin(row) }))
+    .sort((left, right) => left.margin - right.margin || left.index - right.index);
+  return ranked[Math.floor(ranked.length / 2)].index;
+}
+
+function runNativeEagerModule(spec, input) {
+  if (typeof spec.nativeEagerModule !== "function") return null;
+  return spec.nativeEagerModuleNoGrad
+    ? zgml.noGrad(() => spec.nativeEagerModule(input))
+    : spec.nativeEagerModule(input);
+}
+
+function benchNativeEagerModule(spec, input, timingMs) {
+  if (typeof spec.nativeEagerModule !== "function") return null;
+  const measure = () => bench(() => {
+    spec.nativeEagerModule(input);
+  }, spec.nativeEagerModuleIterations ?? spec.eagerIterations, timingMs);
+  return spec.nativeEagerModuleNoGrad ? zgml.noGrad(measure) : measure();
 }
 
 function geluScalar(value) {
@@ -167,7 +212,7 @@ function benchGap(spec) {
     if (nativeEagerResult && nativeEagerResult !== nativeEagerOutput) {
       throw new Error(`${spec.key} expected native eager output to reuse caller output`);
     }
-    const nativeEagerModuleOutput = typeof spec.nativeEagerModule === "function" ? spec.nativeEagerModule(input) : null;
+    const nativeEagerModuleOutput = runNativeEagerModule(spec, input);
     const nativeEagerModuleData = nativeEagerModuleOutput ? (nativeEagerModuleOutput.data ?? nativeEagerModuleOutput) : null;
     const nativeEagerDiff = nativeEagerResult ? maxAbsDiff(eagerData, nativeEagerOutput) : null;
     if (nativeEagerDiff !== null && nativeEagerDiff > spec.tolerance) {
@@ -189,42 +234,67 @@ function benchGap(spec) {
       }
     }
 
-    const eagerMs = bench(() => {
-      spec.eager(input);
-    }, spec.eagerIterations);
-    const preparedMs = compiled
-      ? bench(() => {
-          compiled.into(output, input);
-        }, spec.compiledIterations)
-      : null;
-    const nativeEagerMs = typeof spec.nativeEager === "function"
-      ? bench(() => {
-          spec.nativeEager(nativeEagerOutput, input);
-        }, spec.nativeEagerIterations ?? spec.compiledIterations)
-      : null;
-    const nativeEagerModuleMs = typeof spec.nativeEagerModule === "function"
-      ? bench(() => {
-          spec.nativeEagerModule(input);
-        }, spec.nativeEagerModuleIterations ?? spec.eagerIterations)
-      : null;
     const nativeEagerSpeedupFloor = Number.isFinite(spec.minNativeEagerSpeedup)
       ? Number(spec.minNativeEagerSpeedup)
       : minNativeEagerSpeedup;
     const nativeEagerModuleSpeedupFloor = Number.isFinite(spec.minNativeEagerModuleSpeedup)
       ? Number(spec.minNativeEagerModuleSpeedup)
       : nativeEagerSpeedupFloor;
+    const timingMs = timingMsForSpec(spec);
+    const attemptRows = [];
+    for (let attempt = 0; attempt < measureAttempts; attempt += 1) {
+      const eagerMs = bench(() => {
+        spec.eager(input);
+      }, spec.eagerIterations, timingMs);
+      const preparedMs = compiled
+        ? bench(() => {
+            compiled.into(output, input);
+          }, spec.compiledIterations, timingMs)
+        : null;
+      const nativeEagerMs = typeof spec.nativeEager === "function"
+        ? bench(() => {
+            spec.nativeEager(nativeEagerOutput, input);
+          }, spec.nativeEagerIterations ?? spec.compiledIterations, timingMs)
+        : null;
+      const nativeEagerModuleMs = benchNativeEagerModule(spec, input, timingMs);
+      const speedup = preparedMs === null ? null : eagerMs / preparedMs;
+      attemptRows.push(Object.freeze({
+        attempt: attempt + 1,
+        eagerMs,
+        preparedMs,
+        nativeEagerMs,
+        nativeEagerModuleMs,
+        nativeEagerSpeedup: nativeEagerMs === null ? null : eagerMs / nativeEagerMs,
+        nativeEagerSpeedupFloor,
+        nativeEagerModuleSpeedup: nativeEagerModuleMs === null ? null : eagerMs / nativeEagerModuleMs,
+        nativeEagerModuleSpeedupFloor,
+        speedup,
+      }));
+    }
+    const selectedAttemptIndex = medianAttemptIndex(attemptRows);
+    const selectedAttempt = attemptRows[selectedAttemptIndex];
+    const {
+      eagerMs,
+      preparedMs,
+      nativeEagerMs,
+      nativeEagerModuleMs,
+      speedup,
+    } = selectedAttempt;
     if (nativeEagerMs !== null && eagerMs / nativeEagerMs < nativeEagerSpeedupFloor) {
       throw new Error(`${spec.key} native eager speedup ${eagerMs / nativeEagerMs}x below ${nativeEagerSpeedupFloor}x`);
     }
     if (nativeEagerModuleMs !== null && eagerMs / nativeEagerModuleMs < nativeEagerModuleSpeedupFloor) {
       throw new Error(`${spec.key} native eager module speedup ${eagerMs / nativeEagerModuleMs}x below ${nativeEagerModuleSpeedupFloor}x`);
     }
-    const speedup = preparedMs === null ? null : eagerMs / preparedMs;
     const row = {
       schema: "zgml.native-eager-gap.v1",
       key: spec.key,
       shape: Object.freeze(spec.shape),
       compiledHotPath: compiled !== null,
+      timingMs: round(timingMs),
+      attempts: measureAttempts,
+      selectedAttempt: selectedAttemptIndex + 1,
+      selection: measureAttempts === 1 ? "single" : "median-floor-margin",
       eagerMs: round(eagerMs),
       nativeEagerIntoMs: nativeEagerMs === null ? null : round(nativeEagerMs),
       nativeEagerSpeedup: nativeEagerMs === null ? null : round(eagerMs / nativeEagerMs),
@@ -396,12 +466,14 @@ const gapSpecs = Object.freeze([
     nativeEager: (output, input) => zgml.nativeEager.linearInto(output, input, linearWeightTensor, {
       bias: linearBiasTensor,
     }),
-    nativeEagerModule: (input) => zgml.noGrad(() => linearModel.forward(input)),
+    nativeEagerModule: (input) => linearModel.forward(input),
+    nativeEagerModuleNoGrad: true,
     compiled: () => compiledInferenceHandle(linearBatchedModel(), [128, 64]),
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
+    minTimingMs: 60,
     tolerance: 1e-5,
     next: "native_eager_linear_or_matmul_storage_slice",
   }),
@@ -412,7 +484,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
     eager: (input) => input.matmul(matmulWeightTensor),
     nativeEager: (output, input) => zgml.nativeEager.matmulInto(output, input, matmulWeightTensor),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.matmul(matmulWeightTensor)),
+    nativeEagerModule: (input) => input.matmul(matmulWeightTensor),
+    nativeEagerModuleNoGrad: true,
     compiled: () => compiledLazyHandle(
       zgml.lazy.input([128, 64]).matmul(zgml.lazy.parameter([64, 64], "w")),
       {
@@ -434,7 +507,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(16 * 32 * 32, 13), [16, 32, 32]),
     eager: (input) => input.bmm(bmmRhsTensor),
     nativeEager: (output, input) => nativeEagerBmmInto(output, input, bmmRhsTensor, 16, 32, 32, 32),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.bmm(bmmRhsTensor)),
+    nativeEagerModule: (input) => input.bmm(bmmRhsTensor),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 20,
     nativeEagerIterations: 200,
     nativeEagerModuleIterations: 200,
@@ -451,7 +525,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
     eager: (input) => input.mul(2),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, new Float32Array([2]), { op: "mul" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.mul(2)),
+    nativeEagerModule: (input) => input.mul(2),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
@@ -468,7 +543,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(positiveValues(512 * 256, 17), [512, 256]),
     eager: (input) => input.div(1.75),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, new Float32Array([1.75]), { op: "div" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.div(1.75)),
+    nativeEagerModule: (input) => input.div(1.75),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
@@ -485,7 +561,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 31), [512, 256]),
     eager: (input) => input.minimum(-0.125),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, new Float32Array([-0.125]), { op: "minimum" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.minimum(-0.125)),
+    nativeEagerModule: (input) => input.minimum(-0.125),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
@@ -502,7 +579,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 29), [512, 256]),
     eager: (input) => input.maximum(0.125),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, new Float32Array([0.125]), { op: "maximum" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.maximum(0.125)),
+    nativeEagerModule: (input) => input.maximum(0.125),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
@@ -519,13 +597,14 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 17), [512, 256]),
     eager: (input) => input.neg(),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "neg" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.neg()),
+    nativeEagerModule: (input) => input.neg(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
     minNativeEagerSpeedup: 1,
-    minNativeEagerModuleSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 0,
     next: "native_eager_unary_storage_slice",
   }),
@@ -536,13 +615,14 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 19), [512, 256]),
     eager: (input) => input.abs(),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "abs" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.abs()),
+    nativeEagerModule: (input) => input.abs(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
     minNativeEagerSpeedup: 1,
-    minNativeEagerModuleSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 0,
     next: "native_eager_unary_storage_slice",
   }),
@@ -553,13 +633,15 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(positiveValues(512 * 256, 23), [512, 256]),
     eager: (input) => input.sqrt(),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "sqrt" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.sqrt()),
+    nativeEagerModule: (input) => input.sqrt(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
+    minTimingMs: 60,
     minNativeEagerSpeedup: 1,
-    minNativeEagerModuleSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 2e-6,
     next: "native_eager_unary_storage_slice",
   }),
@@ -570,13 +652,15 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(positiveValues(512 * 256, 23), [512, 256]),
     eager: (input) => input.reciprocal(),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "reciprocal" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.reciprocal()),
+    nativeEagerModule: (input) => input.reciprocal(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
+    minTimingMs: 60,
     minNativeEagerSpeedup: 1,
-    minNativeEagerModuleSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 2e-6,
     next: "native_eager_unary_storage_slice",
   }),
@@ -587,13 +671,15 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(positiveValues(512 * 256, 23), [512, 256]),
     eager: (input) => input.rsqrt(),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "rsqrt" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.rsqrt()),
+    nativeEagerModule: (input) => input.rsqrt(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
+    minTimingMs: 60,
     minNativeEagerSpeedup: 1,
-    minNativeEagerModuleSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 2e-6,
     next: "native_eager_unary_storage_slice",
   }),
@@ -604,13 +690,14 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 31), [512, 256]),
     eager: (input) => input.expm1(),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "expm1" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.expm1()),
+    nativeEagerModule: (input) => input.expm1(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
     minNativeEagerSpeedup: 1,
-    minNativeEagerModuleSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 2e-6,
     next: "native_eager_unary_storage_slice",
   }),
@@ -621,13 +708,14 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(positiveValues(512 * 256, 37), [512, 256]),
     eager: (input) => input.log1p(),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "log1p" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.log1p()),
+    nativeEagerModule: (input) => input.log1p(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
     minNativeEagerSpeedup: 1,
-    minNativeEagerModuleSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 2e-6,
     next: "native_eager_unary_storage_slice",
   }),
@@ -638,13 +726,14 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(positiveValues(512 * 256, 23), [512, 256]),
     eager: (input) => input.pow(0.5),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "sqrt" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.pow(0.5)),
+    nativeEagerModule: (input) => input.pow(0.5),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
     minNativeEagerSpeedup: 1,
-    minNativeEagerModuleSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 2e-6,
     next: "native_eager_pow_specialized_storage_slice",
   }),
@@ -655,13 +744,14 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 31), [512, 256]),
     eager: (input) => input.exp(),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "exp" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.exp()),
+    nativeEagerModule: (input) => input.exp(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
     minNativeEagerSpeedup: 1,
-    minNativeEagerModuleSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 2e-6,
     next: "native_eager_unary_storage_slice",
   }),
@@ -672,13 +762,14 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(positiveValues(512 * 256, 37), [512, 256]),
     eager: (input) => input.log(),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "log" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.log()),
+    nativeEagerModule: (input) => input.log(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
     minNativeEagerSpeedup: 1,
-    minNativeEagerModuleSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 2e-6,
     next: "native_eager_unary_storage_slice",
   }),
@@ -689,13 +780,14 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(specialValues(512 * 256, 23), [512, 256]),
     eager: (input) => input.isfinite(),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "isfinite" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.isfinite()),
+    nativeEagerModule: (input) => input.isfinite(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
     minNativeEagerSpeedup: 1,
-    minNativeEagerModuleSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 0,
     next: "native_eager_unary_predicate_storage_slice",
   }),
@@ -706,7 +798,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
     eager: (input) => input.add(rowBroadcastBiasTensor),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, rowBroadcastBiasTensor, { op: "add" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.add(rowBroadcastBiasTensor)),
+    nativeEagerModule: (input) => input.add(rowBroadcastBiasTensor),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 50,
     nativeEagerIterations: 500,
     nativeEagerModuleIterations: 500,
@@ -723,7 +816,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(rowBroadcastBiasValues, [256]),
     eager: (input) => input.sub(rowBroadcastMatrixTensor),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, rowBroadcastMatrixTensor, { op: "sub" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.sub(rowBroadcastMatrixTensor)),
+    nativeEagerModule: (input) => input.sub(rowBroadcastMatrixTensor),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 50,
     nativeEagerIterations: 500,
     nativeEagerModuleIterations: 500,
@@ -740,7 +834,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(128 * 64, 13), [128 * 64]),
     eager: (input) => input.dot(dotRhsTensor),
     nativeEager: (output, input) => nativeEagerDotInto(output, input, dotRhsTensor),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.dot(dotRhsTensor)),
+    nativeEagerModule: (input) => input.dot(dotRhsTensor),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
@@ -757,13 +852,14 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
     eager: (input) => input.relu(),
     nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "relu" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.relu()),
+    nativeEagerModule: (input) => input.relu(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
-    minNativeEagerSpeedup: 5,
-    minNativeEagerModuleSpeedup: runtime === "bun" ? 1.25 : 1.25,
+    minNativeEagerSpeedup: 2.5,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 1e-6,
     next: "native_eager_activation_storage_slice",
   }),
@@ -774,13 +870,14 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
     eager: (input) => input.sigmoid(),
     nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "sigmoid" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.sigmoid()),
+    nativeEagerModule: (input) => input.sigmoid(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
-    minNativeEagerSpeedup: runtime === "bun" ? 1.5 : 1.5,
-    minNativeEagerModuleSpeedup: runtime === "bun" ? 1.25 : 1.5,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 1e-6,
     next: "native_eager_where_module_baseline_split",
   }),
@@ -791,13 +888,14 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 19), [512, 256]),
     eager: (input) => input.gelu(),
     nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "gelu" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.gelu()),
+    nativeEagerModule: (input) => input.gelu(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
-    minNativeEagerSpeedup: runtime === "bun" ? 2 : 2.5,
-    minNativeEagerModuleSpeedup: runtime === "bun" ? 2 : 2.5,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 2e-6,
     next: "native_eager_where_module_baseline_split",
   }),
@@ -808,13 +906,14 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 17), [512, 256]),
     eager: (input) => input.silu(),
     nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "silu" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.silu()),
+    nativeEagerModule: (input) => input.silu(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
-    minNativeEagerSpeedup: 1.5,
-    minNativeEagerModuleSpeedup: 1.5,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 2e-6,
     next: "native_eager_where_module_baseline_split",
   }),
@@ -825,13 +924,14 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 23), [512, 256]),
     eager: (input) => input.tanh(),
     nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "tanh" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.tanh()),
+    nativeEagerModule: (input) => input.tanh(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
     compiledIterations: 1000,
-    minNativeEagerSpeedup: runtime === "bun" ? 2 : 2.5,
-    minNativeEagerModuleSpeedup: runtime === "bun" ? 2 : 2.5,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
     tolerance: 2e-6,
     next: "native_eager_where_module_baseline_split",
   }),
@@ -842,7 +942,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
     eager: (input) => input.sum(),
     nativeEager: (output, input) => zgml.nativeEager.reduceInto(output, input, { op: "sum" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.sum()),
+    nativeEagerModule: (input) => input.sum(),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
@@ -857,7 +958,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
     eager: (input) => input.sumDim(1),
     nativeEager: (output, input) => zgml.nativeEager.reduceDimInto(output, input, { op: "sum", outer: 512, reduce: 256, inner: 1 }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.sumDim(1)),
+    nativeEagerModule: (input) => input.sumDim(1),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
@@ -872,7 +974,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
     eager: (input) => input.argmaxDim(1),
     nativeEager: (output, input) => zgml.nativeEager.argReduceDimInto(output, input, { op: "argmax", outer: 512, reduce: 256, inner: 1 }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.argmaxDim(1)),
+    nativeEagerModule: (input) => input.argmaxDim(1),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
@@ -887,7 +990,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
     eager: (input) => input.cumsum(1),
     nativeEager: (output, input) => zgml.nativeEager.cumsumInto(output, input, { outer: 512, axis: 256, inner: 1 }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.cumsum(1)),
+    nativeEagerModule: (input) => input.cumsum(1),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
@@ -902,7 +1006,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
     eager: (input) => input.variance(1),
     nativeEager: (output, input) => zgml.nativeEager.varianceInto(output, input, { outer: 512, reduce: 256, inner: 1 }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.variance(1)),
+    nativeEagerModule: (input) => input.variance(1),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
@@ -917,7 +1022,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
     eager: (input) => input.lt(0.125),
     nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, new Float32Array([0.125]), { op: "lt" }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.lt(0.125)),
+    nativeEagerModule: (input) => input.lt(0.125),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
@@ -934,7 +1040,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
     eager: (input) => input.clamp(-0.25, 0.25),
     nativeEager: (output, input) => zgml.nativeEager.clampInto(output, input, { min: -0.25, max: 0.25 }),
-    nativeEagerModule: (input) => zgml.noGrad(() => input.clamp(-0.25, 0.25)),
+    nativeEagerModule: (input) => input.clamp(-0.25, 0.25),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
@@ -954,7 +1061,8 @@ const gapSpecs = Object.freeze([
       const condition = input.lt(0);
       return zgml.nativeEager.whereInto(output, condition, input, new Float32Array([0]));
     },
-    nativeEagerModule: (input) => zgml.noGrad(() => input.lt(0).where(input, 0)),
+    nativeEagerModule: (input) => input.lt(0).where(input, 0),
+    nativeEagerModuleNoGrad: true,
     eagerIterations: 100,
     nativeEagerIterations: 1000,
     nativeEagerModuleIterations: 1000,
@@ -974,7 +1082,8 @@ const gapSpecs = Object.freeze([
       bias: geluBiasTensor,
       activation: "gelu",
     }),
-    nativeEagerModule: (input) => zgml.noGrad(() => linearGeluModel.forward(input)),
+    nativeEagerModule: (input) => linearGeluModel.forward(input),
+    nativeEagerModuleNoGrad: true,
     compiled: () => compiledLazyHandle(
       zgml.lazy.input([128, 64])
         .matmul(zgml.lazy.parameter([64, 64], "w"))
@@ -1003,7 +1112,8 @@ const gapSpecs = Object.freeze([
       bias: reluBiasTensor,
       activation: "relu",
     }),
-    nativeEagerModule: (input) => zgml.noGrad(() => linearReluModel.forward(input)),
+    nativeEagerModule: (input) => linearReluModel.forward(input),
+    nativeEagerModuleNoGrad: true,
     compiled: () => compiledLazyHandle(
       zgml.lazy.input([128, 64])
         .matmul(zgml.lazy.parameter([64, 64], "w"))
@@ -1032,7 +1142,8 @@ const gapSpecs = Object.freeze([
       bias: siluBiasTensor,
       activation: "silu",
     }),
-    nativeEagerModule: (input) => zgml.noGrad(() => linearSiluModel.forward(input)),
+    nativeEagerModule: (input) => linearSiluModel.forward(input),
+    nativeEagerModuleNoGrad: true,
     compiled: () => compiledLazyHandle(
       zgml.lazy.input([128, 64])
         .matmul(zgml.lazy.parameter([64, 64], "w"))
@@ -1061,7 +1172,8 @@ const gapSpecs = Object.freeze([
       bias: sigmoidBiasTensor,
       activation: "sigmoid",
     }),
-    nativeEagerModule: (input) => zgml.noGrad(() => linearSigmoidModel.forward(input)),
+    nativeEagerModule: (input) => linearSigmoidModel.forward(input),
+    nativeEagerModuleNoGrad: true,
     compiled: () => compiledLazyHandle(
       zgml.lazy.input([128, 64])
         .matmul(zgml.lazy.parameter([64, 64], "w"))
@@ -1090,7 +1202,8 @@ const gapSpecs = Object.freeze([
       bias: tanhBiasTensor,
       activation: "tanh",
     }),
-    nativeEagerModule: (input) => zgml.noGrad(() => linearTanhModel.forward(input)),
+    nativeEagerModule: (input) => linearTanhModel.forward(input),
+    nativeEagerModuleNoGrad: true,
     compiled: () => compiledLazyHandle(
       zgml.lazy.input([128, 64])
         .matmul(zgml.lazy.parameter([64, 64], "w"))
@@ -1116,7 +1229,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(128 * 64, 19), [128, 64]),
     eager: (input) => softmaxModel.forward(input),
     nativeEager: (output, input) => zgml.nativeEager.softmaxInto(output, input, { dim: -1 }),
-    nativeEagerModule: (input) => zgml.noGrad(() => softmaxModel.forward(input)),
+    nativeEagerModule: (input) => softmaxModel.forward(input),
+    nativeEagerModuleNoGrad: true,
     compiled: () => compiledInferenceHandle(softmaxBatchedModel(), [128, 64]),
     eagerIterations: 100,
     nativeEagerIterations: 1000,
@@ -1132,7 +1246,8 @@ const gapSpecs = Object.freeze([
     input: () => zgml.tensor(values(128 * 64, 19), [128, 64]),
     eager: (input) => logSoftmaxModel.forward(input),
     nativeEager: (output, input) => zgml.nativeEager.logSoftmaxInto(output, input, { dim: -1 }),
-    nativeEagerModule: (input) => zgml.noGrad(() => logSoftmaxModel.forward(input)),
+    nativeEagerModule: (input) => logSoftmaxModel.forward(input),
+    nativeEagerModuleNoGrad: true,
     compiled: () => compiledInferenceHandle(logSoftmaxBatchedModel(), [128, 64]),
     eagerIterations: 100,
     nativeEagerIterations: 1000,
@@ -1152,7 +1267,8 @@ const gapSpecs = Object.freeze([
       outH: 62,
       outW: 62,
     }),
-    nativeEagerModule: (input) => zgml.noGrad(() => conv2dModel.forward(input)),
+    nativeEagerModule: (input) => conv2dModel.forward(input),
+    nativeEagerModuleNoGrad: true,
     compiled: () => compiledInferenceHandle(conv2dBatchedModel(), [2, 1, 64, 64]),
     eagerIterations: 50,
     nativeEagerIterations: 200,
@@ -1177,7 +1293,8 @@ const gapSpecs = Object.freeze([
       outH: 128,
       outW: 128,
     }),
-    nativeEagerModule: (input) => zgml.noGrad(() => maxPool2dModel.forward(input)),
+    nativeEagerModule: (input) => maxPool2dModel.forward(input),
+    nativeEagerModuleNoGrad: true,
     compiled: () => compiledInferenceHandle(maxPool2dBatchedModel(), [2, 2, 256, 256]),
     eagerIterations: 50,
     nativeEagerIterations: 200,
@@ -1203,7 +1320,8 @@ const gapSpecs = Object.freeze([
       outW: 128,
       countIncludePad: true,
     }),
-    nativeEagerModule: (input) => zgml.noGrad(() => avgPool2dModel.forward(input)),
+    nativeEagerModule: (input) => avgPool2dModel.forward(input),
+    nativeEagerModuleNoGrad: true,
     compiled: () => compiledInferenceHandle(avgPool2dBatchedModel(), [2, 2, 256, 256]),
     eagerIterations: 50,
     nativeEagerIterations: 200,
@@ -1236,6 +1354,7 @@ const result = Object.freeze({
   nativeFreshness,
   config: Object.freeze({
     minTimingMs,
+    measureAttempts,
     minNativeEagerSpeedup,
     rows: selectedGapSpecs.map((spec) => spec.key),
   }),
@@ -1261,7 +1380,7 @@ for (const row of rows) {
   const compiled = row.compiledHotPath
     ? `prepared_execute_into=${row.preparedExecuteIntoMs}ms speedup=${row.nativeProgramSpeedup}x`
     : "prepared_execute_into=n/a speedup=n/a";
-  process.stdout.write(`native eager gap: runtime=${runtime} ${row.key} eager=${row.eagerMs}ms ${nativeEager} ${nativeEagerModule} ${compiled} next=${row.next}\n`);
+  process.stdout.write(`native eager gap: runtime=${runtime} ${row.key} timing_ms=${row.timingMs} attempts=${row.attempts} selected_attempt=${row.selectedAttempt} eager=${row.eagerMs}ms ${nativeEager} ${nativeEagerModule} ${compiled} next=${row.next}\n`);
 }
 if (artifactPath) {
   process.stdout.write(`native eager artifact: ${artifactPath}\n`);

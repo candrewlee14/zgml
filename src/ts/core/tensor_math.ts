@@ -1068,12 +1068,14 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
       requiresGrad: gradEnabled && tensor.requiresGrad,
       prev: gradEnabled && tensor.requiresGrad ? [tensor] : [],
     });
-    result._backward = (grad: Float32Array | null) => {
-      if (!grad) return;
-      const inGrad = new Float32Array(tensor.length);
-      for (let i = 0; i < inGrad.length; i += 1) inGrad[i] = grad[i] * derivative(tensor.data[i]);
-      addTensorGrad(tensor, inGrad);
-    };
+    if (gradEnabled && tensor.requiresGrad) {
+      result._backward = (grad: Float32Array | null) => {
+        if (!grad) return;
+        const inGrad = new Float32Array(tensor.length);
+        for (let i = 0; i < inGrad.length; i += 1) inGrad[i] = grad[i] * derivative(tensor.data[i]);
+        addTensorGrad(tensor, inGrad);
+      };
+    }
     return result;
   }
 

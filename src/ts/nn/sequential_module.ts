@@ -465,6 +465,7 @@ export function createSequentialModuleClass(options: SequentialModuleClassOption
     }
 
     forward(inputValues: unknown) {
+      if (this.layers.length === 1) return this.layers[0]!.forward(inputValues);
       const inputIsTensor = inputValues instanceof TensorClass;
       let out: unknown = inputValues;
       if (inputIsTensor) {
