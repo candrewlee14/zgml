@@ -4841,12 +4841,44 @@ const SemanticFfnInputBridgeCompatibility = struct {
     }
 };
 
+const SemanticFfnInputBridgeScratchLayout = struct {
+    product_element_offset: u32,
+    product_elements: u32,
+    output_element_offset: u32,
+    output_elements: u32,
+    down_partial_element_offset: u32,
+    down_partial_elements: u32,
+    total_bytes: usize,
+
+    fn fromRequirement(requirement: SemanticWidthScratchRequirement) ?SemanticFfnInputBridgeScratchLayout {
+        const total_bytes = requirement.scratchBytes();
+        const product_elements = f32ElementsFromBytes(requirement.product_bytes) orelse return null;
+        const output_elements = f32ElementsFromBytes(requirement.output_bytes) orelse return null;
+        const down_partial_elements = f32ElementsFromBytes(requirement.down_partial_bytes) orelse return null;
+        const total_elements = f32ElementsFromBytes(total_bytes) orelse return null;
+        const output_element_offset = product_elements;
+        if (output_element_offset + output_elements > total_elements) return null;
+        if (down_partial_elements > total_elements) return null;
+        return .{
+            .product_element_offset = 0,
+            .product_elements = std.math.cast(u32, product_elements) orelse return null,
+            .output_element_offset = std.math.cast(u32, output_element_offset) orelse return null,
+            .output_elements = std.math.cast(u32, output_elements) orelse return null,
+            .down_partial_element_offset = 0,
+            .down_partial_elements = std.math.cast(u32, down_partial_elements) orelse return null,
+            .total_bytes = total_bytes,
+        };
+    }
+};
+
 const SemanticFfnInputBridgeEncodePlan = struct {
     bridge: SemanticFfnInputBridgeCompatibility,
     input_params: QMatMulParams,
     gate_params: QMatMulParams,
     up_params: QMatMulParams,
     down_params: QMatMulParams,
+    scratch: SemanticWidthScratchRequirement,
+    scratch_layout: SemanticFfnInputBridgeScratchLayout,
     scratch_bytes: usize,
 };
 
@@ -4940,8 +4972,9 @@ fn semanticFfnInputBridgeEncodePlan(view: RuntimeView, input_q: anytype, input_r
     if (down_params.M != gate_params.M or down_params.K != gate_params.N or down_params.N != input_params.N) return null;
 
     const scratch = bridge.scratchRequirement() orelse return null;
+    const scratch_layout = SemanticFfnInputBridgeScratchLayout.fromRequirement(scratch) orelse return null;
     const scratch_buffer = view.semantic_width_scratch orelse return null;
-    const scratch_bytes = scratch.scratchBytes();
+    const scratch_bytes = scratch_layout.total_bytes;
     if (scratch_buffer.size < scratch_bytes) return null;
     return .{
         .bridge = bridge,
@@ -4949,6 +4982,8 @@ fn semanticFfnInputBridgeEncodePlan(view: RuntimeView, input_q: anytype, input_r
         .gate_params = gate_params,
         .up_params = up_params,
         .down_params = down_params,
+        .scratch = scratch,
+        .scratch_layout = scratch_layout,
         .scratch_bytes = scratch_bytes,
     };
 }
@@ -6097,6 +6132,11 @@ fn checkedF32Bytes(elements: u64) ?usize {
     return std.math.cast(usize, bytes);
 }
 
+fn f32ElementsFromBytes(bytes: usize) ?u64 {
+    if (bytes % @sizeOf(f32) != 0) return null;
+    return std.math.cast(u64, bytes / @sizeOf(f32));
+}
+
 fn semanticScratchRequirementForShape(rows: u32, hidden: u32, input: u32, output: u32) ?SemanticWidthScratchRequirement {
     if (rows == 0 or hidden == 0 or input == 0 or output == 0) return null;
     if (input > SEMANTIC_FFN_MAX_DIM or hidden <= SEMANTIC_FFN_MAX_DIM or hidden > SEMANTIC_FFN_MAX_HIDDEN or output > SEMANTIC_FFN_MAX_DIM) return null;
@@ -6308,6 +6348,17 @@ test "semantic input bridge encode plan requires native qweights and full width 
     try std.testing.expectEqual(@as(u32, 1536), plan.gate_params.N);
     try std.testing.expectEqual(@as(u32, 1536), plan.up_params.N);
     try std.testing.expectEqual(@as(u32, 576), plan.down_params.N);
+    try std.testing.expectEqual(@as(usize, 786432), plan.scratch.product_bytes);
+    try std.testing.expectEqual(@as(usize, 14155776), plan.scratch.down_partial_bytes);
+    try std.testing.expectEqual(@as(usize, 294912), plan.scratch.output_bytes);
+    try std.testing.expectEqual(@as(usize, 9216), plan.scratch.runtimeScratchBytes());
+    try std.testing.expectEqual(@as(u32, 0), plan.scratch_layout.product_element_offset);
+    try std.testing.expectEqual(@as(u32, 196608), plan.scratch_layout.product_elements);
+    try std.testing.expectEqual(@as(u32, 196608), plan.scratch_layout.output_element_offset);
+    try std.testing.expectEqual(@as(u32, 73728), plan.scratch_layout.output_elements);
+    try std.testing.expectEqual(@as(u32, 0), plan.scratch_layout.down_partial_element_offset);
+    try std.testing.expectEqual(@as(u32, 3538944), plan.scratch_layout.down_partial_elements);
+    try std.testing.expectEqual(@as(usize, 14155776), plan.scratch_layout.total_bytes);
     try std.testing.expectEqual(@as(usize, 14155776), plan.scratch_bytes);
 
     const wrong_block = testSemanticInputBridgeView(16, 14155776, &.{});
