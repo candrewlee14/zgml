@@ -7325,6 +7325,7 @@ export type CompiledInference<InputShape extends TensorShapeTuple = TensorShapeT
   explain(): ModuleCompileExplanation<InputShape, OutputShape> | ModuleCompileSupport<InputShape, OutputShape>;
   preflight(): ModuleCompileExplanation<InputShape, OutputShape> | ModuleCompileSupport<InputShape, OutputShape>;
   compileSupport(): ModuleCompileSupport<InputShape, OutputShape>;
+  compileEvidence(): ProgramCompileEvidence | null;
   requirements(): ProgramRequirements;
   bufferLayout(): ProgramBufferLayout;
   inputShape(): InputShape;

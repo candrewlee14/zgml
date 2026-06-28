@@ -5363,6 +5363,7 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     const inferencePreflight = inference.preflight();
     const inferenceExecutionPlan = inference.requireExecutionPlan();
     const inferenceCompileEvidence = inferenceExecutionPlan.compileEvidence;
+    const inferenceHandleEvidence = inference.compileEvidence();
     const inferenceRequirements = inference.requirements();
     const inferenceBufferLayout = inference.bufferLayout();
     if (
@@ -5370,6 +5371,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       inferenceExecutionPlan.canExecute !== true ||
       inferenceExecutionPlan.executionMode !== "executable" ||
       inferenceCompileEvidence?.nativeCore !== "zig-module-program" ||
+      inferenceHandleEvidence !== inference.program.compileEvidence() ||
+      inferenceHandleEvidence !== inferenceCompileEvidence ||
       inferenceCompileEvidence.nativeRequirementsSource !== "zig-module-program" ||
       inferenceCompileEvidence.nativeRequirements?.inputLen !== inference.program.inputLen() ||
       inferenceCompileEvidence.nativeRequirements?.outputLen !== inference.program.outputLen() ||
@@ -5510,12 +5513,15 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
   const nativeInference = adapter.nn.native(inferenceModel, { backend: "cpu", inputShape: [2] });
   try {
     const nativeInferencePlan = nativeInference.requireExecutionPlan();
+    const nativeInferenceEvidence = nativeInference.compileEvidence();
     const nativeInferenceRequirements = nativeInference.requirements();
     const nativeInferenceLayout = nativeInference.bufferLayout();
     if (
       nativeInference.native !== true ||
       nativeInferencePlan.canExecute !== true ||
       nativeInferencePlan.executionMode !== "executable" ||
+      nativeInferenceEvidence !== nativeInference.program.compileEvidence() ||
+      nativeInferenceEvidence !== nativeInferencePlan.compileEvidence ||
       nativeInferenceRequirements.signature !== nativeInference.program.requirements().signature ||
       nativeInferenceLayout.signature !== nativeInference.program.bufferLayout().signature ||
       nativeInference.inputShape().join("x") !== "2" ||

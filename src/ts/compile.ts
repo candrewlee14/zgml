@@ -65,6 +65,7 @@ import type {
   Program,
   ProgramBindings,
   ProgramBufferLayout,
+  ProgramCompileEvidence,
   ProgramExecutionPlan,
   ProgramInputBinding,
   ProgramRequirements,
@@ -554,6 +555,9 @@ function compiledInferenceHandle<InputShape extends TensorShapeTuple, OutputShap
     },
     compileSupport() {
       return compileSupport(target, options) as ModuleCompileSupport<InputShape, OutputShape>;
+    },
+    compileEvidence() {
+      return program.compileEvidence() as ProgramCompileEvidence | null;
     },
     requirements() {
       return program.requirements() as ProgramRequirements;

@@ -198,12 +198,13 @@ That handle is intentionally not a second runtime abstraction. It owns a
 and gives ordinary inference users the short path they actually want.
 The handle now also exposes first-contact proof methods directly:
 `explain()`, `preflight()`, `compileSupport()`, `inputShape()`,
-`outputShape()`, `requirements()`, `bufferLayout()`, `kernelPlan()`, and
-`compilerSignatures()`. `requirements()` and `bufferLayout()` delegate to the
-native Program, so first-contact users can inspect the Zig-owned executable
-memory contract without dropping down to `fast.program`. That keeps the happy
-path tiny while still making the executable artifact inspectable without
-forcing users to know the lower-level `Program` API on day one.
+`outputShape()`, `compileEvidence()`, `requirements()`, `bufferLayout()`,
+`kernelPlan()`, and `compilerSignatures()`. `compileEvidence()`,
+`requirements()`, and `bufferLayout()` delegate to the native Program, so
+first-contact users can inspect the Zig-owned executable proof and memory
+contract without dropping down to `fast.program`. That keeps the happy path
+tiny while still making the executable artifact inspectable without forcing
+users to know the lower-level `Program` API on day one.
 The same handle is now deliberately module-shaped: it exposes `forward`,
 `call`, and `__call__`, so native inference feels like ordinary `nn` code while
 still owning a real `Program` and `Session` underneath. The `nn` namespace also
@@ -211,10 +212,10 @@ provides `nn.native(model, opts)` / `nn.inference(model, opts)`, and module
 instances expose `model.native(opts)`, all as TS-authored sugar over the same
 native Program/Session binding path. Those `nn` handles expose the same
 first-contact executable proof surface as `compile.forInference(...)`:
-`native`, `requireExecutionPlan()`, `requirements()`, `bufferLayout()`,
-shape/proof helpers, and allocation-free `into(...)`. That is the desired
-split: ergonomic JS/TS API, Zig-owned execution core, no mirrored Zig product
-frontend.
+`native`, `requireExecutionPlan()`, `compileEvidence()`, `requirements()`,
+`bufferLayout()`, shape/proof helpers, and allocation-free `into(...)`. That is
+the desired split: ergonomic JS/TS API, Zig-owned execution core, no mirrored
+Zig product frontend.
 The same rule now applies to the training happy path: modules expose
 `model.fit(loader, { optimizer, loss, ... })`, `model.evaluate(...)`, and
 `model.predict(...)` as TS-authored convenience methods over the single

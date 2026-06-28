@@ -84,6 +84,7 @@ type NativeInferenceProgram = Record<string, unknown> & {
   bind?: (bindings?: unknown) => unknown;
   dispose?: () => void;
   requireExecutionPlan?: () => unknown;
+  compileEvidence?: () => unknown;
   requirements?: () => unknown;
   bufferLayout?: () => unknown;
   inputShape?: () => unknown;
@@ -640,6 +641,9 @@ export function createNnNamespace(options: NnNamespaceOptions) {
       },
       compileSupport() {
         return compileSupportForModule(module, compileOptions);
+      },
+      compileEvidence() {
+        return typeof program.compileEvidence === "function" ? program.compileEvidence() : (executionPlan as AnyRecord).compileEvidence ?? null;
       },
       requirements() {
         return typeof program.requirements === "function" ? program.requirements() : null;
