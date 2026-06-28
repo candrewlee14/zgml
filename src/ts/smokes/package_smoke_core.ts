@@ -5299,15 +5299,27 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     typeof adapter.compile.compileForInference !== "function" ||
     typeof adapter.compile.compile_for_inference !== "function" ||
     typeof adapter.compile.run !== "function" ||
+    adapter.compile.infer !== adapter.compile.run ||
+    adapter.compile.predict !== adapter.compile.run ||
     typeof adapter.compile.runInto !== "function" ||
     adapter.compile.run_into !== adapter.compile.runInto ||
+    adapter.compile.inferInto !== adapter.compile.runInto ||
+    adapter.compile.infer_into !== adapter.compile.runInto ||
+    adapter.compile.predictInto !== adapter.compile.runInto ||
+    adapter.compile.predict_into !== adapter.compile.runInto ||
     typeof adapter.native !== "function" ||
     adapter.native !== adapter.compile.compileForInference ||
     typeof adapter.run !== "function" ||
     adapter.run !== adapter.compile.run ||
+    adapter.infer !== adapter.compile.run ||
+    adapter.predict !== adapter.compile.run ||
     typeof adapter.runInto !== "function" ||
     adapter.runInto !== adapter.compile.runInto ||
     adapter.run_into !== adapter.compile.runInto ||
+    adapter.inferInto !== adapter.compile.runInto ||
+    adapter.infer_into !== adapter.compile.runInto ||
+    adapter.predictInto !== adapter.compile.runInto ||
+    adapter.predict_into !== adapter.compile.runInto ||
     typeof adapter.forInference !== "function" ||
     adapter.forInference !== adapter.compile.compileForInference ||
     typeof adapter.for_inference !== "function" ||
@@ -5316,8 +5328,12 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     adapter.zgml.native !== adapter.compile.compileForInference ||
     typeof adapter.zgml?.run !== "function" ||
     adapter.zgml.run !== adapter.compile.run ||
+    adapter.zgml.infer !== adapter.compile.run ||
+    adapter.zgml.predict !== adapter.compile.run ||
     typeof adapter.zgml?.runInto !== "function" ||
     adapter.zgml.runInto !== adapter.compile.runInto ||
+    adapter.zgml.inferInto !== adapter.compile.runInto ||
+    adapter.zgml.predictInto !== adapter.compile.runInto ||
     typeof adapter.zgml?.forInference !== "function" ||
     adapter.zgml.forInference !== adapter.compile.compileForInference ||
     typeof adapter.compileInference !== "function" ||
@@ -5381,11 +5397,41 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     [-0.5],
     `${label} compile.run one-shot native Program/Session output`,
   );
+  expectClose(
+    adapter.infer(inferenceModel, inferenceInput, { backend: "cpu", inputShape: [2] }).data,
+    [-0.5],
+    `${label} root infer one-shot native Program/Session output`,
+  );
+  expectClose(
+    adapter.predict(inferenceModel, inferenceInput, { backend: "cpu", inputShape: [2] }).data,
+    [-0.5],
+    `${label} root predict one-shot native Program/Session output`,
+  );
+  expectClose(
+    adapter.zgml.infer(inferenceModel, inferenceInput, { backend: "cpu", inputShape: [2] }).data,
+    [-0.5],
+    `${label} zgml.infer one-shot native Program/Session output`,
+  );
+  expectClose(
+    adapter.compile.predict(inferenceModel, inferenceInput, { backend: "cpu", inputShape: [2] }).data,
+    [-0.5],
+    `${label} compile.predict one-shot native Program/Session output`,
+  );
   const runIntoCarrier = new Float32Array(1);
   if (adapter.runInto(runIntoCarrier, inferenceModel, inferenceInput, { backend: "cpu", inputShape: [2] }) !== runIntoCarrier) {
     throw new Error(`${label} expected root runInto to reuse caller output`);
   }
   expectClose(runIntoCarrier, [-0.5], `${label} root runInto one-shot native Program/Session output`);
+  const inferIntoCarrier = new Float32Array(1);
+  if (adapter.inferInto(inferIntoCarrier, inferenceModel, inferenceInput, { backend: "cpu", inputShape: [2] }) !== inferIntoCarrier) {
+    throw new Error(`${label} expected root inferInto to reuse caller output`);
+  }
+  expectClose(inferIntoCarrier, [-0.5], `${label} root inferInto one-shot native Program/Session output`);
+  const predictIntoCarrier = new Float32Array(1);
+  if (adapter.predictInto(predictIntoCarrier, inferenceModel, inferenceInput, { backend: "cpu", inputShape: [2] }) !== predictIntoCarrier) {
+    throw new Error(`${label} expected root predictInto to reuse caller output`);
+  }
+  expectClose(predictIntoCarrier, [-0.5], `${label} root predictInto one-shot native Program/Session output`);
   const zgmlNativeRun = adapter.zgml.native(inferenceModel, { backend: "cpu", inputShape: [2] });
   try {
     const plan = zgmlNativeRun.requireExecutionPlan();

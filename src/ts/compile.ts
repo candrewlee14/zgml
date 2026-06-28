@@ -666,6 +666,9 @@ export function run(target: unknown, input: unknown, options: CompileNamespaceOp
   }
 }
 
+export const infer = run;
+export const predict = run;
+
 export function runInto<const Target extends EmbeddingModule, const S extends TensorShapeTuple>(
   output: Float32Array,
   target: Target,
@@ -695,6 +698,10 @@ export function runInto(output: Float32Array, target: unknown, input: unknown, o
 }
 
 export const run_into = runInto;
+export const inferInto = runInto;
+export const infer_into = runInto;
+export const predictInto = runInto;
+export const predict_into = runInto;
 
 export function trainingStep(_model: unknown, _optimizer: unknown, _options: Record<string, unknown> = {}): CompiledTrainingStep {
   throw new Error("compile.trainingStep requires a native Node or Bun runtime");

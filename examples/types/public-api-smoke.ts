@@ -43,6 +43,9 @@ import {
   forInference,
   for_inference,
   gradMode,
+  infer,
+  inferInto,
+  infer_into,
   inference,
   inference_mode,
   fullLike,
@@ -98,6 +101,9 @@ import {
   optim,
   permute,
   pow,
+  predict,
+  predictInto,
+  predict_into,
   prod,
   program,
   randLike,
@@ -116,6 +122,9 @@ import {
   roll,
   round,
   rsqrt,
+  run,
+  runInto,
+  run_into,
   scatterAdd,
   scatter_add,
   session,
@@ -2501,6 +2510,15 @@ const rootNativeInference: CompiledInference<readonly [2], readonly [3]> = nativ
 const rootInferenceAlias: CompiledInference<readonly [2], readonly [3]> = inference(linear, linearTypedCompileOptions);
 const rootForInferenceAlias: CompiledInference<readonly [2], readonly [3]> = forInference(linear, linearTypedCompileOptions);
 const rootForInferenceSnakeAlias: CompiledInference<readonly [2], readonly [3]> = for_inference(linear, linearTypedCompileOptions);
+const rootRunOutput: Tensor<readonly [3]> = run(linear, linearInput, linearTypedCompileOptions);
+const rootInferOutput: Tensor<readonly [3]> = infer(linear, linearInput, linearTypedCompileOptions);
+const rootPredictOutput: Tensor<readonly [3]> = predict(linear, linearInput, linearTypedCompileOptions);
+const rootRunIntoOutput: Float32Array = runInto(new Float32Array(3), linear, linearInput, linearTypedCompileOptions);
+const rootRunIntoSnakeOutput: Float32Array = run_into(new Float32Array(3), linear, linearInput, linearTypedCompileOptions);
+const rootInferIntoOutput: Float32Array = inferInto(new Float32Array(3), linear, linearInput, linearTypedCompileOptions);
+const rootInferIntoSnakeOutput: Float32Array = infer_into(new Float32Array(3), linear, linearInput, linearTypedCompileOptions);
+const rootPredictIntoOutput: Float32Array = predictInto(new Float32Array(3), linear, linearInput, linearTypedCompileOptions);
+const rootPredictIntoSnakeOutput: Float32Array = predict_into(new Float32Array(3), linear, linearInput, linearTypedCompileOptions);
 const zgmlNativeInference: CompiledInference<readonly [2], readonly [3]> = zgml.native(linear, linearTypedCompileOptions);
 const zgmlNativeLayerListInference: CompiledInference<readonly [2], readonly [3]> = zgml.native([linear], linearTypedCompileOptions);
 const zgmlInferenceAlias: CompiledInference<readonly [2], readonly [3]> = zgml.inference(linear, linearTypedCompileOptions);
@@ -2509,6 +2527,16 @@ const zgmlForInferenceSnakeAlias: CompiledInference<readonly [2], readonly [3]> 
 const zgmlCompiledInference: CompiledInference<readonly [2], readonly [3]> = zgml.compileForInference(linear, linearTypedCompileOptions);
 const zgmlCompileInferenceAlias: CompiledInference<readonly [2], readonly [3]> = zgml.compileInference(linear, linearTypedCompileOptions);
 const zgmlCompiledInferenceAlias: CompiledInference<readonly [2], readonly [3]> = zgml.compile_for_inference(linear, linearTypedCompileOptions);
+const zgmlInferOutput: Tensor<readonly [3]> = zgml.infer(linear, linearInput, linearTypedCompileOptions);
+const zgmlPredictOutput: Tensor<readonly [3]> = zgml.predict(linear, linearInput, linearTypedCompileOptions);
+const zgmlInferIntoOutput: Float32Array = zgml.inferInto(new Float32Array(3), linear, linearInput, linearTypedCompileOptions);
+const zgmlPredictIntoOutput: Float32Array = zgml.predictInto(new Float32Array(3), linear, linearInput, linearTypedCompileOptions);
+const compileInferOutput: Tensor<readonly [3]> = compile.infer(linear, linearInput, linearTypedCompileOptions);
+const compilePredictOutput: Tensor<readonly [3]> = compile.predict(linear, linearInput, linearTypedCompileOptions);
+const compileInferIntoOutput: Float32Array = compile.inferInto(new Float32Array(3), linear, linearInput, linearTypedCompileOptions);
+const compileInferIntoSnakeOutput: Float32Array = compile.infer_into(new Float32Array(3), linear, linearInput, linearTypedCompileOptions);
+const compilePredictIntoOutput: Float32Array = compile.predictInto(new Float32Array(3), linear, linearInput, linearTypedCompileOptions);
+const compilePredictIntoSnakeOutput: Float32Array = compile.predict_into(new Float32Array(3), linear, linearInput, linearTypedCompileOptions);
 const compiledInferenceNative: true = compiledInference.native;
 const compiledInferenceProgram: Program<readonly [2], readonly [3]> = compiledInference.program;
 const compiledInferenceSession: Session<readonly [2], readonly [3]> = compiledInference.session;
@@ -2577,6 +2605,25 @@ void compiledInferenceProgram;
 void compiledInferenceSession;
 void compiledInferenceExecutionPlan;
 void compiledInferenceRequiredExecutionPlan;
+void rootRunOutput;
+void rootInferOutput;
+void rootPredictOutput;
+void rootRunIntoOutput;
+void rootRunIntoSnakeOutput;
+void rootInferIntoOutput;
+void rootInferIntoSnakeOutput;
+void rootPredictIntoOutput;
+void rootPredictIntoSnakeOutput;
+void zgmlInferOutput;
+void zgmlPredictOutput;
+void zgmlInferIntoOutput;
+void zgmlPredictIntoOutput;
+void compileInferOutput;
+void compilePredictOutput;
+void compileInferIntoOutput;
+void compileInferIntoSnakeOutput;
+void compilePredictIntoOutput;
+void compilePredictIntoSnakeOutput;
 compiledInference.dispose();
 compiledInferenceAlias.free();
 compiledInferenceNativeAlias.dispose();

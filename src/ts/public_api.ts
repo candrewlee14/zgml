@@ -6193,10 +6193,22 @@ export type PublicCompileNamespace = Readonly<CompileNamespace> & {
   for_inference(target: NnModule | readonly NnModule[], options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
   run<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, input: ProgramInputBinding<S>, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): Tensor<ModuleTargetForwardShape<Target, S>>;
   run(target: NnModule | readonly NnModule[], input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Tensor;
+  infer<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, input: ProgramInputBinding<S>, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): Tensor<ModuleTargetForwardShape<Target, S>>;
+  infer(target: NnModule | readonly NnModule[], input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Tensor;
+  predict<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(target: Target, input: ProgramInputBinding<S>, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): Tensor<ModuleTargetForwardShape<Target, S>>;
+  predict(target: NnModule | readonly NnModule[], input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Tensor;
   runInto<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(output: Float32Array, target: Target, input: ProgramInputBinding<S>, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
   runInto(output: Float32Array, target: NnModule | readonly NnModule[], input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
   run_into<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(output: Float32Array, target: Target, input: ProgramInputBinding<S>, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
   run_into(output: Float32Array, target: NnModule | readonly NnModule[], input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
+  inferInto<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(output: Float32Array, target: Target, input: ProgramInputBinding<S>, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
+  inferInto(output: Float32Array, target: NnModule | readonly NnModule[], input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
+  infer_into<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(output: Float32Array, target: Target, input: ProgramInputBinding<S>, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
+  infer_into(output: Float32Array, target: NnModule | readonly NnModule[], input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
+  predictInto<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(output: Float32Array, target: Target, input: ProgramInputBinding<S>, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
+  predictInto(output: Float32Array, target: NnModule | readonly NnModule[], input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
+  predict_into<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(output: Float32Array, target: Target, input: ProgramInputBinding<S>, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
+  predict_into(output: Float32Array, target: NnModule | readonly NnModule[], input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
 };
 export type PublicProgramNamespace = Readonly<ProgramNamespace>;
 export type PublicSessionNamespace = Readonly<SessionNamespace>;
@@ -7111,8 +7123,14 @@ export type PublicTorchNamespace = Readonly<{
   compileForInference: PublicCompileNamespace["compileForInference"];
   compile_for_inference: PublicCompileNamespace["compile_for_inference"];
   run: PublicCompileNamespace["run"];
+  infer: PublicCompileNamespace["infer"];
+  predict: PublicCompileNamespace["predict"];
   runInto: PublicCompileNamespace["runInto"];
   run_into: PublicCompileNamespace["run_into"];
+  inferInto: PublicCompileNamespace["inferInto"];
+  infer_into: PublicCompileNamespace["infer_into"];
+  predictInto: PublicCompileNamespace["predictInto"];
+  predict_into: PublicCompileNamespace["predict_into"];
   trainingStep: PublicCompileNamespace["trainingStep"];
   training_step: PublicCompileNamespace["training_step"];
   compileForTraining: PublicCompileNamespace["compileForTraining"];
@@ -7181,7 +7199,11 @@ export type PublicSimpleNamespace = Readonly<Pick<PublicZgmlNamespace,
   | "compileInference"
   | "compileForInference"
   | "run"
+  | "infer"
+  | "predict"
   | "runInto"
+  | "inferInto"
+  | "predictInto"
   | "trainingStep"
   | "compileForTraining"
   | "nativeCore"
@@ -7215,8 +7237,14 @@ export declare const compile_inference: PublicCompileNamespace["compile_for_infe
 export declare const compileForInference: PublicCompileNamespace["compileForInference"];
 export declare const compile_for_inference: PublicCompileNamespace["compile_for_inference"];
 export declare const run: PublicCompileNamespace["run"];
+export declare const infer: PublicCompileNamespace["infer"];
+export declare const predict: PublicCompileNamespace["predict"];
 export declare const runInto: PublicCompileNamespace["runInto"];
 export declare const run_into: PublicCompileNamespace["run_into"];
+export declare const inferInto: PublicCompileNamespace["inferInto"];
+export declare const infer_into: PublicCompileNamespace["infer_into"];
+export declare const predictInto: PublicCompileNamespace["predictInto"];
+export declare const predict_into: PublicCompileNamespace["predict_into"];
 export declare const trainingStep: PublicCompileNamespace["trainingStep"];
 export declare const training_step: PublicCompileNamespace["training_step"];
 export declare const compileForTraining: PublicCompileNamespace["compileForTraining"];
