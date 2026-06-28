@@ -457,7 +457,14 @@ Current checked progress:
   `llamaProfileLabels=6` in about 285 seconds. The remaining substrate jump is
   not another compatibility lane; it is a real tiled quantized row-chain
   throughput kernel, a larger semantic sublayer, or broad full/default browser
-  execution beyond these bounded family proofs.
+  execution beyond these bounded family proofs. A June 28, 2026 input-bridge
+  experiment also sharpened the promotion rule: a staged-width shortcut that
+  reduced the absorbed semantic input-bridge profile from five dispatches to
+  three was numerically correct, but slower than the existing decomposed command
+  baseline on the target `m=128 h=1536 k=576 o=576` shape. The checker now
+  rejects that kind of dispatch-only shortcut unless a future staged-width path
+  beats the command baseline, so the real next target remains
+  `semantic_with_input_width_parallel_kernel`.
 - zgml frontend replacement feel: ~85%. The TS-owned product frontend now has
   typed and runtime evidence for `Tensor`, `nn.Module`, `nn.Linear`, containers,
   `data` loaders/samplers, `loss`, `optim`, schedulers, `train`, state dicts,

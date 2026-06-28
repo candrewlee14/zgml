@@ -2083,6 +2083,9 @@ function scoreFocusedSemanticInputBridgeCandidate(output, attempt) {
   const failures = [];
   if (commandSpeedup < 1.0) failures.push(`semantic input command ${commandSpeedup.toFixed(2)}x < 1.00x`);
   if (absorbedSpeedup < 1.0) failures.push(`semantic input absorbed ${absorbedSpeedup.toFixed(2)}x < 1.00x`);
+  if (absorbedUsesStagedWidthKernel && absorbedSpeedup < commandSpeedup) {
+    failures.push(`semantic input staged width ${absorbedSpeedup.toFixed(2)}x must beat command baseline ${commandSpeedup.toFixed(2)}x before promotion`);
+  }
   if (commandMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`semantic input command max_abs_diff ${commandMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (absorbedMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`semantic input absorbed max_abs_diff ${absorbedMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
   if (directSerialMaxAbsDiff > projectionRowChainMaxAbsDiffCeil) failures.push(`semantic input direct_serial max_abs_diff ${directSerialMaxAbsDiff.toFixed(6)} > ${projectionRowChainMaxAbsDiffCeil.toFixed(6)}`);
@@ -2541,7 +2544,27 @@ function runFocusedSemanticInputBridgeGate() {
     ["absorbedRowChainTiledSpilledInput", 0],
     ["absorbedRowChainTiledOutputSpills", 0],
   ]);
-  if (!hasDecomposedAbsorbedProfile && !hasDirectAbsorbedProfile) aggregate.push("semantic input absorbed profile did not match in any attempt");
+  const hasStagedWidthAbsorbedProfile = anyEquals(attempts, [
+    ["absorbedShapeCommands", 1],
+    ["absorbedShapeSemantic", 1],
+    ["absorbedShapeRowChains", 1],
+    ["absorbedShapeBridges", 0],
+    ["absorbedShapeCoveredOps", 14],
+    ["absorbedShapeSavedDispatches", 13],
+    ["absorbedRuntimeDispatches", 3],
+    ["absorbedSemanticWithInputDispatches", 3],
+    ["absorbedSemanticWithInputAttempts", 1],
+    ["absorbedSemanticWithInputRefused", 0],
+    ["absorbedFallbackPairDispatches", 0],
+    ["absorbedFallbackTailDispatches", 2],
+    ["absorbedDecomposedExtraDispatches", 2],
+    ["absorbedRowChainTiledCount", 1],
+    ["absorbedRowChainWidthParallelCount", 1],
+    ["absorbedRowChainWidthParallelLanes", 4],
+    ["absorbedRowChainTiledSpilledInput", 0],
+    ["absorbedRowChainTiledOutputSpills", 0],
+  ]);
+  if (!hasDecomposedAbsorbedProfile && !hasStagedWidthAbsorbedProfile && !hasDirectAbsorbedProfile) aggregate.push("semantic input absorbed profile did not match in any attempt");
 
   const line = aggregate.length === 0 ? best.line.replace("frontier qsemantic input bridge gate: fail", "frontier qsemantic input bridge gate: pass") : best.line;
   const artifactPath = writeFocusedSemanticInputBridgeArtifact(best, attempts, aggregate, line);
