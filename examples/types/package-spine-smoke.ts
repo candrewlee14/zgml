@@ -615,7 +615,7 @@ type PackageCheckpointInspectionEntry = Expect<Equal<PackageCheckpointInspection
 type PackageCompilePath = Expect<Equal<typeof packageCompileManifest.runtimePath, "Trace -> TensorProgramIr -> KernelPlan -> Program">>;
 type PackageCompileNamespaceShape = Expect<PackageCompileNamespace extends { compile: unknown } ? true : false>;
 type PackageCompileNamespaceInferenceShape = Expect<PackageCompileNamespace extends { native: unknown; inference: unknown; forInference: unknown; for_inference: unknown; compileForInference: unknown; compile_for_inference: unknown } ? true : false>;
-type PackageCompileNamespaceTrainingShape = Expect<PackageCompileNamespace extends { trainingStep: unknown; training_step: unknown; compileForTraining: unknown; compile_for_training: unknown } ? true : false>;
+type PackageCompileNamespaceTrainingShape = Expect<PackageCompileNamespace extends { trainingStep: unknown; training_step: unknown; compileForTraining: unknown; compile_for_training: unknown; forTraining: unknown; for_training: unknown } ? true : false>;
 type PackagePublicCompileNamespaceShape = Expect<PackagePublicCompileNamespace extends Readonly<PackageCompileNamespace> ? true : false>;
 type PackagePublicCompileNamespaceCallable = Expect<PackagePublicCompileNamespace extends (target: PackageNnCompilableModule, options?: PackageCompileOptions) => PackageProgram ? true : false>;
 type PackageCompiledInferenceShape = Expect<PackageCompiledInference<readonly [2], readonly [3]> extends { native: true; program: PackageProgram<readonly [2], readonly [3]>; session: PackageSession<readonly [2], readonly [3]>; inputShape(): readonly [2]; outputShape(): readonly [3]; executionPlan(): unknown; requireExecutionPlan(): unknown; forward(input: unknown): unknown; into(output: Float32Array, input: unknown): Float32Array; prepareInto(output: Float32Array, input: unknown): () => Float32Array } ? true : false>;
@@ -623,6 +623,7 @@ type PackageCompiledTrainingShape = Expect<PackageCompiledTrainingStep extends {
 type PackageCompiledTrainingPlanShape = Expect<PackageCompiledTrainingPlan extends { native: true; loweredBy: "zig-ffi"; kernels: readonly string[]; workspace: Readonly<Record<string, number>> } ? true : false>;
 type PackageCompileTrainingOptionsShape = Expect<Equal<PackageCompileTrainingOptions["loss"], "crossEntropy" | "cross_entropy" | "mse" | "meanSquaredError" | "mean_squared_error" | undefined>>;
 type PackageLinearCompileTrainingShape = Expect<ReturnType<PackageLinearModule<2, 1>["compileForTraining"]> extends PackageCompiledTrainingStep ? true : false>;
+type PackageLinearForTrainingShape = Expect<ReturnType<PackageLinearModule<2, 1>["forTraining"]> extends PackageCompiledTrainingStep ? true : false>;
 type PackageCompileModeShape = Expect<Equal<PackageCompileMode, "auto" | "tiny" | "module">>;
 type PackageCompileOptionsShape = Expect<Equal<PackageCompileOptions["backend"], "auto" | "cpu" | "metal" | "webgpu" | undefined>>;
 type PackageCompileOptionsInputShape = Expect<PackageCompileOptionsWithInputShape<readonly [2]> extends { inputShape: readonly [2] } ? true : false>;
@@ -991,6 +992,7 @@ const nativeApiContractApiCount: number = packageRequiredNativeApiExports.length
 const nativeApiContractSpineCount: number = packageRequiredNativePackageSpineExports.length;
 const nativeApiContractSpineIncludesF: boolean = packageRequiredNativePackageSpineExports.includes("F");
 const nativeApiContractSpineIncludesGradMode: boolean = packageRequiredNativePackageSpineExports.includes("gradMode");
+const nativeApiContractSpineIncludesForTraining: boolean = packageRequiredNativePackageSpineExports.includes("forTraining");
 const extension: string = nativeLibraryExtensionForPlatform("darwin");
 const filename: string = packageNativeLibraryFilename("so");
 const missingMessage: string = nativeLibraryMissingMessage("/tmp/libzgml_c.so", "so");
@@ -1245,6 +1247,7 @@ void [
   ownsPolicy,
   nativeApiContractSpineIncludesF,
   nativeApiContractSpineIncludesGradMode,
+  nativeApiContractSpineIncludesForTraining,
   extension,
   filename,
   missingMessage,

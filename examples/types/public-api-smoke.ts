@@ -42,6 +42,8 @@ import {
   floor,
   forInference,
   for_inference,
+  forTraining,
+  for_training,
   gradMode,
   infer,
   inferInto,
@@ -391,6 +393,7 @@ import {
   type UnsqueezeShape,
   type WhereShape,
   type CompiledTrainingPlan,
+  type CompiledTrainingStep,
   type TinyLlamaProgram,
   type TinyLlamaSession,
   type TokenArgmaxResult,
@@ -4516,6 +4519,34 @@ const optimizerFirstNativeFitEvidence: TrainFitEvidence<"adam"> = train.fit(chec
   inputShape: [1, 2] as const,
 });
 const optimizerFirstNativeFitPlan: CompiledTrainingPlan | null | undefined = optimizerFirstNativeFitEvidence.compiledPlan;
+const compiledTrainingForAlias: CompiledTrainingStep = compile.forTraining(checkpointModel, checkpointOptimizer, {
+  inputShape: [1, 2] as const,
+  loss: "mse",
+});
+const compiledTrainingForSnakeAlias: CompiledTrainingStep = compile.for_training(checkpointModel, checkpointOptimizer, {
+  input_shape: [1, 2] as const,
+  criterion: "mse",
+});
+const rootForTrainingAlias: CompiledTrainingStep = forTraining(checkpointModel, checkpointOptimizer, {
+  inputShape: [1, 2] as const,
+  loss: "mse",
+});
+const rootForTrainingSnakeAlias: CompiledTrainingStep = for_training(checkpointModel, checkpointOptimizer, {
+  input_shape: [1, 2] as const,
+  criterion: "mse",
+});
+const zgmlForTrainingAlias: CompiledTrainingStep = zgml.forTraining(checkpointModel, checkpointOptimizer, {
+  inputShape: [1, 2] as const,
+  loss: "mse",
+});
+const moduleForTrainingAlias: CompiledTrainingStep = checkpointModel.forTraining(checkpointOptimizer, {
+  inputShape: [1, 2] as const,
+  loss: "mse",
+});
+const moduleForTrainingSnakeAlias: CompiledTrainingStep = checkpointModel.for_training(checkpointOptimizer, {
+  input_shape: [1, 2] as const,
+  criterion: "mse",
+});
 const modelFirstFitNativeEvidence: TrainFitEvidence<"adam"> = train.fitNative(checkpointModel, tensorDatasetBatches, {
   optimizer: checkpointOptimizer,
   loss: new nn.MSELoss(),
@@ -5587,6 +5618,13 @@ void namespaceTensorLoss;
 void publicTrainNamespace;
 void observedTrainingNorm;
 void observedTrainingNormSnake;
+void compiledTrainingForAlias;
+void compiledTrainingForSnakeAlias;
+void rootForTrainingAlias;
+void rootForTrainingSnakeAlias;
+void zgmlForTrainingAlias;
+void moduleForTrainingAlias;
+void moduleForTrainingSnakeAlias;
 void createdCheckpoint;
 void checkpointModelState;
 void checkpointOptimizerState;
