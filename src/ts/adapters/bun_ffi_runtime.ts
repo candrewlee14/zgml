@@ -2461,6 +2461,43 @@ function callBunNativeMlpBulkTraining(call: (...args: any[]) => number, args: an
   return { status: statusCode, loss: outLoss[0], correct: Number(outCorrect[0]), steps: steps > 0 ? steps : expectedSteps };
 }
 
+function callBunNativeLinearBulkTraining(call: (...args: any[]) => number, args: any) {
+  const outLoss = new Float32Array(1);
+  const outSteps = new BigUint64Array(1);
+  const statusCode = call(
+    args.datasetInput,
+    BigInt(args.datasetInput.length),
+    args.datasetTargets,
+    BigInt(args.datasetTargets.length),
+    args.indices,
+    BigInt(args.indices.length),
+    args.batchInput,
+    BigInt(args.batchInput.length),
+    args.batchTarget,
+    BigInt(args.batchTarget.length),
+    args.weight,
+    BigInt(args.weight.length),
+    args.bias,
+    BigInt(args.bias.length),
+    args.output,
+    BigInt(args.output.length),
+    args.gradWeight,
+    BigInt(args.gradWeight.length),
+    BigInt(args.sampleCount),
+    BigInt(args.batch),
+    BigInt(args.inFeatures),
+    BigInt(args.outFeatures),
+    BigInt(args.epochs),
+    args.lr,
+    args.weightDecay,
+    outLoss,
+    outSteps,
+  );
+  const expectedSteps = args.epochs * Math.floor(args.sampleCount / args.batch);
+  const steps = Number(outSteps[0]);
+  return { status: statusCode, loss: outLoss[0], correct: 0, steps: steps > 0 ? steps : expectedSteps };
+}
+
 const nativeTraining = createAdapterNativeTrainingSurface({
   f32: (value) => f32(value as TensorLike),
   indexValues,
@@ -2489,6 +2526,10 @@ const nativeTraining = createAdapterNativeTrainingSurface({
     );
     return { status: statusCode, loss: outLoss[0], correct: 0 };
   },
+  trainLinearMseSgdBulkF32: (args) => callBunNativeLinearBulkTraining(
+    bunSymbolGroups.nativeTraining.trainLinearMseSgdBulkF32,
+    args,
+  ),
   trainMlpReluCrossEntropyAdamF32: (args) => callBunNativeMlpTraining(
     bunSymbolGroups.nativeTraining.trainMlpReluCrossEntropyAdamF32,
     args,

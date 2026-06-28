@@ -95,6 +95,7 @@ export function createNodeSymbolGroups(symbols: NodeNativeSymbols) {
     }),
     nativeTraining: Object.freeze({
       trainLinearMseSgdF32: symbols.trainLinearMseSgdF32,
+      trainLinearMseSgdBulkF32: symbols.trainLinearMseSgdBulkF32,
       trainMlpReluCrossEntropyAdamF32: symbols.trainMlpReluCrossEntropyAdamF32,
       trainMlpReluCrossEntropyAdamWF32: symbols.trainMlpReluCrossEntropyAdamWF32,
       trainMlpReluCrossEntropyAdamBulkF32: symbols.trainMlpReluCrossEntropyAdamBulkF32,

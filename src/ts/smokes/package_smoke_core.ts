@@ -7390,6 +7390,34 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     ) {
       throw new Error(`${label} expected train.fitNative, zgml.fitNative, and module.fitNative to require native Zig training`);
     }
+    const linearBulkModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
+    const linearBulkOptimizer = adapter.optim.sgd(linearBulkModel, { lr: 0.04 });
+    const linearBulkDataset = adapter.data.tensorDataset(
+      adapter.tensor([-1, -1, -1, 1, 1, -1, 1, 1, 2, -2], [5, 2]),
+      adapter.tensor([-0.5, -2.5, 2.5, 0.5, 5.0], [5, 1]),
+    );
+    const linearBulkLoader = adapter.data.dataLoader(linearBulkDataset, { batch_size: 2, drop_last: true });
+    const linearBulkFit = linearBulkModel.fit(linearBulkLoader, {
+      optimizer: linearBulkOptimizer,
+      loss: adapter.loss.mseLoss(),
+      epochs: 2,
+      maxSteps: 3,
+    });
+    if (
+      linearBulkFit.native !== true ||
+      linearBulkFit.nativeBulk !== true ||
+      linearBulkFit.compiledPlan?.loweredBy !== "zig-ffi" ||
+      linearBulkFit.steps !== 3 ||
+      linearBulkFit.stoppedEarly !== true ||
+      linearBulkFit.stopReason !== "max-steps" ||
+      linearBulkFit.sampleCount !== 5 ||
+      linearBulkFit.bulkResult?.kernel !== "zgml_train_linear_mse_sgd_f32_bulk" ||
+      linearBulkFit.bulkResult?.sampleCount !== 4 ||
+      linearBulkFit.bulkResult?.trainedSampleCount !== 6 ||
+      linearBulkFit.bulkResult?.datasetSampleCount !== 5
+    ) {
+      throw new Error(`${label} expected Linear+MSE tensor DataLoader fit to stay on the native Zig bulk trainer`);
+    }
     const dropLastBulkModel = new adapter.nn.Sequential([
       adapter.nn.linear(2, 4, {
         weights: [0.2, -0.1, 0.05, 0.1, -0.2, 0.15, 0.03, -0.04],

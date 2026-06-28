@@ -159,7 +159,9 @@ if (
   nativeFit.native !== true ||
   nativeFit.backend !== "cpu" ||
   nativeFit.steps !== 240 ||
-  nativeFit.losses.length !== 240
+  nativeFit.losses.length !== 1 ||
+  nativeFit.nativeBulk !== true ||
+  nativeFit.bulkResult?.kernel !== "zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk"
 ) {
   throw new Error(`train.fit compiled native trainer must return native fit evidence: ${JSON.stringify(nativeFit)}`);
 }

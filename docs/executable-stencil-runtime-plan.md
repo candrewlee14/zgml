@@ -228,7 +228,10 @@ dataset row count, so the common "drop the partial final batch" API shape does
 not force a JavaScript fallback. Bounded `maxSteps` training on the same loader
 shape also stays native: TS constructs the bounded row-index stream, while the
 forward, loss, backward, and optimizer updates still run inside one Zig bulk
-training call.
+training call. The simpler native `Linear + MSELoss + SGD` trainer follows the
+same rule through `zgml_train_linear_mse_sgd_f32_bulk`, so both first-contact
+regression and classifier examples keep epoch iteration in Zig for contiguous
+tensor loaders.
 
 The refined compiler shape is:
 

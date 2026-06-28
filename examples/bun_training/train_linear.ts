@@ -128,8 +128,14 @@ const nativeAfter = scalar(loss.mse(nativeModel.forward(tensor([1, -1], [1, 2] a
 if (nativeFit.native !== true || nativeTrainer.native !== true || nativeTrainer.backend !== "cpu") {
   throw new Error("train.fit compiled native linear trainer must return native fit evidence");
 }
-if (!train.isTrainFitEvidence(nativeFit) || nativeFit.steps !== 80 || nativeFit.losses.length !== 80) {
-  throw new Error("compiled native linear trainer must return signed fit evidence for every optimizer step");
+if (
+  !train.isTrainFitEvidence(nativeFit) ||
+  nativeFit.steps !== 80 ||
+  nativeFit.losses.length !== 1 ||
+  nativeFit.nativeBulk !== true ||
+  nativeFit.bulkResult?.kernel !== "zgml_train_linear_mse_sgd_f32_bulk"
+) {
+  throw new Error("compiled native linear trainer must return native bulk fit evidence");
 }
 if (!(nativeAfter < nativeBefore * 0.02)) {
   throw new Error(`expected compiled native linear trainer to reduce held-out loss sharply; before=${nativeBefore}, after=${nativeAfter}`);
@@ -155,8 +161,14 @@ const ergonomicNativeAfter = scalar(loss.mse(ergonomicNativeModel.forward(tensor
 if (ergonomicNativeFit.native !== true || ergonomicNativeFit.backend !== "cpu") {
   throw new Error("train.fitModule should automatically compile supported linear MSE training through the native Zig path");
 }
-if (!train.isTrainFitEvidence(ergonomicNativeFit) || ergonomicNativeFit.steps !== 80 || ergonomicNativeFit.losses.length !== 80) {
-  throw new Error("native train.fitModule must return signed fit evidence for every optimizer step");
+if (
+  !train.isTrainFitEvidence(ergonomicNativeFit) ||
+  ergonomicNativeFit.steps !== 80 ||
+  ergonomicNativeFit.losses.length !== 1 ||
+  ergonomicNativeFit.nativeBulk !== true ||
+  ergonomicNativeFit.bulkResult?.kernel !== "zgml_train_linear_mse_sgd_f32_bulk"
+) {
+  throw new Error("native train.fitModule must return native bulk fit evidence");
 }
 if (!(ergonomicNativeAfter < ergonomicNativeBefore * 0.02)) {
   throw new Error(`expected native train.fitModule to reduce held-out loss sharply; before=${ergonomicNativeBefore}, after=${ergonomicNativeAfter}`);

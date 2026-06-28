@@ -2598,6 +2598,105 @@ export fn zgml_train_linear_mse_sgd_f32(
     return status(.ok);
 }
 
+export fn zgml_train_linear_mse_sgd_f32_bulk(
+    dataset_input_ptr: ?[*]const f32,
+    dataset_input_len: usize,
+    dataset_target_ptr: ?[*]const f32,
+    dataset_target_len: usize,
+    indices_ptr: ?[*]const u32,
+    indices_len: usize,
+    batch_input_ptr: ?[*]f32,
+    batch_input_len: usize,
+    batch_target_ptr: ?[*]f32,
+    batch_target_len: usize,
+    weight_ptr: ?[*]f32,
+    weight_len: usize,
+    bias_ptr: ?[*]f32,
+    bias_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    grad_weight_ptr: ?[*]f32,
+    grad_weight_len: usize,
+    sample_count: usize,
+    batch: usize,
+    in_features: usize,
+    out_features: usize,
+    epochs: usize,
+    lr: f32,
+    weight_decay: f32,
+    out_loss: ?*f32,
+    out_steps: ?*usize,
+) c_int {
+    if (dataset_input_ptr == null or dataset_target_ptr == null or indices_ptr == null or
+        batch_input_ptr == null or batch_target_ptr == null or out_loss == null or out_steps == null or
+        sample_count == 0 or batch == 0 or in_features == 0 or out_features == 0 or epochs == 0 or
+        !finiteSgdConfig(lr, weight_decay)) return status(.invalid_argument);
+
+    const dataset_count = dataset_target_len / out_features;
+    const dataset_input_count = checkedElementCount(dataset_count, in_features) orelse return status(.shape_mismatch);
+    const dataset_target_count = checkedElementCount(dataset_count, out_features) orelse return status(.shape_mismatch);
+    const batch_input_count = checkedElementCount(batch, in_features) orelse return status(.shape_mismatch);
+    const batch_target_count = checkedElementCount(batch, out_features) orelse return status(.shape_mismatch);
+    if (dataset_count == 0 or dataset_target_len != dataset_target_count or dataset_input_len != dataset_input_count or
+        indices_len != sample_count or batch_input_len != batch_input_count or batch_target_len != batch_target_count or
+        sample_count % batch != 0) return status(.shape_mismatch);
+
+    const dataset_input = dataset_input_ptr.?[0..dataset_input_len];
+    const dataset_target = dataset_target_ptr.?[0..dataset_target_len];
+    const indices = indices_ptr.?[0..indices_len];
+    const batch_input = batch_input_ptr.?[0..batch_input_len];
+    const batch_target = batch_target_ptr.?[0..batch_target_len];
+
+    var total_steps: usize = 0;
+    var last_loss: f32 = 0;
+    const batches_per_epoch = sample_count / batch;
+    for (0..epochs) |epoch| {
+        _ = epoch;
+        for (0..batches_per_epoch) |batch_index| {
+            const batch_base = batch_index * batch;
+            for (0..batch) |row| {
+                const raw_index = indices[batch_base + row];
+                const sample_index: usize = @intCast(raw_index);
+                if (sample_index >= dataset_count) return status(.shape_mismatch);
+                @memcpy(
+                    batch_input[row * in_features ..][0..in_features],
+                    dataset_input[sample_index * in_features ..][0..in_features],
+                );
+                @memcpy(
+                    batch_target[row * out_features ..][0..out_features],
+                    dataset_target[sample_index * out_features ..][0..out_features],
+                );
+            }
+            const step_status = zgml_train_linear_mse_sgd_f32(
+                batch_input_ptr,
+                batch_input_len,
+                batch_target_ptr,
+                batch_target_len,
+                weight_ptr,
+                weight_len,
+                bias_ptr,
+                bias_len,
+                output_ptr,
+                output_len,
+                grad_weight_ptr,
+                grad_weight_len,
+                batch,
+                in_features,
+                out_features,
+                lr,
+                weight_decay,
+                &last_loss,
+            );
+            if (step_status != status(.ok)) return step_status;
+            total_steps += 1;
+        }
+    }
+
+    out_loss.?.* = last_loss;
+    out_steps.?.* = total_steps;
+    return status(.ok);
+}
+
 fn trainMlpReluCrossEntropyAdamLikeF32(
     input_ptr: ?[*]const f32,
     input_len: usize,
@@ -11601,6 +11700,111 @@ test "C ABI native linear MSE SGD training learns caller-owned weights" {
         ));
     }
 
+    var heldout = [_]f32{0};
+    const heldout_input = [_]f32{ 1, -1 };
+    try std.testing.expectEqual(status(.ok), zgml_eager_linear_f32(
+        heldout_input[0..].ptr,
+        heldout_input.len,
+        weight[0..].ptr,
+        weight.len,
+        bias[0..].ptr,
+        bias.len,
+        heldout[0..].ptr,
+        heldout.len,
+        1,
+        2,
+        1,
+    ));
+    try std.testing.expectApproxEqAbs(@as(f32, 2.5), heldout[0], 0.02);
+    try std.testing.expect(train_loss < 0.001);
+}
+
+test "C ABI native linear MSE SGD bulk training consumes indexed tensor dataset" {
+    const dataset_input = [_]f32{
+        -1, -1,
+        -1, 1,
+        1,  -1,
+        1,  1,
+        2,  -2,
+    };
+    const dataset_target = [_]f32{
+        -0.5,
+        -2.5,
+        2.5,
+        0.5,
+        5.0,
+    };
+    const indices = [_]u32{ 0, 1, 2, 3 };
+    var weight = [_]f32{ 0, 0 };
+    var bias = [_]f32{0};
+    var batch_input = [_]f32{0} ** 4;
+    var batch_target = [_]f32{0} ** 2;
+    var output = [_]f32{0} ** 2;
+    var grad_weight = [_]f32{0} ** 2;
+    var train_loss: f32 = 0;
+    var steps: usize = 0;
+
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_train_linear_mse_sgd_f32_bulk(
+        dataset_input[0..].ptr,
+        dataset_input.len,
+        dataset_target[0..].ptr,
+        dataset_target.len,
+        indices[0..].ptr,
+        indices.len - 1,
+        batch_input[0..].ptr,
+        batch_input.len,
+        batch_target[0..].ptr,
+        batch_target.len,
+        weight[0..].ptr,
+        weight.len,
+        bias[0..].ptr,
+        bias.len,
+        output[0..].ptr,
+        output.len,
+        grad_weight[0..].ptr,
+        grad_weight.len,
+        indices.len,
+        2,
+        2,
+        1,
+        1,
+        0.04,
+        0,
+        &train_loss,
+        &steps,
+    ));
+
+    try std.testing.expectEqual(status(.ok), zgml_train_linear_mse_sgd_f32_bulk(
+        dataset_input[0..].ptr,
+        dataset_input.len,
+        dataset_target[0..].ptr,
+        dataset_target.len,
+        indices[0..].ptr,
+        indices.len,
+        batch_input[0..].ptr,
+        batch_input.len,
+        batch_target[0..].ptr,
+        batch_target.len,
+        weight[0..].ptr,
+        weight.len,
+        bias[0..].ptr,
+        bias.len,
+        output[0..].ptr,
+        output.len,
+        grad_weight[0..].ptr,
+        grad_weight.len,
+        indices.len,
+        2,
+        2,
+        1,
+        80,
+        0.04,
+        0,
+        &train_loss,
+        &steps,
+    ));
+
+    try std.testing.expectEqual(@as(usize, 160), steps);
     var heldout = [_]f32{0};
     const heldout_input = [_]f32{ 1, -1 };
     try std.testing.expectEqual(status(.ok), zgml_eager_linear_f32(

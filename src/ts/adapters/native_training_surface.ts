@@ -61,6 +61,16 @@ type NativeTrainingLinearSgdCallArgs = {
   weightDecay: number;
 };
 
+type NativeTrainingBulkLinearSgdCallArgs = NativeTrainingLinearSgdCallArgs & {
+  datasetInput: Float32Array;
+  datasetTargets: Float32Array;
+  indices: Uint32Array;
+  batchInput: Float32Array;
+  batchTarget: Float32Array;
+  sampleCount: number;
+  epochs: number;
+};
+
 type NativeTrainingCallResult = {
   status: number;
   loss: number;
@@ -87,6 +97,7 @@ type NativeTrainingPlan = Readonly<{
 type NativeTrainingMlpAdamCall = (args: NativeTrainingCallArgs) => NativeTrainingCallResult;
 type NativeTrainingBulkMlpAdamCall = (args: NativeTrainingBulkMlpAdamCallArgs) => NativeTrainingCallResult & { steps: number };
 type NativeTrainingLinearSgdCall = (args: NativeTrainingLinearSgdCallArgs) => NativeTrainingCallResult;
+type NativeTrainingBulkLinearSgdCall = (args: NativeTrainingBulkLinearSgdCallArgs) => NativeTrainingCallResult & { steps: number };
 
 export type NativeTrainingSurfaceOptions = {
   f32: NativeTrainingTensorFactory;
@@ -97,6 +108,7 @@ export type NativeTrainingSurfaceOptions = {
   trainMlpReluCrossEntropyAdamBulkF32?: NativeTrainingBulkMlpAdamCall;
   trainMlpReluCrossEntropyAdamWBulkF32?: NativeTrainingBulkMlpAdamCall;
   trainLinearMseSgdF32: NativeTrainingLinearSgdCall;
+  trainLinearMseSgdBulkF32?: NativeTrainingBulkLinearSgdCall;
 };
 
 function positiveInteger(value: unknown, label: string) {
@@ -303,6 +315,55 @@ function tensorDatasetBulkSource(batches: unknown, batch: number, inFeatures: nu
   return Object.freeze({
     datasetInput: input.data as Float32Array,
     datasetTargets: targetData,
+    indices: new Uint32Array(flat),
+    sampleCount: flat.length,
+    datasetSampleCount: sampleCount,
+  });
+}
+
+function tensorDatasetRegressionBulkSource(batches: unknown, batch: number, inFeatures: number, outFeatures: number) {
+  const loader = batches as AnyRecord | null;
+  const dataset = loader?.dataset as AnyRecord | null;
+  if (
+    !loader ||
+    loader.kind !== "zgml.data.batches" ||
+    !dataset ||
+    dataset.kind !== "zgml.data.tensor-dataset" ||
+    loader.collateFn !== null ||
+    loader.collate_fn !== null ||
+    loader.batchSize !== batch ||
+    typeof loader.batchRows !== "function"
+  ) return null;
+  const input = dataset.input as AnyRecord | null;
+  const target = dataset.target as AnyRecord | null;
+  if (!input || !(input.data instanceof Float32Array) || !Array.isArray(input.shape) || input.shape.length !== 2) return null;
+  if (!target || !(target.data instanceof Float32Array) || !Array.isArray(target.shape) || target.shape.length !== 2) return null;
+  const sampleCount = positiveInteger(input.shape[0], "native bulk linear training sample count");
+  const features = positiveInteger(input.shape[1], "native bulk linear training input features");
+  const targetSamples = positiveInteger(target.shape[0], "native bulk linear training target sample count");
+  const targetFeatures = positiveInteger(target.shape[1], "native bulk linear training target features");
+  if (
+    features !== inFeatures ||
+    targetSamples !== sampleCount ||
+    targetFeatures !== outFeatures ||
+    input.data.length !== sampleCount * inFeatures ||
+    target.data.length !== sampleCount * outFeatures
+  ) return null;
+  const rows = loader.batchRows() as unknown;
+  if (!Array.isArray(rows)) return null;
+  const flat: number[] = [];
+  for (const rowBatch of rows) {
+    if (!Array.isArray(rowBatch) || rowBatch.length !== batch) return null;
+    for (const row of rowBatch) {
+      if (!Number.isSafeInteger(row) || row < 0 || row >= sampleCount) return null;
+      flat.push(row);
+    }
+  }
+  if (flat.length === 0 || flat.length % batch !== 0) return null;
+  if (loader.dropLast !== true && flat.length !== sampleCount) return null;
+  return Object.freeze({
+    datasetInput: input.data as Float32Array,
+    datasetTargets: target.data as Float32Array,
     indices: new Uint32Array(flat),
     sampleCount: flat.length,
     datasetSampleCount: sampleCount,
@@ -582,6 +643,8 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
     const sgd = requirePlainSgdOptimizer(optimizer, params);
     const output = new Float32Array(batch * layer.outFeatures);
     const gradWeight = new Float32Array(layer.weight.length);
+    const batchInput = new Float32Array(batch * inFeatures);
+    const batchTarget = new Float32Array(batch * layer.outFeatures);
     const plan = nativeTrainingPlan({
       modelKind: "linear",
       optimizerKind: "sgd",
@@ -594,8 +657,11 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
       workspace: {
         output: output.length,
         gradWeight: gradWeight.length,
+        batchInput: batchInput.length,
+        batchTarget: batchTarget.length,
       },
     });
+    const bulkKernel = options.trainLinearMseSgdBulkF32;
 
     function step(input: unknown, target: unknown) {
       const inputData = tensorData(input, "compile.trainingStep input", options.f32);
@@ -646,6 +712,73 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
       compile_evidence: () => plan,
       step,
       forward: step,
+      fit(batches: unknown, fitOptions: AnyRecord = {}) {
+        if (typeof bulkKernel !== "function") return null;
+        if (
+          fitOptions.onStep !== undefined ||
+          fitOptions.on_step !== undefined ||
+          fitOptions.earlyStopping !== undefined ||
+          fitOptions.early_stopping !== undefined
+        ) return null;
+        const epochs = positiveInteger(fitOptions.epochs ?? 1, "native bulk linear training epochs");
+        const maxStepsOption = fitOptions.maxSteps ?? fitOptions.max_steps;
+        const maxSteps = maxStepsOption === undefined
+          ? null
+          : positiveInteger(maxStepsOption, "native bulk linear training maxSteps");
+        const source = tensorDatasetRegressionBulkSource(batches, batch, inFeatures, layer.outFeatures);
+        if (source === null) return null;
+        const bounded = boundedBulkIndices(source, batch, epochs, maxSteps);
+        const result = bulkKernel({
+          datasetInput: source.datasetInput,
+          datasetTargets: source.datasetTargets,
+          indices: bounded.indices,
+          batchInput,
+          batchTarget,
+          input: batchInput,
+          target: batchTarget,
+          weight: layer.weight,
+          bias: layer.bias,
+          output,
+          gradWeight,
+          batch,
+          inFeatures,
+          outFeatures: layer.outFeatures,
+          sampleCount: bounded.sampleCount,
+          epochs: bounded.epochs,
+          lr: finiteNumber(sgd.lr, "compile.trainingStep SGD lr"),
+          weightDecay: finiteNumber(sgd.weightDecay, "compile.trainingStep SGD weightDecay"),
+        });
+        options.check(result.status);
+        sgd.t = Number(sgd.t) + result.steps;
+        return Object.freeze({
+          kind: "zgml.native-training-bulk-fit",
+          native: true,
+          nativeBulk: true,
+          native_bulk: true,
+          backend: "cpu",
+          loss: result.loss,
+          correct: 0,
+          accuracy: 0,
+          batch,
+          sampleCount: source.sampleCount,
+          sample_count: source.sampleCount,
+          trainedSampleCount: bounded.sampleCount,
+          trained_sample_count: bounded.sampleCount,
+          datasetSampleCount: source.datasetSampleCount,
+          dataset_sample_count: source.datasetSampleCount,
+          epochs,
+          steps: result.steps,
+          plannedSteps: bounded.steps,
+          planned_steps: bounded.steps,
+          stoppedEarly: bounded.stoppedEarly,
+          stopped_early: bounded.stoppedEarly,
+          stopReason: bounded.stopReason,
+          stop_reason: bounded.stopReason,
+          optimizerStep: sgd.t,
+          optimizer_step: sgd.t,
+          kernel: "zgml_train_linear_mse_sgd_f32_bulk",
+        });
+      },
       dispose() {},
       free() {},
     });

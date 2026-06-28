@@ -83,6 +83,8 @@ type BunTrainLinearMseSgdF32 = (
   outLoss: Float32Array,
 ) => number;
 
+type BunTrainLinearMseSgdBulkF32 = (...args: any[]) => number;
+
 export type BunNativeSymbols = Readonly<{
   zgml_abi_struct_size(kind: number): bigint;
   zgml_get_runtime_info(outInfo: BigUint64Array): number;
@@ -308,6 +310,7 @@ export type BunNativeSymbols = Readonly<{
     logSoftmax: number,
   ): number;
   zgml_train_linear_mse_sgd_f32: BunTrainLinearMseSgdF32;
+  zgml_train_linear_mse_sgd_f32_bulk: BunTrainLinearMseSgdBulkF32;
   zgml_train_mlp_relu_cross_entropy_adam_f32: BunTrainMlpReluCrossEntropyAdamF32;
   zgml_train_mlp_relu_cross_entropy_adamw_f32: BunTrainMlpReluCrossEntropyAdamF32;
   zgml_train_mlp_relu_cross_entropy_adam_f32_bulk: BunTrainMlpReluCrossEntropyAdamBulkF32;
@@ -789,6 +792,24 @@ export function bindBunSymbols(libPath: string): BunNativeSymbols {
         FFIType.ptr, FFIType.u64,
         FFIType.u64, FFIType.u64, FFIType.u64,
         FFIType.float, FFIType.float,
+        FFIType.ptr,
+      ],
+      returns: FFIType.i32,
+    },
+    zgml_train_linear_mse_sgd_f32_bulk: {
+      args: [
+        FFIType.ptr, FFIType.u64,
+        FFIType.ptr, FFIType.u64,
+        FFIType.ptr, FFIType.u64,
+        FFIType.ptr, FFIType.u64,
+        FFIType.ptr, FFIType.u64,
+        FFIType.ptr, FFIType.u64,
+        FFIType.ptr, FFIType.u64,
+        FFIType.ptr, FFIType.u64,
+        FFIType.ptr, FFIType.u64,
+        FFIType.u64, FFIType.u64, FFIType.u64, FFIType.u64, FFIType.u64,
+        FFIType.float, FFIType.float,
+        FFIType.ptr,
         FFIType.ptr,
       ],
       returns: FFIType.i32,

@@ -94,6 +94,7 @@ export function createBunSymbolGroups(symbols: BunNativeSymbols) {
     }),
     nativeTraining: Object.freeze({
       trainLinearMseSgdF32: symbols.zgml_train_linear_mse_sgd_f32,
+      trainLinearMseSgdBulkF32: symbols.zgml_train_linear_mse_sgd_f32_bulk,
       trainMlpReluCrossEntropyAdamF32: symbols.zgml_train_mlp_relu_cross_entropy_adam_f32,
       trainMlpReluCrossEntropyAdamWF32: symbols.zgml_train_mlp_relu_cross_entropy_adamw_f32,
       trainMlpReluCrossEntropyAdamBulkF32: symbols.zgml_train_mlp_relu_cross_entropy_adam_f32_bulk,

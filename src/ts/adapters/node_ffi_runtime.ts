@@ -1396,6 +1396,43 @@ function callNodeNativeMlpBulkTraining(call, args) {
   return { status: statusCode, loss: outLoss[0], correct: Number(outCorrect[0] ?? 0), steps: steps > 0 ? steps : expectedSteps };
 }
 
+function callNodeNativeLinearBulkTraining(call, args) {
+  const outLoss = new Float32Array(1);
+  const outSteps = [0];
+  const statusCode = call(
+    args.datasetInput,
+    args.datasetInput.length,
+    args.datasetTargets,
+    args.datasetTargets.length,
+    args.indices,
+    args.indices.length,
+    args.batchInput,
+    args.batchInput.length,
+    args.batchTarget,
+    args.batchTarget.length,
+    args.weight,
+    args.weight.length,
+    args.bias,
+    args.bias.length,
+    args.output,
+    args.output.length,
+    args.gradWeight,
+    args.gradWeight.length,
+    args.sampleCount,
+    args.batch,
+    args.inFeatures,
+    args.outFeatures,
+    args.epochs,
+    args.lr,
+    args.weightDecay,
+    outLoss,
+    outSteps,
+  );
+  const expectedSteps = args.epochs * Math.floor(args.sampleCount / args.batch);
+  const steps = Number(outSteps[0] ?? 0);
+  return { status: statusCode, loss: outLoss[0], correct: 0, steps: steps > 0 ? steps : expectedSteps };
+}
+
 const nativeTraining = createAdapterNativeTrainingSurface({
   f32: (value, label) => f32(value, label),
   indexValues,
@@ -1424,6 +1461,10 @@ const nativeTraining = createAdapterNativeTrainingSurface({
     );
     return { status: statusCode, loss: outLoss[0], correct: 0 };
   },
+  trainLinearMseSgdBulkF32: (args) => callNodeNativeLinearBulkTraining(
+    nodeSymbolGroups.nativeTraining.trainLinearMseSgdBulkF32,
+    args,
+  ),
   trainMlpReluCrossEntropyAdamF32: (args) => callNodeNativeMlpTraining(
     nodeSymbolGroups.nativeTraining.trainMlpReluCrossEntropyAdamF32,
     args,

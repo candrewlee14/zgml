@@ -146,8 +146,14 @@ if (
 ) {
   throw new Error(`compiled native linear fit evidence must retain the Zig plan: ${JSON.stringify(nativeFit.compiledPlan)}`);
 }
-if (!train.isTrainFitEvidence(nativeFit) || nativeFit.steps !== 80 || nativeFit.losses.length !== 80) {
-  throw new Error("compiled native linear trainer must return signed fit evidence for every optimizer step");
+if (
+  !train.isTrainFitEvidence(nativeFit) ||
+  nativeFit.steps !== 80 ||
+  nativeFit.losses.length !== 1 ||
+  nativeFit.nativeBulk !== true ||
+  nativeFit.bulkResult?.kernel !== "zgml_train_linear_mse_sgd_f32_bulk"
+) {
+  throw new Error("compiled native linear trainer must return native bulk fit evidence");
 }
 if (!(nativeAfter < nativeBefore * 0.02)) {
   throw new Error(`expected compiled native linear trainer to reduce held-out loss sharply; before=${nativeBefore}, after=${nativeAfter}`);
@@ -180,8 +186,14 @@ if (
 ) {
   throw new Error(`ergonomic native fit evidence must expose its Zig plan: ${JSON.stringify(ergonomicNativeFit.compiledPlan)}`);
 }
-if (!train.isTrainFitEvidence(ergonomicNativeFit) || ergonomicNativeFit.steps !== 80 || ergonomicNativeFit.losses.length !== 80) {
-  throw new Error("native train.fitModule must return signed fit evidence for every optimizer step");
+if (
+  !train.isTrainFitEvidence(ergonomicNativeFit) ||
+  ergonomicNativeFit.steps !== 80 ||
+  ergonomicNativeFit.losses.length !== 1 ||
+  ergonomicNativeFit.nativeBulk !== true ||
+  ergonomicNativeFit.bulkResult?.kernel !== "zgml_train_linear_mse_sgd_f32_bulk"
+) {
+  throw new Error("native train.fitModule must return native bulk fit evidence");
 }
 if (!(ergonomicNativeAfter < ergonomicNativeBefore * 0.02)) {
   throw new Error(`expected native train.fitModule to reduce held-out loss sharply; before=${ergonomicNativeBefore}, after=${ergonomicNativeAfter}`);

@@ -160,7 +160,9 @@ if (
   ergonomicNativePlan?.runtimePath !== "JS/TS module API -> Zig native training kernel" ||
   ergonomicNativePlan?.kernels[0] !== "zgml_train_mlp_relu_cross_entropy_adamw_f32" ||
   ergonomicNativeFit.steps !== 240 ||
-  ergonomicNativeFit.losses.length !== 240
+  ergonomicNativeFit.losses.length !== 1 ||
+  ergonomicNativeFit.nativeBulk !== true ||
+  ergonomicNativeFit.bulkResult?.kernel !== "zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk"
 ) {
   throw new Error(`ergonomic nn.Module.fit native path must prove Zig-backed training: ${JSON.stringify(ergonomicNativeFit)}`);
 }
@@ -200,7 +202,9 @@ if (
   nativeFit.compiledPlan !== nativePlan ||
   nativeFit.compiled_plan !== nativePlan ||
   nativeFit.steps !== 240 ||
-  nativeFit.losses.length !== 240
+  nativeFit.losses.length !== 1 ||
+  nativeFit.nativeBulk !== true ||
+  nativeFit.bulkResult?.kernel !== "zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk"
 ) {
   throw new Error(`train.fit compiled native trainer must return native fit evidence: ${JSON.stringify(nativeFit)}`);
 }
