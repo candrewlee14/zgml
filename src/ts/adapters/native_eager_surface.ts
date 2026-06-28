@@ -173,6 +173,18 @@ type NativeEagerIndexSelectCall = (args: {
   inner: number;
 }) => number;
 
+type NativeEagerGatherCall = (args: {
+  inputData: Float32Array;
+  indices: Uint32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  outputShape: Uint32Array;
+  inputStrides: Uint32Array;
+  rank: number;
+  axis: number;
+  axisLen: number;
+}) => number;
+
 type NativeEagerConv2dCall = (args: {
   inputData: Float32Array;
   weightData: Float32Array;
@@ -239,6 +251,7 @@ type NativeEagerSurfaceOptions = {
   permuteF32?: NativeEagerPermuteCall;
   takeF32?: NativeEagerTakeCall;
   indexSelectF32?: NativeEagerIndexSelectCall;
+  gatherF32?: NativeEagerGatherCall;
   conv2dF32?: NativeEagerConv2dCall;
   pool2dF32?: NativeEagerPool2dCall;
   matmulF32?: NativeEagerMatmulCall;
@@ -1017,6 +1030,59 @@ function nativeEagerIndexSelectInputs(
   };
 }
 
+function nativeEagerGatherInputs(
+  output: Float32Array,
+  input: unknown,
+  index: unknown,
+  callOptions: Record<string, unknown>,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.gatherInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const inputData = nativeEagerTensorData(input, `${label} input`, f32);
+  if (inputData.length === 0) {
+    throw new Error(`${label} input must be non-empty`);
+  }
+  const indices = nativeEagerIndexData(index, `${label} index`);
+  const outputShape = callOptions.outputShape ?? callOptions.output_shape;
+  const inputStrides = callOptions.inputStrides ?? callOptions.input_strides;
+  if (!(outputShape instanceof Uint32Array) || !(inputStrides instanceof Uint32Array)) {
+    throw new Error(`${label} requires Uint32Array outputShape and inputStrides`);
+  }
+  const rank = outputShape.length;
+  if (rank === 0 || inputStrides.length !== rank) {
+    throw new Error(`${label} outputShape and inputStrides must have the same non-empty rank`);
+  }
+  const axis = nativeEagerNonNegativeInteger(callOptions.axis, `${label} axis`);
+  const axisLen = nativeEagerPositiveInteger(callOptions.axisLen ?? callOptions.axis_len, `${label} axisLen`);
+  if (axis >= rank) throw new Error(`${label} axis ${axis} is out of range for rank ${rank}`);
+  let expectedOutput = 1;
+  for (let i = 0; i < outputShape.length; i += 1) {
+    const dim = outputShape[i];
+    if (!Number.isSafeInteger(dim) || dim <= 0) throw new Error(`${label} outputShape entries must be positive uint32 values`);
+    expectedOutput *= dim;
+  }
+  if (indices.length !== expectedOutput) {
+    throw new Error(`${label} index length ${indices.length} does not match output shape length ${expectedOutput}`);
+  }
+  if (output.length < expectedOutput) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${expectedOutput}`);
+  }
+  return {
+    inputData,
+    indices,
+    output,
+    expectedOutput,
+    outputShape,
+    inputStrides,
+    rank,
+    axis,
+    axisLen,
+  };
+}
+
 function nativeEagerConv2dInputs(
   output: Float32Array,
   input: unknown,
@@ -1431,6 +1497,17 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     index_select_into(output: Float32Array, input: unknown, index: unknown, callOptions?: Record<string, unknown>) {
       return this.indexSelectInto(output, input, index, callOptions);
+    },
+    gatherInto(output: Float32Array, input: unknown, index: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.gatherF32 !== "function") {
+        throw new Error("nativeEager.gatherInto is unavailable in this runtime");
+      }
+      const args = nativeEagerGatherInputs(output, input, index, callOptions, options.f32);
+      options.check(options.gatherF32(args));
+      return output;
+    },
+    gather_into(output: Float32Array, input: unknown, index: unknown, callOptions?: Record<string, unknown>) {
+      return this.gatherInto(output, input, index, callOptions);
     },
     conv2dInto(output: Float32Array, input: unknown, weights: unknown, callOptions: Record<string, unknown> = {}) {
       if (typeof options.conv2dF32 !== "function") {

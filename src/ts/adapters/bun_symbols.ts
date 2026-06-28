@@ -424,6 +424,19 @@ export type BunNativeSymbols = Readonly<{
     axisLen: bigint,
     inner: bigint,
   ): number;
+  zgml_eager_gather_f32(
+    input: Float32Array,
+    inputLen: bigint,
+    indices: Uint32Array,
+    indicesLen: bigint,
+    output: Float32Array,
+    outputLen: bigint,
+    outputShape: Uint32Array,
+    inputStrides: Uint32Array,
+    rank: bigint,
+    axis: bigint,
+    axisLen: bigint,
+  ): number;
   zgml_training_plan_f32(desc: BigUint64Array, outPlan: BigUint64Array): number;
   zgml_train_linear_mse_sgd_f32: BunTrainLinearMseSgdF32;
   zgml_train_linear_mse_sgd_f32_bulk: BunTrainLinearMseSgdBulkF32;
@@ -1059,6 +1072,10 @@ export function bindBunSymbols(libPath: string): BunNativeSymbols {
     },
     zgml_eager_index_select_f32: {
       args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64, FFIType.u64, FFIType.u64, FFIType.u64],
+      returns: FFIType.i32,
+    },
+    zgml_eager_gather_f32: {
+      args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.u64, FFIType.u64],
       returns: FFIType.i32,
     },
     zgml_training_plan_f32: {

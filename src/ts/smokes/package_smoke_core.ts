@@ -380,6 +380,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.indexSelectInto !== "function") {
     throw new Error(`${label} expected nativeEager.indexSelectInto`);
   }
+  if (typeof nativeEager.gatherInto !== "function") {
+    throw new Error(`${label} expected nativeEager.gatherInto`);
+  }
   if (typeof nativeEager.bmmInto !== "function") {
     throw new Error(`${label} expected nativeEager.bmmInto`);
   }
@@ -424,6 +427,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   if (typeof nativeEagerAlias.index_select_into !== "function") {
     throw new Error(`${label} expected native_eager.index_select_into alias`);
+  }
+  if (typeof nativeEagerAlias.gather_into !== "function") {
+    throw new Error(`${label} expected native_eager.gather_into alias`);
   }
   if (typeof nativeEagerAlias.conv2d_into !== "function") {
     throw new Error(`${label} expected native_eager.conv2d_into alias`);
@@ -629,6 +635,28 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.index_select_into to reuse caller output`);
   }
   expectClose(indexSelectAliasOutput, [3, 4, 1, 2], `${label} native_eager.index_select_into Tensor index output`);
+  const gatherOutput = new Float32Array(4);
+  const gatherResult = nativeEager.gatherInto(gatherOutput, adapter.tensor([1, 2, 3, 4, 5, 6], [2, 3]), adapter.tensor([2, 1, 0, 0], [2, 2]), {
+    outputShape: new Uint32Array([2, 2]),
+    inputStrides: new Uint32Array([3, 1]),
+    axis: 1,
+    axisLen: 3,
+  });
+  if (gatherResult !== gatherOutput) {
+    throw new Error(`${label} expected nativeEager.gatherInto to reuse caller output`);
+  }
+  expectClose(gatherOutput, [3, 2, 4, 4], `${label} nativeEager.gatherInto output`);
+  const gatherAliasOutput = new Float32Array(4);
+  const gatherAliasResult = nativeEagerAlias.gather_into(gatherAliasOutput, adapter.tensor([1, 2, 3, 4], [2, 2]), new Uint32Array([1, 1, 0, 0]), {
+    output_shape: new Uint32Array([2, 2]),
+    input_strides: new Uint32Array([2, 1]),
+    axis: 0,
+    axis_len: 2,
+  });
+  if (gatherAliasResult !== gatherAliasOutput) {
+    throw new Error(`${label} expected native_eager.gather_into to reuse caller output`);
+  }
+  expectClose(gatherAliasOutput, [3, 4, 1, 2], `${label} native_eager.gather_into output`);
   const bmmLhs = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2]);
   const bmmRhs = adapter.tensor([1, 0, 0, 1, 2, 0, 0, 2], [2, 2, 2]);
   const bmmOutput = new Float32Array(8);

@@ -54,6 +54,17 @@ type NativeIndexSelectInto = (
   index: unknown,
   options: Readonly<{ outer: number; axisLen: number; inner: number }>,
 ) => Float32Array;
+type NativeGatherInto = (
+  output: Float32Array,
+  input: unknown,
+  index: unknown,
+  options: Readonly<{
+    outputShape: Uint32Array;
+    inputStrides: Uint32Array;
+    axis: number;
+    axisLen: number;
+  }>,
+) => Float32Array;
 
 export type TensorViewHelpersOptions = Readonly<{
   Tensor: TensorConstructor;
@@ -62,6 +73,7 @@ export type TensorViewHelpersOptions = Readonly<{
   nativePermuteInto?: NativePermuteInto;
   nativeTakeInto?: NativeTakeInto;
   nativeIndexSelectInto?: NativeIndexSelectInto;
+  nativeGatherInto?: NativeGatherInto;
 }>;
 
 export type TensorViewSurfaceHelpersOptions = Readonly<{
@@ -77,6 +89,7 @@ export function createTensorViewHelpers(options: TensorViewHelpersOptions) {
   const nativePermuteInto = typeof options.nativePermuteInto === "function" ? options.nativePermuteInto : null;
   const nativeTakeInto = typeof options.nativeTakeInto === "function" ? options.nativeTakeInto : null;
   const nativeIndexSelectInto = typeof options.nativeIndexSelectInto === "function" ? options.nativeIndexSelectInto : null;
+  const nativeGatherInto = typeof options.nativeGatherInto === "function" ? options.nativeGatherInto : null;
   if (typeof TensorClass !== "function" || typeof addTensorGrad !== "function") {
     throw new Error("tensor view helpers require Tensor and addTensorGrad");
   }
@@ -610,27 +623,38 @@ export function createTensorViewHelpers(options: TensorViewHelpersOptions) {
     const inStrides = rowMajorStrides(tensor.shape);
     const outStrides = rowMajorStrides(outShape);
     const outData = new Float32Array(outLen);
-    const outToIn = new Uint32Array(outLen);
+    const needsGrad = gradModeEnabled() && tensor.requiresGrad;
+    const outToIn = needsGrad ? new Uint32Array(outLen) : null;
 
-    for (let flat = 0; flat < outLen; flat += 1) {
-      let inputIndex = 0;
-      for (let dimIndex = 0; dimIndex < outShape.length; dimIndex += 1) {
-        const coord = Math.floor(flat / outStrides[dimIndex]) % outShape[dimIndex];
-        const inputCoord = dimIndex === axis
-          ? normalizeAxisIndex(normalized.data[flat], tensor.shape[axis], `gather index ${flat}`)
-          : coord;
-        inputIndex += inputCoord * inStrides[dimIndex];
+    if (!needsGrad && nativeGatherInto !== null) {
+      for (let flat = 0; flat < outLen; flat += 1) normalizeAxisIndex(normalized.data[flat], tensor.shape[axis], `gather index ${flat}`);
+      nativeGatherInto(outData, tensor, u32Array(normalized.data, "gather index"), {
+        outputShape: u32Array(outShape, "gather outputShape"),
+        inputStrides: u32Array(inStrides, "gather inputStrides"),
+        axis,
+        axisLen: tensor.shape[axis],
+      });
+    } else {
+      for (let flat = 0; flat < outLen; flat += 1) {
+        let inputIndex = 0;
+        for (let dimIndex = 0; dimIndex < outShape.length; dimIndex += 1) {
+          const coord = Math.floor(flat / outStrides[dimIndex]) % outShape[dimIndex];
+          const inputCoord = dimIndex === axis
+            ? normalizeAxisIndex(normalized.data[flat], tensor.shape[axis], `gather index ${flat}`)
+            : coord;
+          inputIndex += inputCoord * inStrides[dimIndex];
+        }
+        if (outToIn !== null) outToIn[flat] = inputIndex;
+        outData[flat] = tensor.data[inputIndex];
       }
-      outToIn[flat] = inputIndex;
-      outData[flat] = tensor.data[inputIndex];
     }
 
     const out = new TensorCtor(outData, outShape, {
-      requiresGrad: gradModeEnabled() && tensor.requiresGrad,
-      prev: gradModeEnabled() && tensor.requiresGrad ? [tensor] : [],
+      requiresGrad: needsGrad,
+      prev: needsGrad ? [tensor] : [],
     });
     out._backward = (grad: Float32Array | null) => {
-      if (!grad) return;
+      if (!grad || outToIn === null) return;
       const inGrad = new Float32Array(tensor.length);
       for (let i = 0; i < grad.length; i += 1) inGrad[outToIn[i]] += grad[i];
       addTensorGrad(tensor, inGrad);

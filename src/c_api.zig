@@ -2185,6 +2185,75 @@ export fn zgml_eager_index_select_f32(
     return status(.ok);
 }
 
+export fn zgml_eager_gather_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    indices_ptr: ?[*]const u32,
+    indices_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    output_shape_ptr: ?[*]const u32,
+    input_strides_ptr: ?[*]const u32,
+    rank: usize,
+    axis: usize,
+    axis_len: usize,
+) c_int {
+    const max_rank = 16;
+    if (input_ptr == null or
+        indices_ptr == null or
+        output_ptr == null or
+        output_shape_ptr == null or
+        input_strides_ptr == null or
+        input_len == 0 or
+        indices_len == 0 or
+        output_len == 0 or
+        rank == 0 or
+        rank > max_rank or
+        axis >= rank or
+        axis_len == 0) return status(.invalid_argument);
+
+    const output_shape = output_shape_ptr.?[0..rank];
+    const input_strides = input_strides_ptr.?[0..rank];
+    var out_strides: [max_rank]usize = undefined;
+    var expected_output: usize = 1;
+    for (output_shape) |dim| {
+        if (dim == 0) return status(.invalid_argument);
+        expected_output = std.math.mul(usize, expected_output, @as(usize, dim)) catch return status(.shape_mismatch);
+    }
+    if (expected_output != indices_len or expected_output != output_len) return status(.shape_mismatch);
+
+    var stride: usize = 1;
+    var reverse_index = rank;
+    while (reverse_index > 0) {
+        reverse_index -= 1;
+        out_strides[reverse_index] = stride;
+        stride = std.math.mul(usize, stride, @as(usize, output_shape[reverse_index])) catch return status(.shape_mismatch);
+    }
+
+    const input = input_ptr.?[0..input_len];
+    const indices = indices_ptr.?[0..indices_len];
+    const output = output_ptr.?[0..output_len];
+    for (0..output_len) |flat| {
+        const selected_axis: usize = @intCast(indices[flat]);
+        if (selected_axis >= axis_len) return status(.shape_mismatch);
+        var input_index: usize = 0;
+        for (0..rank) |dim| {
+            const coord = if (dim == axis)
+                selected_axis
+            else
+                flat / out_strides[dim] % @as(usize, output_shape[dim]);
+            input_index = std.math.add(
+                usize,
+                input_index,
+                std.math.mul(usize, coord, @as(usize, input_strides[dim])) catch return status(.shape_mismatch),
+            ) catch return status(.shape_mismatch);
+        }
+        if (input_index >= input_len) return status(.shape_mismatch);
+        output[flat] = input[input_index];
+    }
+    return status(.ok);
+}
+
 fn eagerLinearF32(
     input_ptr: ?[*]const f32,
     input_len: usize,
@@ -13907,6 +13976,53 @@ test "C ABI native eager index_select writes caller output" {
         2,
         3,
         2,
+    ));
+}
+
+test "C ABI native eager gather writes caller output" {
+    const input = [_]f32{
+        1, 2, 3,
+        4, 5, 6,
+    };
+    const indices = [_]u32{
+        2, 1,
+        0, 0,
+    };
+    const output_shape = [_]u32{ 2, 2 };
+    const input_strides = [_]u32{ 3, 1 };
+    var output = [_]f32{0} ** 4;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_gather_f32(
+        input[0..].ptr,
+        input.len,
+        indices[0..].ptr,
+        indices.len,
+        output[0..].ptr,
+        output.len,
+        output_shape[0..].ptr,
+        input_strides[0..].ptr,
+        2,
+        1,
+        3,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 3, 2, 4, 4 }, &output);
+
+    const bad_indices = [_]u32{
+        0, 3,
+        0, 0,
+    };
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_gather_f32(
+        input[0..].ptr,
+        input.len,
+        bad_indices[0..].ptr,
+        bad_indices.len,
+        output[0..].ptr,
+        output.len,
+        output_shape[0..].ptr,
+        input_strides[0..].ptr,
+        2,
+        1,
+        3,
     ));
 }
 

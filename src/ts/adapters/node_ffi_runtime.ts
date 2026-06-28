@@ -355,6 +355,7 @@ const {
   nativeEagerPermuteInto: (output, input, options) => nativeEager.permuteInto(output, input, options),
   nativeEagerTakeInto: (output, input, index) => nativeEager.takeInto(output, input, index),
   nativeEagerIndexSelectInto: (output, input, index, options) => nativeEager.indexSelectInto(output, input, index, options),
+  nativeEagerGatherInto: (output, input, index, options) => nativeEager.gatherInto(output, input, index, options),
   nativeFullF32: (output, value) => {
     check(nodeSymbolGroups.nativeEager.eagerFullF32(output, output.length, value));
   },
@@ -1443,6 +1444,19 @@ const nativeEagerSurface = createAdapterNativeEagerSurface({
     args.outer,
     args.axisLen,
     args.inner,
+  ),
+  gatherF32: (args) => nodeSymbolGroups.nativeEager.eagerGatherF32(
+    args.inputData,
+    args.inputData.length,
+    args.indices,
+    args.indices.length,
+    args.output,
+    args.expectedOutput,
+    args.outputShape,
+    args.inputStrides,
+    args.rank,
+    args.axis,
+    args.axisLen,
   ),
 });
 const nativeEager = Object.freeze({

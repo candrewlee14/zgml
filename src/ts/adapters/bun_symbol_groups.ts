@@ -102,6 +102,7 @@ export function createBunSymbolGroups(symbols: BunNativeSymbols) {
       eagerPermuteF32: symbols.zgml_eager_permute_f32,
       eagerTakeF32: symbols.zgml_eager_take_f32,
       eagerIndexSelectF32: symbols.zgml_eager_index_select_f32,
+      eagerGatherF32: symbols.zgml_eager_gather_f32,
       eagerConv2dF32: symbols.zgml_eager_conv2d_f32,
       eagerPool2dF32: symbols.zgml_eager_pool2d_f32,
       eagerSoftmaxF32: symbols.zgml_eager_softmax_f32,
