@@ -2017,6 +2017,10 @@ function checkScripts() {
     "if (input_q.N > SEMANTIC_FFN_MAX_DIM or input_q.K > SEMANTIC_FFN_MAX_DIM or gate.N > SEMANTIC_FFN_MAX_HIDDEN or down.N > SEMANTIC_FFN_MAX_DIM) return false;",
     "test \"semantic input bridge policies reserve width scratch\"",
     "policy.fuse_semantic_ffn_sublayer_input_bridge_width_parallel",
+    "qmatmul_semantic_ffn_input_bridge_product_f32",
+    "SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS",
+    "product_scratch_offset",
+    "staged_scratch_bytes",
   ]);
   requireIncludes(read("benchmarks/llama_smollm_bench.zig"), "benchmarks/llama_smollm_bench.zig", "promoted Q8 semantic prefill default", [
     "run_metal_prefill_device and model_is_gguf",

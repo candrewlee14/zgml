@@ -1175,6 +1175,19 @@ too slow to promote. The retained absorbed path stays decomposed and fast
 the next performance step is kernel tuning inside
 `semantic_with_input_width_parallel_kernel`, not more command-stream
 architecture or API reshaping.
+A follow-up pass removed the worst direct-width waste by splitting that
+diagnostic into staged product, width-partial down, and finalize kernels. The
+old width-partial kernel relaunched once per output tile and recomputed the
+input projection plus gate/up product 18 times per row; the staged path now
+writes the product and input residual once to backend scratch, then lets the
+tile kernels read those staged values. The width/finalize stages also use a
+128-thread group instead of the 1024-thread product group. Fresh evidence moves
+the diagnostic from `direct_width=0.12x` to `direct_width=1.22x`
+(`median=1.19x`, `runtime_dispatches=3`, `fallback=staged`,
+`max_abs_diff=0.000001`). That is real progress, but still not promotion
+evidence: the retained decomposed absorbed path remains faster at
+`absorbed=2.67x` (`median=2.64x`), so the next move is to parallelize the
+staged down tile itself rather than merely staging the shared product.
 With that proof surface in place, the absorbed decomposed bridge now uses the
 same width-partial row-chain encoder for the model-width input projection as
 well as the hidden-width down tail. The guard is deliberately narrow: it only
