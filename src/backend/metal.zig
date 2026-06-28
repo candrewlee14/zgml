@@ -6058,11 +6058,12 @@ test "semantic width scratch requirement follows executable policy" {
     try std.testing.expectEqual(@as(usize, 786432), requirement.product_bytes);
     try std.testing.expectEqual(@as(usize, 14155776), requirement.down_partial_bytes);
     try std.testing.expectEqual(@as(usize, 294912), requirement.output_bytes);
+    try std.testing.expectEqual(@as(usize, 14155776), requirement.scratchBytes());
     try std.testing.expectEqual(@as(usize, 9216), requirement.runtimeScratchBytes());
 }
 
 fn allocateSemanticWidthScratch(device: *anyopaque, requirement: SemanticWidthScratchRequirement) !?DeviceBuffer {
-    const byte_size = requirement.runtimeScratchBytes();
+    const byte_size = requirement.scratchBytes();
     if (byte_size == 0) return null;
     const ptr = c.mtl_create_buffer(device, byte_size) orelse return error.OutOfMemory;
     return .{ .ptr = ptr, .size = byte_size };

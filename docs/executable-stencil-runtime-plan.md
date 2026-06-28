@@ -978,6 +978,12 @@ scratch is relative to the final output. A fresh one-attempt input-bridge
 microscope proves the readback on the retained decomposed path with
 `candidates:1`, `down_partial_bytes:14155776`, `runtime_capacity:9216`,
 `runtime_uses:628`, and `runtime_bytes:9216`.
+The Metal Program/Session allocator now reserves that full planned
+semantic-width scratch arena (`scratch_bytes == down_partial_bytes`) instead of
+only the tiny runtime partial prefix. Current retained kernels still report
+`runtime_bytes=9216` because they only need the per-row/output-tile RMS partial
+prefix, but the future direct width-parallel input-bridge kernel now has
+backend-owned storage matching the plan rather than a profile-only placeholder.
 Two June 27, 2026 shortcut probes are explicitly rejected. First, splitting the
 direct input-bridge down projection across spare row-threadgroup lanes required
 an extra barrier for correctness, then measured as noisy and slower than the
