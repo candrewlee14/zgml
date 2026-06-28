@@ -701,7 +701,7 @@ Current checked progress:
   claim that eager already runs natively.
 The public-surface taxonomy now separates the small checked first-contact
 surface (`simple`, `zgml`, `tensor`, `nn`, `loss`, `optim`, `train`, `data`,
-`checkpoint`, `lazy`, `compile`, and `compile.forInference`) from the
+`checkpoint`, `lazy`, `compile`, and `compile.compileForInference`) from the
 wider inspectable Program/Session/runtime evidence surface, so users learn the
 brilliant path before the deployment controls. The remaining frontend jump is
 native lowering, breadth, and first-contact simplicity, not proof that

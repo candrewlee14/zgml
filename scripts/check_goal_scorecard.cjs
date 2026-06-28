@@ -983,10 +983,10 @@ function checkScripts() {
     "cols: rhsCols",
   ]);
   requireIncludes(read("src/ts/adapters/node_ffi_runtime.ts"), "src/ts/adapters/node_ffi_runtime.ts", "Node native eager activation dispatch policy", [
-    "nativeEagerActivationEnabled: (activation) => activation !== \"relu\"",
+    "nativeEagerActivationEnabled: () => true",
   ]);
   requireIncludes(read("src/ts/adapters/bun_ffi_runtime.ts"), "src/ts/adapters/bun_ffi_runtime.ts", "Bun native eager activation dispatch policy", [
-    "nativeEagerActivationEnabled: (activation) => activation !== \"relu\" && activation !== \"sigmoid\"",
+    "nativeEagerActivationEnabled: (activation) => activation !== \"sigmoid\"",
   ]);
   requireIncludes(read("src/ts/smokes/ts_source_smoke.ts"), "src/ts/smokes/ts_source_smoke.ts", "no-grad Tensor.bmm native eager smoke", [
     "const nativeBmmValues = Float32Array.from({ length: 2 * 8 * 8 }",

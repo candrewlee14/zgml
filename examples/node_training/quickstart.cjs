@@ -82,7 +82,7 @@ zgml.checkpoint.restore(zgml.checkpoint.parse(text), {
 });
 assertClose(scalar(restored.forward(probe)), scalar(model.forward(probe)), 1e-5, "restored prediction");
 
-const fast = zgml.native(restored, { backend: "cpu", inputShape: [2] });
+const fast = zgml.forInference(restored, { backend: "cpu", inputShape: [2] });
 const support = fast.compileSupport();
 const explanation = fast.explain();
 const preflight = fast.preflight();

@@ -327,7 +327,7 @@ const {
   nativeEagerMatmulInto: (output, lhs, rhs, options) => nativeEager.matmulInto(output, lhs, rhs, options),
   nativeEagerElementwiseInto: (output, lhs, rhs, options) => nativeEager.elementwiseInto(output, lhs, rhs, options),
   nativeEagerActivationInto: (output, input, options) => nativeEager.activationInto(output, input, options),
-  nativeEagerActivationEnabled: (activation) => activation !== "relu",
+  nativeEagerActivationEnabled: () => true,
   nativeEagerWhereInto: (output, condition, input, other) => nativeEager.whereInto(output, condition, input, other),
   nativeEagerClampInto: (output, input, options) => nativeEager.clampInto(output, input, options),
   nativeEagerReduceInto: (output, input, options) => nativeEager.reduceInto(output, input, options),

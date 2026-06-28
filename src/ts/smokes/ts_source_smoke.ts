@@ -438,6 +438,38 @@ expectSame({ data: nativeBmm.data, shape: nativeBmm.shape, requiresGrad: nativeB
   requiresGrad: false,
 }, "tensor math no-grad native bmm hook");
 expectSame(nativeMatmulCalls, 3, "tensor math no-grad native bmm hook count");
+const nativeActivationCalls = [];
+const noGradNativeActivation = createTensorMathHelpers({
+  getTensorClass: () => TensorDataSmokeTensor,
+  f32: tensorData.f32,
+  addTensorGrad: tensorData.addTensorGrad,
+  scalarTensor: (value, requiresGrad = false) =>
+    new TensorDataSmokeTensor(Float32Array.of(value), [1], { requiresGrad }),
+  isGradEnabled: () => false,
+  nativeEagerActivationMinLength: 0,
+  nativeEagerActivationEnabled: () => true,
+  nativeEagerActivationInto(output, input, options) {
+    nativeActivationCalls.push(options.activation);
+    const inputData = input.data ?? input;
+    for (let i = 0; i < output.length; i += 1) {
+      switch (options.activation) {
+        case "relu": output[i] = Math.max(0, inputData[i]); break;
+        case "tanh": output[i] = Math.tanh(inputData[i]); break;
+        default: throw new Error(`unexpected native activation ${options.activation}`);
+      }
+    }
+    return output;
+  },
+});
+expectSame(noGradNativeActivation.relu(
+  new TensorDataSmokeTensor(Float32Array.of(-2, -1, 0, 3), [2, 2]),
+).data, [0, 0, 0, 3], "tensor math no-grad native relu hook");
+const nativeActivationTanh = noGradNativeActivation.tanh(
+  new TensorDataSmokeTensor(Float32Array.of(0, 1), [2]),
+);
+expectApprox(nativeActivationTanh.data[0], 0, 1e-7, "tensor math no-grad native tanh hook 0");
+expectApprox(nativeActivationTanh.data[1], Math.tanh(1), 1e-7, "tensor math no-grad native tanh hook 1");
+expectSame(nativeActivationCalls, ["relu", "tanh"], "tensor math no-grad native activation hook count");
 const nativeElementwiseCalls: string[] = [];
 const nativeWhereCalls: string[] = [];
 const noGradNativeElementwise = createTensorMathHelpers({

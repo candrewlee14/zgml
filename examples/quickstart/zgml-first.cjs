@@ -74,7 +74,7 @@ zgml.checkpoint.restore(snapshot, {
   strict: true,
 });
 
-const fast = zgml.forInference(restored, { backend: "cpu", inputShape: [2] });
+const fast = zgml.native(restored, { backend: "cpu", inputShape: [2] });
 const output = new Float32Array(1);
 const fastTensor = fast.forward(probe);
 fast.into(output, probe);
@@ -95,7 +95,7 @@ if (
   contract.inputShape.join("x") !== "2" ||
   contract.outputShape.join("x") !== "1"
 ) {
-  throw new Error(`zgml.forInference did not produce a native Program/Session path: ${JSON.stringify({ proof, executionPlan, inspection, contract })}`);
+  throw new Error(`zgml.native did not produce a native Program/Session path: ${JSON.stringify({ proof, executionPlan, inspection, contract })}`);
 }
 if (Math.abs(output[0] - eagerPrediction) > 1e-5 || Math.abs(scalar(fastTensor) - eagerPrediction) > 1e-5) {
   throw new Error(`compiled prediction drifted from eager output; eager=${eagerPrediction}, compiled=${output[0]}`);
