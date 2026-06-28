@@ -91,6 +91,11 @@ export type AdapterTensorRuntimeSurfaceOptions<
     input: unknown,
     options: Readonly<{ op: string; outer: number; reduce: number; inner: number }>,
   ) => Float32Array;
+  nativeEagerArgReduceDimInto?: (
+    output: Float32Array,
+    input: unknown,
+    options: Readonly<{ op: string; outer: number; reduce: number; inner: number }>,
+  ) => Float32Array;
   nativeEagerReduceMinLength?: number;
   nativeEagerDotInto?: NativeEagerDotInto;
   nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
@@ -146,6 +151,7 @@ export function createAdapterTensorRuntimeSurface<
     nativeEagerClampInto: options.nativeEagerClampInto,
     nativeEagerReduceInto: options.nativeEagerReduceInto,
     nativeEagerReduceDimInto: options.nativeEagerReduceDimInto,
+    nativeEagerArgReduceDimInto: options.nativeEagerArgReduceDimInto,
     nativeEagerReduceMinLength: options.nativeEagerReduceMinLength,
     nativeEagerDotInto: options.nativeEagerDotInto,
     nativeEagerSoftmaxInto: options.nativeEagerSoftmaxInto,

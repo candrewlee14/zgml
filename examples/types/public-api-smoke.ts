@@ -235,6 +235,7 @@ import {
   type LlamaStepParams,
   type LossNamespace,
   type NativeEagerConv2dIntoOptions,
+  type NativeEagerArgReduceDimIntoOptions,
   type NativeEagerMatmulIntoOptions,
   type NativeEagerPool2dIntoOptions,
   type NativeEagerReduceDimIntoOptions,
@@ -2611,6 +2612,9 @@ const nativeEagerReduceIntoAlias: Float32Array = zgml.native_eager.reduce_into(n
 const nativeEagerReduceDimOptions: NativeEagerReduceDimIntoOptions = { op: "sum", outer: 2, reduce: 3, inner: 1 };
 const nativeEagerReduceDimInto: Float32Array = zgml.nativeEager.reduceDimInto(new Float32Array(2), tensor([1, 2, 3, 4, 5, 6], [2, 3] as const), nativeEagerReduceDimOptions);
 const nativeEagerReduceDimIntoAlias: Float32Array = zgml.native_eager.reduce_dim_into(new Float32Array(2), tensor([1, 2, 3, 4, 5, 6], [2, 3] as const), { op: "max", outer: 2, reduce: 3, inner: 1 });
+const nativeEagerArgReduceDimOptions: NativeEagerArgReduceDimIntoOptions = { op: "argmax", outer: 2, reduce: 3, inner: 1 };
+const nativeEagerArgReduceDimInto: Float32Array = zgml.nativeEager.argReduceDimInto(new Float32Array(2), tensor([1, 3, 2, 6, 4, 5], [2, 3] as const), nativeEagerArgReduceDimOptions);
+const nativeEagerArgReduceDimIntoAlias: Float32Array = zgml.native_eager.arg_reduce_dim_into(new Float32Array(2), tensor([1, 3, 2, 6, 4, 5], [2, 3] as const), { op: "argmin", outer: 2, reduce: 3, inner: 1 });
 const nativeEagerConv2dOptions: NativeEagerConv2dIntoOptions = { outH: 2, outW: 2 };
 const nativeEagerConv2dInto: Float32Array = zgml.nativeEager.conv2dInto(
   new Float32Array(4),
@@ -6713,6 +6717,9 @@ void nativeEagerReduceIntoAlias;
 void nativeEagerReduceDimOptions;
 void nativeEagerReduceDimInto;
 void nativeEagerReduceDimIntoAlias;
+void nativeEagerArgReduceDimOptions;
+void nativeEagerArgReduceDimInto;
+void nativeEagerArgReduceDimIntoAlias;
 void nativeEagerConv2dOptions;
 void nativeEagerConv2dInto;
 void nativeEagerConv2dIntoAlias;

@@ -1792,6 +1792,8 @@ const eager_reduce_mean: u32 = 2;
 const eager_reduce_max: u32 = 3;
 const eager_reduce_min: u32 = 4;
 const eager_reduce_prod: u32 = 5;
+const eager_reduce_argmax: u32 = 6;
+const eager_reduce_argmin: u32 = 7;
 const eager_pool_max: u32 = 1;
 const eager_pool_avg: u32 = 2;
 
@@ -2512,6 +2514,45 @@ export fn zgml_eager_reduce_dim_f32(
             }
             if (op == eager_reduce_mean) acc /= @as(f32, @floatFromInt(reduce));
             output[outer_idx * inner + inner_idx] = acc;
+        }
+    }
+    return status(.ok);
+}
+
+export fn zgml_eager_arg_reduce_dim_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    outer: usize,
+    reduce: usize,
+    inner: usize,
+    op: u32,
+) c_int {
+    if (input_ptr == null or output_ptr == null or input_len == 0) return status(.invalid_argument);
+    if (outer == 0 or reduce == 0 or inner == 0) return status(.invalid_argument);
+    const expected_input = std.math.mul(usize, std.math.mul(usize, outer, reduce) catch return status(.invalid_argument), inner) catch return status(.invalid_argument);
+    const expected_output = std.math.mul(usize, outer, inner) catch return status(.invalid_argument);
+    if (input_len != expected_input or output_len != expected_output) return status(.shape_mismatch);
+    if (op != eager_reduce_argmax and op != eager_reduce_argmin) return status(.invalid_argument);
+
+    const input = input_ptr.?[0..input_len];
+    const output = output_ptr.?[0..output_len];
+    for (0..outer) |outer_idx| {
+        for (0..inner) |inner_idx| {
+            var best_value = input[(outer_idx * reduce) * inner + inner_idx];
+            var best_index: usize = 0;
+            for (1..reduce) |reduce_idx| {
+                const input_index = (outer_idx * reduce + reduce_idx) * inner + inner_idx;
+                const value = input[input_index];
+                if ((op == eager_reduce_argmax and value > best_value) or
+                    (op == eager_reduce_argmin and value < best_value))
+                {
+                    best_value = value;
+                    best_index = reduce_idx;
+                }
+            }
+            output[outer_idx * inner + inner_idx] = @floatFromInt(best_index);
         }
     }
     return status(.ok);
@@ -13236,6 +13277,56 @@ test "C ABI native eager reduce dim writes caller output" {
         output.len,
         2,
         0,
+        1,
+        eager_reduce_sum,
+    ));
+}
+
+test "C ABI native eager arg reduce dim writes caller output" {
+    const input = [_]f32{ 1, 5, 3, 4, 2, 6 };
+    var output = [_]f32{0} ** 2;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_arg_reduce_dim_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        1,
+        eager_reduce_argmax,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 1, 2 }, &output);
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_arg_reduce_dim_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        1,
+        eager_reduce_argmin,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 0, 1 }, &output);
+
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_arg_reduce_dim_f32(
+        input[0..].ptr,
+        input.len - 1,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
+        1,
+        eager_reduce_argmax,
+    ));
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_arg_reduce_dim_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        3,
         1,
         eager_reduce_sum,
     ));

@@ -94,6 +94,7 @@ export function createNodeSymbolGroups(symbols: NodeNativeSymbols) {
       eagerClampF32: symbols.eagerClampF32,
       eagerReduceF32: symbols.eagerReduceF32,
       eagerReduceDimF32: symbols.eagerReduceDimF32,
+      eagerArgReduceDimF32: symbols.eagerArgReduceDimF32,
       eagerDotF32: symbols.eagerDotF32,
       eagerConv2dF32: symbols.eagerConv2dF32,
       eagerPool2dF32: symbols.eagerPool2dF32,

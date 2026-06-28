@@ -102,6 +102,7 @@ type NativeEagerReduceDimInto = (
   input: unknown,
   options: Readonly<{ op: string; outer: number; reduce: number; inner: number }>,
 ) => Float32Array;
+type NativeEagerArgReduceDimInto = NativeEagerReduceDimInto;
 type NativeEagerDotInto = (
   output: Float32Array,
   lhs: unknown,
@@ -131,6 +132,7 @@ export type TensorMathHelpersOptions = Readonly<{
   nativeEagerClampInto?: NativeEagerClampInto;
   nativeEagerReduceInto?: NativeEagerReduceInto;
   nativeEagerReduceDimInto?: NativeEagerReduceDimInto;
+  nativeEagerArgReduceDimInto?: NativeEagerArgReduceDimInto;
   nativeEagerReduceMinLength?: number;
   nativeEagerDotInto?: NativeEagerDotInto;
   nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
@@ -160,6 +162,7 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     : nativeEagerElementwiseMinLength;
   const nativeEagerReduceInto = options.nativeEagerReduceInto;
   const nativeEagerReduceDimInto = options.nativeEagerReduceDimInto;
+  const nativeEagerArgReduceDimInto = options.nativeEagerArgReduceDimInto;
   const nativeEagerDotInto = options.nativeEagerDotInto;
   const nativeEagerReduceMinLength = Number.isSafeInteger(options.nativeEagerReduceMinLength) && Number(options.nativeEagerReduceMinLength) >= 0
     ? Number(options.nativeEagerReduceMinLength)
@@ -329,6 +332,25 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     for (let i = plan.axis + 1; i < tensor.shape.length; i += 1) inner *= tensor.shape[i];
     const output = new Float32Array(shapeProduct(plan.shape));
     nativeEagerReduceDimInto(output, tensor, {
+      op,
+      outer,
+      reduce: plan.reduceLen,
+      inner,
+    });
+    return new (tensorClass())(output, plan.shape);
+  }
+
+  function nativeArgReduceDimTensor(tensor: TensorMathTensor, dim: number, label: string, op: "argmax" | "argmin") {
+    if (gradModeEnabled()) return null;
+    if (typeof nativeEagerArgReduceDimInto !== "function") return null;
+    if (tensor.length < nativeEagerReduceMinLength) return null;
+    const plan = dimReductionPlan(tensor.shape, dim, label);
+    let outer = 1;
+    for (let i = 0; i < plan.axis; i += 1) outer *= tensor.shape[i];
+    let inner = 1;
+    for (let i = plan.axis + 1; i < tensor.shape.length; i += 1) inner *= tensor.shape[i];
+    const output = new Float32Array(shapeProduct(plan.shape));
+    nativeEagerArgReduceDimInto(output, tensor, {
       op,
       outer,
       reduce: plan.reduceLen,
@@ -1220,6 +1242,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
 
   function argmaxDim(tensor: TensorMathTensor, dim: number) {
     const TensorClass = tensorClass();
+    const nativeResult = nativeArgReduceDimTensor(tensor, dim, "argmaxDim", "argmax");
+    if (nativeResult) return nativeResult;
     const plan = dimReductionPlan(tensor.shape, dim, "argmaxDim");
     const out = new Float32Array(shapeProduct(plan.shape));
     const values = new Float32Array(out.length);
@@ -1238,6 +1262,8 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
 
   function argminDim(tensor: TensorMathTensor, dim: number) {
     const TensorClass = tensorClass();
+    const nativeResult = nativeArgReduceDimTensor(tensor, dim, "argminDim", "argmin");
+    if (nativeResult) return nativeResult;
     const plan = dimReductionPlan(tensor.shape, dim, "argminDim");
     const out = new Float32Array(shapeProduct(plan.shape));
     const values = new Float32Array(out.length);

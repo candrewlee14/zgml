@@ -116,6 +116,7 @@ type NativeEagerReduceDimCall = (args: {
   inner: number;
   op: number;
 }) => number;
+type NativeEagerArgReduceDimCall = NativeEagerReduceDimCall;
 
 type NativeEagerDotCall = (args: {
   lhsData: Float32Array;
@@ -183,6 +184,7 @@ type NativeEagerSurfaceOptions = {
   clampF32?: NativeEagerClampCall;
   reduceF32?: NativeEagerReduceCall;
   reduceDimF32?: NativeEagerReduceDimCall;
+  argReduceDimF32?: NativeEagerArgReduceDimCall;
   dotF32?: NativeEagerDotCall;
   conv2dF32?: NativeEagerConv2dCall;
   pool2dF32?: NativeEagerPool2dCall;
@@ -346,6 +348,15 @@ function nativeEagerReduceOpId(value: unknown, label: string): number {
     case "min": return 4;
     case "prod": return 5;
     default: throw new Error(`${label} op must be sum, mean, max, min, or prod, got ${value}`);
+  }
+}
+
+function nativeEagerArgReduceOpId(value: unknown, label: string): number {
+  const normalized = String(value ?? "").trim();
+  switch (normalized) {
+    case "argmax": return 6;
+    case "argmin": return 7;
+    default: throw new Error(`${label} op must be argmax or argmin, got ${value}`);
   }
 }
 
@@ -1068,6 +1079,20 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     reduce_dim_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
       return this.reduceDimInto(output, input, callOptions);
+    },
+    argReduceDimInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.argReduceDimF32 !== "function") {
+        throw new Error("nativeEager.argReduceDimInto is unavailable in this runtime");
+      }
+      const args = nativeEagerReduceDimInputs(output, input, callOptions, options.f32);
+      options.check(options.argReduceDimF32({
+        ...args,
+        op: nativeEagerArgReduceOpId(callOptions.op, "nativeEager.argReduceDimInto"),
+      }));
+      return output;
+    },
+    arg_reduce_dim_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
+      return this.argReduceDimInto(output, input, callOptions);
     },
     dotInto(output: Float32Array, lhs: unknown, rhs: unknown) {
       if (typeof options.dotF32 !== "function") {

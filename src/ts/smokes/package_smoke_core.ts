@@ -356,6 +356,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.reduceDimInto !== "function") {
     throw new Error(`${label} expected nativeEager.reduceDimInto`);
   }
+  if (typeof nativeEager.argReduceDimInto !== "function") {
+    throw new Error(`${label} expected nativeEager.argReduceDimInto`);
+  }
   if (typeof nativeEager.dotInto !== "function") {
     throw new Error(`${label} expected nativeEager.dotInto`);
   }
@@ -627,6 +630,21 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.reduce_dim_into to reuse caller output`);
   }
   expectClose(reduceDimAliasOutput, [3, 6], `${label} native_eager.reduce_dim_into output`);
+  const argReduceDimOutput = new Float32Array(2);
+  const argReduceDimResult = nativeEager.argReduceDimInto(argReduceDimOutput, tensorReduceDimInput, { op: "argmax", outer: 2, reduce: 3, inner: 1 });
+  if (argReduceDimResult !== argReduceDimOutput) {
+    throw new Error(`${label} expected nativeEager.argReduceDimInto to reuse caller output`);
+  }
+  expectClose(argReduceDimOutput, [2, 2], `${label} nativeEager.argReduceDimInto output`);
+  const argReduceDimAliasOutput = new Float32Array(2);
+  const argReduceDimAliasResult = nativeEagerAlias.arg_reduce_dim_into(argReduceDimAliasOutput, tensorReduceDimInput, { op: "argmin", outer: 2, reduce: 3, inner: 1 });
+  if (argReduceDimAliasResult !== argReduceDimAliasOutput) {
+    throw new Error(`${label} expected native_eager.arg_reduce_dim_into to reuse caller output`);
+  }
+  expectClose(argReduceDimAliasOutput, [0, 0], `${label} native_eager.arg_reduce_dim_into output`);
+  const tensorArgReduceDimInput = adapter.tensor([1, 5, 3, 4, 2, 6], [2, 3]);
+  const tensorArgReduceDim = adapter.noGrad(() => tensorArgReduceDimInput.argmaxDim(1).add(tensorArgReduceDimInput.argminDim(1)));
+  expectClose(tensorArgReduceDim.data, [1, 3], `${label} noGrad Tensor arg-dim-reduce native eager output`);
   const geluOutput = new Float32Array(6);
   const geluResult = nativeEager.linearActivationInto(geluOutput, input, weights, { bias, activation: "gelu" });
   if (geluResult !== geluOutput) {

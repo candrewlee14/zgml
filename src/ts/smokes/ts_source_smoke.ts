@@ -696,6 +696,25 @@ const noGradNativeReduce = createTensorMathHelpers({
     }
     return output;
   },
+  nativeEagerArgReduceDimInto(output, input, options) {
+    nativeReduceCalls.push(`arg:${options.op}:${options.outer}x${options.reduce}x${options.inner}`);
+    const data = input.data;
+    for (let outer = 0; outer < options.outer; outer += 1) {
+      for (let inner = 0; inner < options.inner; inner += 1) {
+        let bestValue = data[(outer * options.reduce) * options.inner + inner];
+        let bestIndex = 0;
+        for (let reduce = 1; reduce < options.reduce; reduce += 1) {
+          const value = data[(outer * options.reduce + reduce) * options.inner + inner];
+          if ((options.op === "argmax" && value > bestValue) || (options.op === "argmin" && value < bestValue)) {
+            bestValue = value;
+            bestIndex = reduce;
+          }
+        }
+        output[outer * options.inner + inner] = bestIndex;
+      }
+    }
+    return output;
+  },
 });
 const reduceInput = new TensorDataSmokeTensor(Float32Array.of(-2, 4, 0.5, 3), [4]);
 expectSame(noGradNativeReduce.sum(reduceInput).data, [5.5], "tensor math no-grad native sum hook");
@@ -708,7 +727,10 @@ expectSame(noGradNativeReduce.sumDim(reduceDimInput, 1).data, [6, 15], "tensor m
 expectSame(noGradNativeReduce.meanDim(reduceDimInput, 1).data, [2, 5], "tensor math no-grad native dim mean hook");
 expectSame(noGradNativeReduce.maxDim(reduceDimInput, 1).data, [3, 6], "tensor math no-grad native dim max hook");
 expectSame(noGradNativeReduce.minDim(reduceDimInput, 1).data, [1, 4], "tensor math no-grad native dim min hook");
-expectSame(nativeReduceCalls, ["sum", "mean", "max", "min", "prod", "dim:sum:2x3x1", "dim:mean:2x3x1", "dim:max:2x3x1", "dim:min:2x3x1"], "tensor math no-grad native reduce hook count");
+const argReduceDimInput = new TensorDataSmokeTensor(Float32Array.of(1, 5, 3, 4, 2, 6), [2, 3]);
+expectSame(noGradNativeReduce.argmaxDim(argReduceDimInput, 1).data, [1, 2], "tensor math no-grad native dim argmax hook");
+expectSame(noGradNativeReduce.argminDim(argReduceDimInput, 1).data, [0, 1], "tensor math no-grad native dim argmin hook");
+expectSame(nativeReduceCalls, ["sum", "mean", "max", "min", "prod", "dim:sum:2x3x1", "dim:mean:2x3x1", "dim:max:2x3x1", "dim:min:2x3x1", "arg:argmax:2x3x1", "arg:argmin:2x3x1"], "tensor math no-grad native reduce hook count");
 const nativeSoftmaxCalls: string[] = [];
 const noGradNativeSoftmax = createTensorMathHelpers({
   getTensorClass: () => TensorDataSmokeTensor,

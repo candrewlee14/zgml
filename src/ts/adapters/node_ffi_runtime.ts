@@ -339,6 +339,7 @@ const {
   nativeEagerClampInto: (output, input, options) => nativeEager.clampInto(output, input, options),
   nativeEagerReduceInto: (output, input, options) => nativeEager.reduceInto(output, input, options),
   nativeEagerReduceDimInto: (output, input, options) => nativeEager.reduceDimInto(output, input, options),
+  nativeEagerArgReduceDimInto: (output, input, options) => nativeEager.argReduceDimInto(output, input, options),
   nativeEagerReduceMinLength: nodeNativeEagerRoutingPolicy.tensorMath.reduceMinLength,
   nativeEagerDotInto: (output, lhs, rhs) => nativeEager.dotInto(output, lhs, rhs),
   nativeEagerSoftmaxInto: (output, input, options) => options && options.logSoftmax
@@ -1251,6 +1252,16 @@ const nativeEagerSurface = createAdapterNativeEagerSurface({
     args.op,
   ),
   reduceDimF32: (args) => nodeSymbolGroups.nativeEager.eagerReduceDimF32(
+    args.inputData,
+    args.inputData.length,
+    args.output,
+    args.expectedOutput,
+    args.outer,
+    args.reduce,
+    args.inner,
+    args.op,
+  ),
+  argReduceDimF32: (args) => nodeSymbolGroups.nativeEager.eagerArgReduceDimF32(
     args.inputData,
     args.inputData.length,
     args.output,

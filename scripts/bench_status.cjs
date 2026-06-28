@@ -79,6 +79,7 @@ const nativeEagerExpectedKeys = [
   "activation_tanh_batched",
   "reduce_sum_scalar_batched",
   "reduce_sum_dim_batched",
+  "argmax_dim_batched",
   "elementwise_lt_batched",
   "clamp_batched",
   "where_batched",
