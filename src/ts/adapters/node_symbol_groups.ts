@@ -83,6 +83,7 @@ export function createNodeSymbolGroups(symbols: NodeNativeSymbols) {
       eagerLinearF32: symbols.eagerLinearF32,
       eagerLinearTransposedWeightsF32: symbols.eagerLinearTransposedWeightsF32,
       eagerMatmulF32: symbols.eagerMatmulF32,
+      eagerBmmF32: symbols.eagerBmmF32,
       eagerLinearActivationF32: symbols.eagerLinearActivationF32,
       eagerLinearActivationTransposedWeightsF32: symbols.eagerLinearActivationTransposedWeightsF32,
       eagerActivationF32: symbols.eagerActivationF32,

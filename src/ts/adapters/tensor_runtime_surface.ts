@@ -24,6 +24,12 @@ type NativeEagerMatmulInto = (
   rhs: unknown,
   options?: Record<string, unknown>,
 ) => Float32Array;
+type NativeEagerBmmInto = (
+  output: Float32Array,
+  lhs: unknown,
+  rhs: unknown,
+  options?: Record<string, unknown>,
+) => Float32Array;
 type NativeEagerElementwiseInto = (
   output: Float32Array,
   lhs: unknown,
@@ -71,6 +77,7 @@ export type AdapterTensorRuntimeSurfaceOptions<
   Tensor: AdapterTensorConstructor<TTensor>;
   isGradEnabled: TensorHostSurfaceOptions<TTensor, TNativeBuffer>["isGradEnabled"];
   nativeEagerMatmulInto?: NativeEagerMatmulInto;
+  nativeEagerBmmInto?: NativeEagerBmmInto;
   nativeEagerElementwiseInto?: NativeEagerElementwiseInto;
   nativeEagerElementwiseMinLength?: number;
   nativeEagerActivationInto?: NativeEagerActivationInto;
@@ -124,6 +131,7 @@ export function createAdapterTensorRuntimeSurface<
     scalarTensor,
     isGradEnabled: options.isGradEnabled,
     nativeEagerMatmulInto: options.nativeEagerMatmulInto,
+    nativeEagerBmmInto: options.nativeEagerBmmInto,
     nativeEagerElementwiseInto: options.nativeEagerElementwiseInto,
     nativeEagerElementwiseMinLength: options.nativeEagerElementwiseMinLength,
     nativeEagerActivationInto: options.nativeEagerActivationInto,

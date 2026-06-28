@@ -103,8 +103,11 @@ PyTorch replacement:
   the TS/autograd graph path. The same caller-owned-output shape now covers
   vector dot through `zgml.nativeEager.dotInto`, backed by
   `zgml_eager_dot_f32`; Node no-grad `Tensor.dot(...)` uses that direct Zig path
-  for large vectors instead of materializing an intermediate product. The native
-  eager gap microscope records
+  for large vectors instead of materializing an intermediate product. Rank-3
+  batched matmul is now covered by `zgml.nativeEager.bmmInto`, backed by
+  `zgml_eager_bmm_f32`, so no-grad `Tensor.bmm(...)` crosses FFI once for the
+  whole batch instead of looping through per-batch matmul calls in TS. The
+  native eager gap microscope records
   `nativeEagerModuleForwardMs`, `nativeEagerModuleSpeedup`, and
   `nativeEagerModuleMaxAbsDiff` for that no-grad module lane. Node and Bun now
   also expose `zgml.nativeEager.linearActivationInto` /

@@ -356,6 +356,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.dotInto !== "function") {
     throw new Error(`${label} expected nativeEager.dotInto`);
   }
+  if (typeof nativeEager.bmmInto !== "function") {
+    throw new Error(`${label} expected nativeEager.bmmInto`);
+  }
   if (typeof nativeEager.conv2dInto !== "function") {
     throw new Error(`${label} expected nativeEager.conv2dInto`);
   }
@@ -519,6 +522,20 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.dot_into to reuse caller output`);
   }
   expectClose(dotAliasOutput, [33.5], `${label} native_eager.dot_into output`);
+  const bmmLhs = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2]);
+  const bmmRhs = adapter.tensor([1, 0, 0, 1, 2, 0, 0, 2], [2, 2, 2]);
+  const bmmOutput = new Float32Array(8);
+  const bmmResult = nativeEager.bmmInto(bmmOutput, bmmLhs, bmmRhs);
+  if (bmmResult !== bmmOutput) {
+    throw new Error(`${label} expected nativeEager.bmmInto to reuse caller output`);
+  }
+  expectClose(bmmOutput, [1, 2, 3, 4, 10, 12, 14, 16], `${label} nativeEager.bmmInto output`);
+  const bmmAliasOutput = new Float32Array(8);
+  const bmmAliasResult = nativeEagerAlias.bmm_into(bmmAliasOutput, bmmLhs, bmmRhs);
+  if (bmmAliasResult !== bmmAliasOutput) {
+    throw new Error(`${label} expected native_eager.bmm_into to reuse caller output`);
+  }
+  expectClose(bmmAliasOutput, Array.from(bmmOutput), `${label} native_eager.bmm_into output`);
   const conv2dInput = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 3]);
   const conv2dWeights = adapter.tensor([1, 0, 0, 1], [1, 1, 2, 2]);
   const conv2dBias = adapter.tensor([0.5], [1]);

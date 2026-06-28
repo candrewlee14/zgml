@@ -82,6 +82,7 @@ export function createBunSymbolGroups(symbols: BunNativeSymbols) {
       eagerLinearF32: symbols.zgml_eager_linear_f32,
       eagerLinearTransposedWeightsF32: symbols.zgml_eager_linear_transposed_weights_f32,
       eagerMatmulF32: symbols.zgml_eager_matmul_f32,
+      eagerBmmF32: symbols.zgml_eager_bmm_f32,
       eagerLinearActivationF32: symbols.zgml_eager_linear_activation_f32,
       eagerLinearActivationTransposedWeightsF32: symbols.zgml_eager_linear_activation_transposed_weights_f32,
       eagerActivationF32: symbols.zgml_eager_activation_f32,

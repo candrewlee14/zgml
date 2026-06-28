@@ -37,6 +37,17 @@ type NativeEagerMatmulCall = (args: {
   cols: number;
 }) => number;
 
+type NativeEagerBmmCall = (args: {
+  lhsData: Float32Array;
+  rhsData: Float32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  batch: number;
+  rows: number;
+  shared: number;
+  cols: number;
+}) => number;
+
 type NativeEagerSoftmaxCall = (args: {
   inputData: Float32Array;
   output: Float32Array;
@@ -153,6 +164,7 @@ type NativeEagerSurfaceOptions = {
   conv2dF32?: NativeEagerConv2dCall;
   pool2dF32?: NativeEagerPool2dCall;
   matmulF32?: NativeEagerMatmulCall;
+  bmmF32?: NativeEagerBmmCall;
   softmaxF32: NativeEagerSoftmaxCall;
 };
 
@@ -734,6 +746,56 @@ function nativeEagerMatmulInputs(
   return { lhsData, rhsData, output, expectedOutput, ...shape };
 }
 
+function nativeEagerBmmInputs(
+  output: Float32Array,
+  lhs: unknown,
+  rhs: unknown,
+  callOptions: Record<string, unknown>,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.bmmInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const lhsData = nativeEagerTensorData(lhs, `${label} lhs`, f32);
+  const rhsData = nativeEagerTensorData(rhs, `${label} rhs`, f32);
+  const lhsShape = nativeEagerShape(lhs);
+  const rhsShape = nativeEagerShape(rhs);
+  const batch = callOptions.batch ?? callOptions.batches ?? (lhsShape && lhsShape.length === 3
+    ? lhsShape[0]
+    : rhsShape && rhsShape.length === 3
+      ? rhsShape[0]
+      : null);
+  const rows = callOptions.rows ?? callOptions.lhsRows ?? callOptions.lhs_rows ?? (lhsShape && lhsShape.length === 3 ? lhsShape[1] : null);
+  const shared = callOptions.shared ?? callOptions.lhsCols ?? callOptions.lhs_cols ?? callOptions.rhsRows ?? callOptions.rhs_rows ?? (
+    lhsShape && lhsShape.length === 3
+      ? lhsShape[2]
+      : rhsShape && rhsShape.length === 3
+        ? rhsShape[1]
+        : null
+  );
+  const cols = callOptions.cols ?? callOptions.rhsCols ?? callOptions.rhs_cols ?? (rhsShape && rhsShape.length === 3 ? rhsShape[2] : null);
+  const shape = Object.freeze({
+    batch: nativeEagerPositiveInteger(batch, `${label} batch`),
+    rows: nativeEagerPositiveInteger(rows, `${label} rows`),
+    shared: nativeEagerPositiveInteger(shared, `${label} shared`),
+    cols: nativeEagerPositiveInteger(cols, `${label} cols`),
+  });
+  const expectedLhs = shape.batch * shape.rows * shape.shared;
+  const expectedRhs = shape.batch * shape.shared * shape.cols;
+  const expectedOutput = shape.batch * shape.rows * shape.cols;
+  if (lhsData.length !== expectedLhs) {
+    throw new Error(`${label} lhs length ${lhsData.length} does not match ${shape.batch}x${shape.rows}x${shape.shared}`);
+  }
+  if (rhsData.length !== expectedRhs) {
+    throw new Error(`${label} rhs length ${rhsData.length} does not match ${shape.batch}x${shape.shared}x${shape.cols}`);
+  }
+  if (output.length < expectedOutput) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${expectedOutput}`);
+  }
+  return { lhsData, rhsData, output, expectedOutput, ...shape };
+}
+
 export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptions) {
   const nativeEager = Object.freeze({
     linearInto(output: Float32Array, input: unknown, weights: unknown, callOptions: Record<string, unknown> = {}) {
@@ -862,6 +924,17 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     matmul_into(output: Float32Array, lhs: unknown, rhs: unknown, callOptions?: Record<string, unknown>) {
       return this.matmulInto(output, lhs, rhs, callOptions);
+    },
+    bmmInto(output: Float32Array, lhs: unknown, rhs: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.bmmF32 !== "function") {
+        throw new Error("nativeEager.bmmInto is unavailable in this runtime");
+      }
+      const args = nativeEagerBmmInputs(output, lhs, rhs, callOptions, options.f32);
+      options.check(options.bmmF32(args));
+      return output;
+    },
+    bmm_into(output: Float32Array, lhs: unknown, rhs: unknown, callOptions?: Record<string, unknown>) {
+      return this.bmmInto(output, lhs, rhs, callOptions);
     },
     softmaxInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
       const args = nativeEagerSoftmaxInputs("nativeEager.softmaxInto", output, input, callOptions, options.f32);

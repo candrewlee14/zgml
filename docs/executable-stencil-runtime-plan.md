@@ -612,7 +612,10 @@ Current checked progress:
   instead of only proving plain Linear.
   Native eager matmul is also now surfaced as `zgml_eager_matmul_f32` and
   `zgml.nativeEager.matmulInto`, with Node/Bun `Tensor.matmul` dispatching
-  through that Zig path automatically when gradients are disabled.
+  through that Zig path automatically when gradients are disabled. Rank-3
+  batched matmul now has the same one-call shape through
+  `zgml_eager_bmm_f32` / `zgml.nativeEager.bmmInto`, so no-grad `Tensor.bmm`
+  no longer loops in TS and crosses FFI once per batch.
   Scalar RHS elementwise, scalar reductions, and vector dot products are now
   covered the same way: `zgml.nativeEager.elementwiseInto`,
   `zgml.nativeEager.reduceInto`, and `zgml.nativeEager.dotInto` call
@@ -716,10 +719,10 @@ Current checked progress:
   `2.05x` / `2.47x` on Bun, max diff `0.000002`. Grad-enabled activation calls
   and small tensors stay on the TS/autograd path. No-grad `Tensor.bmm` is now
   measured in the same family as `bmm_batched`: useful-sized batches route
-  through the Zig matmul bridge per batch, while tiny batches remain on the
-  lower-overhead TS loop. The current artifacts measure `bmm_batched` at
-  `27.67x` Node and `16.05x` Bun through the public no-grad Tensor path, with
-  zero measured diff. The same artifact family now
+  through one `zgml_eager_bmm_f32` call, while tiny batches remain on the
+  lower-overhead TS loop. The current artifact measures direct Node
+  `bmm_batched` at `83.12x` and the public no-grad Tensor path at `47.16x`,
+  with zero measured diff. The same artifact family now
   proves the no-grad `Tensor.where()` path after removing the pre-native
   broadcast-plan tax and vectorizing the native comparison condition: Node
   reports `where_batched` module speedup `213.80x`, Bun reports `189.48x`, and

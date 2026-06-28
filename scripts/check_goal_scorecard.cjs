@@ -904,6 +904,7 @@ function checkScripts() {
     "feature_native_eager_elementwise",
     "feature_native_eager_reduce",
     "feature_native_eager_dot",
+    "feature_native_eager_bmm",
     "feature_native_eager_conv2d",
     "feature_native_eager_pool2d",
     "zgml_eager_linear_f32",
@@ -915,6 +916,7 @@ function checkScripts() {
     "zgml_eager_elementwise_f32",
     "zgml_eager_reduce_f32",
     "zgml_eager_dot_f32",
+    "zgml_eager_bmm_f32",
     "zgml_eager_conv2d_f32",
     "zgml_eager_pool2d_f32",
     "zgml_eager_softmax_f32",
@@ -922,6 +924,7 @@ function checkScripts() {
     "C ABI native eager linear writes caller output",
     "C ABI native eager linear accepts transposed caller weights",
     "C ABI native eager matmul writes caller output",
+    "C ABI native eager bmm writes caller output",
     "C ABI native eager linear activation writes caller output",
     "C ABI native eager activation writes caller output",
     "C ABI native eager elementwise writes caller output",
@@ -940,11 +943,13 @@ function checkScripts() {
     "ZGML_FEATURE_NATIVE_EAGER_CONV2D = 1ull << 53",
     "ZGML_FEATURE_NATIVE_EAGER_POOL2D = 1ull << 54",
     "ZGML_FEATURE_NATIVE_EAGER_DOT = 1ull << 55",
+    "ZGML_FEATURE_NATIVE_EAGER_BMM = 1ull << 56",
     "zgml_eager_linear_transposed_weights_f32",
     "zgml_eager_linear_activation_transposed_weights_f32",
     "zgml_eager_matmul_f32",
     "zgml_eager_activation_f32",
     "zgml_eager_dot_f32",
+    "zgml_eager_bmm_f32",
     "zgml_eager_conv2d_f32",
     "zgml_eager_pool2d_f32",
     "ZGML_MODULE_OP_MAX_POOL2D = 17",
@@ -982,8 +987,11 @@ function checkScripts() {
     "nativeEager: PublicNativeEagerNamespace",
     "native_eager: PublicNativeEagerNamespace",
   ]);
-  requireIncludes(read("src/ts/core/tensor_math.ts"), "src/ts/core/tensor_math.ts", "no-grad Tensor.bmm native eager matmul bridge", [
+  requireIncludes(read("src/ts/core/tensor_math.ts"), "src/ts/core/tensor_math.ts", "no-grad Tensor.bmm native eager bridge", [
     "const nativeBmmMinMultiplyAdds = 512",
+    "const useNativeBmm = !gradEnabled && typeof nativeEagerBmmInto === \"function\"",
+    "batch * lhsRows * lhsCols * rhsCols >= nativeBmmMinMultiplyAdds",
+    "nativeEagerBmmInto(out, tensor, rhsTensor ?? rhs",
     "nativeEagerActivationEnabled(activation, output.length)",
     "const useNative = !gradEnabled && typeof nativeEagerMatmulInto === \"function\"",
     "lhsRows * lhsCols * rhsCols >= nativeBmmMinMultiplyAdds",
@@ -1015,7 +1023,8 @@ function checkScripts() {
     "const nativeBmmIdentity = Float32Array.from({ length: 2 * 8 * 8 }",
     "const nativeBmm = noGradNativeMatmul.bmm",
     "\"tensor math no-grad native bmm hook\"",
-    "expectSame(nativeMatmulCalls, 3, \"tensor math no-grad native bmm hook count\")",
+    "expectSame(nativeMatmulCalls, 1, \"tensor math no-grad native bmm avoids per-batch matmul hook\")",
+    "expectSame(nativeBmmCalls, 1, \"tensor math no-grad native bmm hook count\")",
   ]);
   if (scripts["dev:perf:q8-prompt:viable"] !== "zig build -Doptimize=ReleaseFast bench-build -fincremental --summary failures && BENCH_BUILD_ZGML=0 BENCH_CANDIDATE_ATTEMPTS=${BENCH_CANDIDATE_ATTEMPTS:-1} BENCH_Q8_PROMPT_LANES=command,two_phase,semantic node scripts/check_q8_prompt_candidate.cjs") {
     errors.push("package.json dev:perf:q8-prompt:viable must keep the incremental viable Q8 prompt microscope");

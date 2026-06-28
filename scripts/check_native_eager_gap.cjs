@@ -109,20 +109,7 @@ function lazyMatmulAddActivationEager(input, weightValues, biasValues, batch, in
 }
 
 function nativeEagerBmmInto(output, input, rhs, batch, rows, shared, cols) {
-  const lhsData = input.data ?? input;
-  const rhsData = rhs.data ?? rhs;
-  const lhsBatchLen = rows * shared;
-  const rhsBatchLen = shared * cols;
-  const outBatchLen = rows * cols;
-  for (let b = 0; b < batch; b += 1) {
-    zgml.nativeEager.matmulInto(
-      output.subarray(b * outBatchLen, (b + 1) * outBatchLen),
-      lhsData.subarray(b * lhsBatchLen, (b + 1) * lhsBatchLen),
-      rhsData.subarray(b * rhsBatchLen, (b + 1) * rhsBatchLen),
-      { rows, shared, cols },
-    );
-  }
-  return output;
+  return zgml.nativeEager.bmmInto(output, input, rhs, { batch, rows, shared, cols });
 }
 
 function nativeEagerDotInto(output, input, rhs) {

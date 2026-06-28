@@ -2187,6 +2187,10 @@ export type NativeEagerMatmulIntoOptions = Readonly<{
   rhsCols?: number;
   rhs_cols?: number;
 }>;
+export type NativeEagerBmmIntoOptions = NativeEagerMatmulIntoOptions & Readonly<{
+  batch?: number;
+  batches?: number;
+}>;
 export type NativeEagerConv2dIntoOptions = Readonly<{
   bias?: TensorLike | Float32Array | null;
   batch?: number;
@@ -2286,6 +2290,8 @@ export type PublicNativeEagerNamespace = Readonly<{
   pool2d_into(output: Float32Array, input: TensorLike, options: NativeEagerPool2dIntoOptions): Float32Array;
   matmulInto(output: Float32Array, lhs: TensorLike, rhs: TensorLike, options?: NativeEagerMatmulIntoOptions): Float32Array;
   matmul_into(output: Float32Array, lhs: TensorLike, rhs: TensorLike, options?: NativeEagerMatmulIntoOptions): Float32Array;
+  bmmInto(output: Float32Array, lhs: TensorLike, rhs: TensorLike, options?: NativeEagerBmmIntoOptions): Float32Array;
+  bmm_into(output: Float32Array, lhs: TensorLike, rhs: TensorLike, options?: NativeEagerBmmIntoOptions): Float32Array;
   softmaxInto(output: Float32Array, input: TensorLike, options?: NativeEagerSoftmaxIntoOptions): Float32Array;
   softmax_into(output: Float32Array, input: TensorLike, options?: NativeEagerSoftmaxIntoOptions): Float32Array;
   logSoftmaxInto(output: Float32Array, input: TensorLike, options?: NativeEagerSoftmaxIntoOptions): Float32Array;
@@ -2323,6 +2329,7 @@ export type NativeCoreEvidence = Readonly<{
     linear: boolean;
     linearActivation: boolean;
     matmul: boolean;
+    bmm: boolean;
     activation: boolean;
     elementwise: boolean;
     reduce: boolean;
@@ -7729,6 +7736,7 @@ export type RuntimeFeatures = Readonly<{
   nativeTrainingStep: boolean;
   nativeEagerSoftmax: boolean;
   nativeEagerMatmul: boolean;
+  nativeEagerBmm: boolean;
   nativeEagerElementwise: boolean;
   nativeEagerReduce: boolean;
   nativeEagerDot: boolean;

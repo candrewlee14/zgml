@@ -96,6 +96,7 @@ const feature_native_eager_reduce: u64 = 1 << 52;
 const feature_native_eager_conv2d: u64 = 1 << 53;
 const feature_native_eager_pool2d: u64 = 1 << 54;
 const feature_native_eager_dot: u64 = 1 << 55;
+const feature_native_eager_bmm: u64 = 1 << 56;
 const backend_auto: u32 = 0;
 const backend_cpu: u32 = 1;
 const backend_metal: u32 = 2;
@@ -1137,6 +1138,7 @@ fn runtimeFeatureFlags() u64 {
         feature_native_eager_conv2d |
         feature_native_eager_pool2d |
         feature_native_eager_dot |
+        feature_native_eager_bmm |
         (if (build_options.use_wgpu) feature_native_wgpu_execution else 0) |
         if (build_options.use_wgpu and build_options.experimental_llama_wgpu_execution) feature_experimental_llama_wgpu_execution else 0;
 }
@@ -2027,6 +2029,59 @@ fn eagerLinearActivationF32(
     applyActivationF32(output, activation) catch |err| return switch (err) {
         error.InvalidArgument => status(.invalid_argument),
     };
+    return status(.ok);
+}
+
+export fn zgml_eager_bmm_f32(
+    lhs_ptr: ?[*]const f32,
+    lhs_len: usize,
+    rhs_ptr: ?[*]const f32,
+    rhs_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    batch: usize,
+    rows: usize,
+    shared: usize,
+    cols: usize,
+) c_int {
+    if (lhs_ptr == null or
+        rhs_ptr == null or
+        output_ptr == null or
+        batch == 0 or
+        rows == 0 or
+        shared == 0 or
+        cols == 0) return status(.invalid_argument);
+    const lhs_batch_len = checkedElementCount(rows, shared) orelse return status(.shape_mismatch);
+    const rhs_batch_len = checkedElementCount(shared, cols) orelse return status(.shape_mismatch);
+    const output_batch_len = checkedElementCount(rows, cols) orelse return status(.shape_mismatch);
+    if (checkedElementCount(batch, lhs_batch_len) != lhs_len) return status(.shape_mismatch);
+    if (checkedElementCount(batch, rhs_batch_len) != rhs_len) return status(.shape_mismatch);
+    if (checkedElementCount(batch, output_batch_len) != output_len) return status(.shape_mismatch);
+
+    const lhs = lhs_ptr.?[0..lhs_len];
+    const rhs = rhs_ptr.?[0..rhs_len];
+    const output = output_ptr.?[0..output_len];
+    for (0..batch) |b| {
+        const lhs_offset = b * lhs_batch_len;
+        const rhs_offset = b * rhs_batch_len;
+        const output_offset = b * output_batch_len;
+        forward.blasSgemm(
+            output[output_offset..][0..output_batch_len],
+            lhs[lhs_offset..][0..lhs_batch_len],
+            rhs[rhs_offset..][0..rhs_batch_len],
+            rows,
+            cols,
+            shared,
+            shared,
+            1,
+            cols,
+            1,
+            0,
+            0,
+            0,
+            cols,
+        );
+    }
     return status(.ok);
 }
 
@@ -8619,6 +8674,7 @@ test "C ABI runtime info reports compatible handle surface" {
     try std.testing.expect((info.feature_flags & feature_native_eager_conv2d) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_pool2d) != 0);
     try std.testing.expect((info.feature_flags & feature_native_eager_dot) != 0);
+    try std.testing.expect((info.feature_flags & feature_native_eager_bmm) != 0);
     try std.testing.expectEqual(build_options.use_wgpu, (info.feature_flags & feature_native_wgpu_execution) != 0);
     try std.testing.expectEqual(build_options.use_wgpu and build_options.experimental_llama_wgpu_execution, (info.feature_flags & feature_experimental_llama_wgpu_execution) != 0);
     try std.testing.expect((info.feature_flags & feature_experimental_llama_wgpu_execution) == 0 or (info.feature_flags & feature_native_wgpu_execution) != 0);
@@ -11694,6 +11750,62 @@ test "C ABI native eager matmul writes caller output" {
         output.len,
         2,
         3,
+        2,
+    ));
+}
+
+test "C ABI native eager bmm writes caller output" {
+    const lhs = [_]f32{
+        1, 2,
+        3, 4,
+
+        5, 6,
+        7, 8,
+    };
+    const rhs = [_]f32{
+        1, 0,
+        0, 1,
+
+        2, 0,
+        0, 2,
+    };
+    var output = [_]f32{0} ** 8;
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_bmm_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        2,
+        2,
+        2,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 1, 2, 3, 4, 10, 12, 14, 16 }, &output);
+    try std.testing.expectEqual(status(.invalid_argument), zgml_eager_bmm_f32(
+        null,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        output.len,
+        2,
+        2,
+        2,
+        2,
+    ));
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_bmm_f32(
+        lhs[0..].ptr,
+        lhs.len,
+        rhs[0..].ptr,
+        rhs.len,
+        output[0..].ptr,
+        output.len - 1,
+        2,
+        2,
+        2,
         2,
     ));
 }

@@ -45,6 +45,7 @@ export type NodeNativeSymbols = Readonly<{
   eagerLinearF32: NativeFunction;
   eagerLinearTransposedWeightsF32: NativeFunction;
   eagerMatmulF32: NativeFunction;
+  eagerBmmF32: NativeFunction;
   eagerLinearActivationF32: NativeFunction;
   eagerLinearActivationTransposedWeightsF32: NativeFunction;
   eagerActivationF32: NativeFunction;
@@ -140,6 +141,7 @@ export function bindNodeSymbols(nativeLibrary: unknown): NodeNativeSymbols {
     eagerLinearF32: lib.func("int zgml_eager_linear_f32(const float *input, size_t input_len, const float *weights, size_t weights_len, const float *bias, size_t bias_len, float *output, size_t output_len, size_t batch, size_t in_features, size_t out_features)"),
     eagerLinearTransposedWeightsF32: lib.func("int zgml_eager_linear_transposed_weights_f32(const float *input, size_t input_len, const float *weights, size_t weights_len, const float *bias, size_t bias_len, float *output, size_t output_len, size_t batch, size_t in_features, size_t out_features)"),
     eagerMatmulF32: lib.func("int zgml_eager_matmul_f32(const float *lhs, size_t lhs_len, const float *rhs, size_t rhs_len, float *output, size_t output_len, size_t rows, size_t shared, size_t cols)"),
+    eagerBmmF32: lib.func("int zgml_eager_bmm_f32(const float *lhs, size_t lhs_len, const float *rhs, size_t rhs_len, float *output, size_t output_len, size_t batch, size_t rows, size_t shared, size_t cols)"),
     eagerLinearActivationF32: lib.func("int zgml_eager_linear_activation_f32(const float *input, size_t input_len, const float *weights, size_t weights_len, const float *bias, size_t bias_len, float *output, size_t output_len, size_t batch, size_t in_features, size_t out_features, uint32_t activation)"),
     eagerLinearActivationTransposedWeightsF32: lib.func("int zgml_eager_linear_activation_transposed_weights_f32(const float *input, size_t input_len, const float *weights, size_t weights_len, const float *bias, size_t bias_len, float *output, size_t output_len, size_t batch, size_t in_features, size_t out_features, uint32_t activation)"),
     eagerActivationF32: lib.func("int zgml_eager_activation_f32(const float *input, size_t input_len, float *output, size_t output_len, uint32_t activation)"),

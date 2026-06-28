@@ -41,6 +41,7 @@ export type NativeCoreEvidence = Readonly<{
     linear: boolean;
     linearActivation: boolean;
     matmul: boolean;
+    bmm: boolean;
     activation: boolean;
     elementwise: boolean;
     reduce: boolean;
@@ -70,6 +71,7 @@ export function createAdapterNativeCoreSurface(options: NativeCoreSurfaceOptions
       linear: feature(features, "nativeEagerLinear"),
       linearActivation: feature(features, "nativeEagerLinearActivation"),
       matmul: feature(features, "nativeEagerMatmul"),
+      bmm: feature(features, "nativeEagerBmm"),
       activation: feature(features, "nativeEagerActivation"),
       elementwise: feature(features, "nativeEagerElementwise"),
       reduce: feature(features, "nativeEagerReduce"),
