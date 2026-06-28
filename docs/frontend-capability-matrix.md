@@ -89,7 +89,8 @@ PyTorch replacement:
   `elementwise_minimum_batched` / `elementwise_maximum_batched` and unary
   `elementwise_neg_batched` / `elementwise_abs_batched` /
   `elementwise_sqrt_batched` / `elementwise_reciprocal_batched` /
-  `elementwise_rsqrt_batched` / `elementwise_exp_batched` /
+  `elementwise_rsqrt_batched` / `elementwise_pow_specialized_batched` /
+  `elementwise_exp_batched` /
   `elementwise_log_batched` / `elementwise_isfinite_batched` /
   bias-style `elementwise_add_row_broadcast_batched` /
   `elementwise_sub_lhs_row_broadcast_batched` / `dot_batched` /

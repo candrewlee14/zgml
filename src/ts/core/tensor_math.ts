@@ -567,9 +567,27 @@ export function createTensorMathHelpers(options: TensorMathHelpersOptions) {
     return sqr(tensor);
   }
 
+  function nativePowSpecialization(tensor: TensorMathTensor, exponent: number) {
+    if (gradModeEnabled()) return null;
+    const nativeOp =
+      exponent === 2 ? "sqr" :
+      exponent === -1 ? "recip" :
+      exponent === 0.5 ? "sqrt" :
+      exponent === -0.5 ? "rsqrt" :
+      null;
+    if (nativeOp === null) return null;
+    const TensorClass = tensorClass();
+    const out = new Float32Array(tensor.length);
+    return nativeElementwiseUnaryInto(out, tensor, nativeOp)
+      ? new TensorClass(out, tensor.shape)
+      : null;
+  }
+
   function pow(tensor: TensorMathTensor, exponent: number) {
     const value = Number(exponent);
     if (!Number.isFinite(value)) throw new Error(`Tensor.pow exponent must be finite, got ${exponent}`);
+    const nativeResult = nativePowSpecialization(tensor, value);
+    if (nativeResult) return nativeResult;
     return unary(
       tensor,
       (x) => Math.pow(x, value),

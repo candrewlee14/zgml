@@ -63,6 +63,7 @@ const nativeEagerExpectedKeys = [
   "elementwise_sqrt_batched",
   "elementwise_reciprocal_batched",
   "elementwise_rsqrt_batched",
+  "elementwise_pow_specialized_batched",
   "elementwise_exp_batched",
   "elementwise_log_batched",
   "elementwise_isfinite_batched",
