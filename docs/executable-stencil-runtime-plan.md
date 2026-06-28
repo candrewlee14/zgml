@@ -202,7 +202,7 @@ The same rule now applies to the training happy path: modules expose
 `model.predict(...)` as TS-authored convenience methods over the single
 `train.fit`/`model.fitNative`/`train.fitNative`/`train.evaluateModule`/`train.predictModule`
 policy. When the shape matches a supported native training plan, that path still
-lowers through `compileTrainingStep` to the Zig FFI kernel and returns
+lowers through `forTraining` / `compileTrainingStep` to the Zig FFI kernel and returns
 `loweredBy: "zig-ffi"` evidence. Use `model.fitNative`, `train.fitNative`, or
 `zgml.fitNative` when a
 caller wants this native route to fail closed instead of falling back to eager
@@ -501,7 +501,8 @@ Current checked progress:
   lowering through the native module Program ABI,
   rank-3 last-axis `sum`/`mean`/`prod`/`max`/`min`/`argmax`/`argmin` Program lowering, and
   compile/bind/session hooks through package and type smokes. A June 27, 2026
-  pass made the training loop follow the same split: `compile.compileForTraining`
+  pass made the training loop follow the same split: `compile.forTraining` /
+  `compile.compileForTraining`
   produces native compiled trainers for the supported Sequential Linear/ReLU
   classifier shape and the direct Linear/MSE/plain-SGD regression shape, while
   `train.fit(trainer, loader, { epochs })` keeps the JS/TS side ergonomic and

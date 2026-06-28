@@ -710,3 +710,5 @@ export function trainingStep(_model: unknown, _optimizer: unknown, _options: Rec
 export const training_step = trainingStep;
 export const compileForTraining: typeof trainingStep = trainingStep;
 export const compile_for_training: typeof trainingStep = trainingStep;
+export const forTraining: typeof trainingStep = trainingStep;
+export const for_training: typeof trainingStep = trainingStep;

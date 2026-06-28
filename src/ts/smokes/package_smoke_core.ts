@@ -5298,6 +5298,10 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     adapter.compile.for_inference !== adapter.compile.compile_for_inference ||
     typeof adapter.compile.compileForInference !== "function" ||
     typeof adapter.compile.compile_for_inference !== "function" ||
+    typeof adapter.compile.forTraining !== "function" ||
+    adapter.compile.forTraining !== adapter.compile.compileForTraining ||
+    typeof adapter.compile.for_training !== "function" ||
+    adapter.compile.for_training !== adapter.compile.compile_for_training ||
     typeof adapter.compile.run !== "function" ||
     adapter.compile.infer !== adapter.compile.run ||
     adapter.compile.predict !== adapter.compile.run ||
@@ -5324,6 +5328,10 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     adapter.forInference !== adapter.compile.compileForInference ||
     typeof adapter.for_inference !== "function" ||
     adapter.for_inference !== adapter.compile.compile_for_inference ||
+    typeof adapter.forTraining !== "function" ||
+    adapter.forTraining !== adapter.compile.compileForTraining ||
+    typeof adapter.for_training !== "function" ||
+    adapter.for_training !== adapter.compile.compile_for_training ||
     typeof adapter.zgml?.native !== "function" ||
     adapter.zgml.native !== adapter.compile.compileForInference ||
     typeof adapter.zgml?.run !== "function" ||
@@ -5336,6 +5344,8 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
     adapter.zgml.predictInto !== adapter.compile.runInto ||
     typeof adapter.zgml?.forInference !== "function" ||
     adapter.zgml.forInference !== adapter.compile.compileForInference ||
+    typeof adapter.zgml?.forTraining !== "function" ||
+    adapter.zgml.forTraining !== adapter.compile.compileForTraining ||
     typeof adapter.compileInference !== "function" ||
     adapter.compileInference !== adapter.compile.compileForInference
   ) {
@@ -7363,6 +7373,14 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       input_shape: [1, 2],
       criterion: "mse",
     });
+    const moduleCompiledTrainerForTraining = moduleCompileModel.forTraining(moduleCompileOptimizer, {
+      inputShape: [1, 2],
+      loss: "mse",
+    });
+    const rootCompiledTrainerForTraining = adapter.forTraining(moduleCompileModel, moduleCompileOptimizer, {
+      inputShape: [1, 2],
+      loss: "mse",
+    });
     if (
       moduleCompiledTrainer.kind !== "zgml.compiled-training-step" ||
       moduleCompiledTrainer.native !== true ||
@@ -7371,9 +7389,13 @@ export function smokePackage(adapter: Record<string, any>, label: string) {
       moduleCompiledTrainer.lossKind !== "mse" ||
       moduleCompileStep.kind !== "zgml.native-training-step" ||
       moduleCompileStep.native !== true ||
-      moduleCompiledTrainerSnake.kind !== "zgml.compiled-training-step"
+      moduleCompiledTrainerSnake.kind !== "zgml.compiled-training-step" ||
+      moduleCompiledTrainerForTraining.kind !== "zgml.compiled-training-step" ||
+      moduleCompiledTrainerForTraining.plan().loweredBy !== "zig-ffi" ||
+      rootCompiledTrainerForTraining.kind !== "zgml.compiled-training-step" ||
+      rootCompiledTrainerForTraining.plan().loweredBy !== "zig-ffi"
     ) {
-      throw new Error(`${label} expected module.compileForTraining to produce a native Zig training handle`);
+      throw new Error(`${label} expected module.compileForTraining/forTraining and root forTraining to produce a native Zig training handle`);
     }
     const nativeFitModuleModel = adapter.nn.linear(2, 1, { weights: [0, 0], bias: [0] });
     const nativeFitModuleOptimizer = adapter.optim.sgd(nativeFitModuleModel, { lr: 0.05 });

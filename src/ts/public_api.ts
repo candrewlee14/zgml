@@ -3810,6 +3810,8 @@ export interface NnModule {
   compileInference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
   compile_inference<const S extends TensorShapeTuple>(options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): CompiledInference<S, TensorShapeTuple>;
   compile_inference(options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): CompiledInference;
+  forTraining(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  for_training(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
   fit(batches: Iterable<unknown>, options: TrainFitOptions & {
     optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void };
     loss?: unknown;
@@ -4188,6 +4190,8 @@ export interface LinearModule<InFeatures extends number = number, OutFeatures ex
   place_parameters(program: Program, options?: ModuleParameterPlacementOptions): ModuleBindings;
   compileForTraining(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
   compile_for_training(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  forTraining(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  for_training(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
   trainingStep(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
   training_step(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
 }
@@ -4653,6 +4657,8 @@ export interface SequentialModule<Layers extends readonly NnModule[] = readonly 
   placeParameters(program: Program, options?: ModuleParameterPlacementOptions): ModuleBindings;
   compileForTraining(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
   compile_for_training(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  forTraining(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  for_training(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
   trainingStep(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
   training_step(optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
 }
@@ -6223,6 +6229,12 @@ export type PublicCompileNamespace = Readonly<CompileNamespace> & {
   predictInto(output: Float32Array, target: NnModule | readonly NnModule[], input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
   predict_into<const Target extends NnModule | readonly NnModule[], const S extends TensorShapeTuple>(output: Float32Array, target: Target, input: ProgramInputBinding<S>, options: CompileOptionsWithInputShape<S>, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
   predict_into(output: Float32Array, target: NnModule | readonly NnModule[], input: ProgramInputBinding, options?: CompileOptions, bindOptions?: ModuleParameterPlacementOptions): Float32Array;
+  trainingStep(target: NnModule, optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  training_step(target: NnModule, optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  compileForTraining(target: NnModule, optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  compile_for_training(target: NnModule, optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  forTraining(target: NnModule, optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
+  for_training(target: NnModule, optimizer: Optimizer | { step(): void; zeroGrad?(options?: ZeroGradOptions): void }, options: CompileTrainingOptions): CompiledTrainingStep;
 };
 export type PublicProgramNamespace = Readonly<ProgramNamespace>;
 export type PublicSessionNamespace = Readonly<SessionNamespace>;
@@ -7149,6 +7161,8 @@ export type PublicTorchNamespace = Readonly<{
   training_step: PublicCompileNamespace["training_step"];
   compileForTraining: PublicCompileNamespace["compileForTraining"];
   compile_for_training: PublicCompileNamespace["compile_for_training"];
+  forTraining: PublicCompileNamespace["forTraining"];
+  for_training: PublicCompileNamespace["for_training"];
   nativeEager: PublicNativeEagerNamespace;
   native_eager: PublicNativeEagerNamespace;
   nativeCore: NativeCoreFunction;
@@ -7220,6 +7234,7 @@ export type PublicSimpleNamespace = Readonly<Pick<PublicZgmlNamespace,
   | "predictInto"
   | "trainingStep"
   | "compileForTraining"
+  | "forTraining"
   | "nativeCore"
   | "lazy"
   | "optim"
@@ -7263,6 +7278,8 @@ export declare const trainingStep: PublicCompileNamespace["trainingStep"];
 export declare const training_step: PublicCompileNamespace["training_step"];
 export declare const compileForTraining: PublicCompileNamespace["compileForTraining"];
 export declare const compile_for_training: PublicCompileNamespace["compile_for_training"];
+export declare const forTraining: PublicCompileNamespace["forTraining"];
+export declare const for_training: PublicCompileNamespace["for_training"];
 export declare const fit: PublicTrainNamespace["fit"];
 export declare const fitModule: PublicTrainNamespace["fitModule"];
 export declare const fit_module: PublicTrainNamespace["fit_module"];

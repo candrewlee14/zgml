@@ -1145,6 +1145,8 @@ export function createAdapterCompileNamespace(options: AdapterCompileNamespaceOp
     training_step: trainingStep,
     compileForTraining: trainingStep,
     compile_for_training: trainingStep,
+    forTraining: trainingStep,
+    for_training: trainingStep,
   }));
 }
 
@@ -1447,6 +1449,8 @@ export function createAdapterZgmlNamespace(options: AdapterZgmlNamespaceOptions)
     training_step: compileNamespace.training_step,
     compileForTraining: compileNamespace.compileForTraining,
     compile_for_training: compileNamespace.compile_for_training,
+    forTraining: compileNamespace.forTraining,
+    for_training: compileNamespace.for_training,
     nativeEager: options.nativeEager,
     native_eager: options.nativeEager,
     nativeCore: options.nativeCore,

@@ -47,6 +47,8 @@ export {
   training_step,
   compileForTraining,
   compile_for_training,
+  forTraining,
+  for_training,
   nativeEager,
   native_eager,
   nativeCore,

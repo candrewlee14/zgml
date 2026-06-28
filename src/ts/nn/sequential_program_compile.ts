@@ -84,6 +84,8 @@ type SequentialCompilePrototype = {
   compile?: (this: ModuleRecord, compileOptions?: ModuleCompileOptions) => unknown;
   compileForTraining?: (this: ModuleRecord, optimizer: unknown, compileOptions?: UnknownRecord) => CompiledTrainingStep;
   compile_for_training?: (this: ModuleRecord, optimizer: unknown, compileOptions?: UnknownRecord) => CompiledTrainingStep;
+  forTraining?: (this: ModuleRecord, optimizer: unknown, compileOptions?: UnknownRecord) => CompiledTrainingStep;
+  for_training?: (this: ModuleRecord, optimizer: unknown, compileOptions?: UnknownRecord) => CompiledTrainingStep;
   trainingStep?: (this: ModuleRecord, optimizer: unknown, compileOptions?: UnknownRecord) => CompiledTrainingStep;
   training_step?: (this: ModuleRecord, optimizer: unknown, compileOptions?: UnknownRecord) => CompiledTrainingStep;
 };
@@ -244,6 +246,8 @@ export function installSequentialProgramCompileMethods(
   };
   target.compileForTraining = compileForTraining;
   target.compile_for_training = compileForTraining;
+  target.forTraining = compileForTraining;
+  target.for_training = compileForTraining;
   target.trainingStep = compileForTraining;
   target.training_step = compileForTraining;
 }
