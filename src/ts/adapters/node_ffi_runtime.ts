@@ -1326,6 +1326,76 @@ function callNodeNativeMlpTraining(call, args) {
   return { status: statusCode, loss: outLoss[0], correct: Number(outCorrect[0] ?? 0) };
 }
 
+function callNodeNativeMlpBulkTraining(call, args) {
+  const outLoss = new Float32Array(1);
+  const outCorrect = [0];
+  const outSteps = [0];
+  const statusCode = call(
+    args.datasetInput,
+    args.datasetInput.length,
+    args.datasetTargets,
+    args.datasetTargets.length,
+    args.indices,
+    args.indices.length,
+    args.batchInput,
+    args.batchInput.length,
+    args.batchTargets,
+    args.batchTargets.length,
+    args.w1,
+    args.w1.length,
+    args.b1,
+    args.b1.length,
+    args.w2,
+    args.w2.length,
+    args.b2,
+    args.b2.length,
+    args.mw1,
+    args.mw1.length,
+    args.vw1,
+    args.vw1.length,
+    args.mb1,
+    args.mb1.length,
+    args.vb1,
+    args.vb1.length,
+    args.mw2,
+    args.mw2.length,
+    args.vw2,
+    args.vw2.length,
+    args.mb2,
+    args.mb2.length,
+    args.vb2,
+    args.vb2.length,
+    args.hidden,
+    args.hidden.length,
+    args.logits,
+    args.logits.length,
+    args.gradHidden,
+    args.gradHidden.length,
+    args.gradW1,
+    args.gradW1.length,
+    args.gradW2,
+    args.gradW2.length,
+    args.sampleCount,
+    args.batch,
+    args.inFeatures,
+    args.hiddenFeatures,
+    args.classes,
+    args.epochs,
+    args.startStep,
+    args.lr,
+    args.beta1,
+    args.beta2,
+    args.eps,
+    args.weightDecay,
+    outLoss,
+    outCorrect,
+    outSteps,
+  );
+  const expectedSteps = args.epochs * Math.floor(args.sampleCount / args.batch);
+  const steps = Number(outSteps[0] ?? 0);
+  return { status: statusCode, loss: outLoss[0], correct: Number(outCorrect[0] ?? 0), steps: steps > 0 ? steps : expectedSteps };
+}
+
 const nativeTraining = createAdapterNativeTrainingSurface({
   f32: (value, label) => f32(value, label),
   indexValues,
@@ -1360,6 +1430,14 @@ const nativeTraining = createAdapterNativeTrainingSurface({
   ),
   trainMlpReluCrossEntropyAdamWF32: (args) => callNodeNativeMlpTraining(
     nodeSymbolGroups.nativeTraining.trainMlpReluCrossEntropyAdamWF32,
+    args,
+  ),
+  trainMlpReluCrossEntropyAdamBulkF32: (args) => callNodeNativeMlpBulkTraining(
+    nodeSymbolGroups.nativeTraining.trainMlpReluCrossEntropyAdamBulkF32,
+    args,
+  ),
+  trainMlpReluCrossEntropyAdamWBulkF32: (args) => callNodeNativeMlpBulkTraining(
+    nodeSymbolGroups.nativeTraining.trainMlpReluCrossEntropyAdamWBulkF32,
     args,
   ),
 });

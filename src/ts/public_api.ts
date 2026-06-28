@@ -5237,9 +5237,13 @@ export type TrainFitEvidence<OptimizerKind extends OptimizerStateKind | null = O
   lastStep: TrainStepEvidence<OptimizerKind> | null;
   lastLoss: Tensor | null;
   native?: boolean;
+  nativeBulk?: boolean;
+  native_bulk?: boolean;
   backend?: string | null;
   compiledPlan?: CompiledTrainingPlan | null;
   compiled_plan?: CompiledTrainingPlan | null;
+  bulkResult?: unknown;
+  bulk_result?: unknown;
 }>;
 
 export type TrainEvaluateContext = Readonly<{

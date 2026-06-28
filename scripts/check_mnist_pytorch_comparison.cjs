@@ -224,6 +224,9 @@ function runZgml() {
   if (fit.native !== true || fit.compiledPlan?.loweredBy !== "zig-ffi") {
     throw new Error(`MNIST PyTorch comparison expected ergonomic model.fit to lower through Zig FFI, got ${JSON.stringify(fit.compiledPlan)}`);
   }
+  if (fit.nativeBulk !== true) {
+    throw new Error(`MNIST PyTorch comparison expected ergonomic model.fit to use Zig-owned bulk training, got ${JSON.stringify({ nativeBulk: fit.nativeBulk, bulkResult: fit.bulkResult })}`);
+  }
   const after = evaluate(model, testLoader);
   const sample = testImages.select(0, 0);
   const eager = gradMode.inferenceMode(() => model.forward(sample));
@@ -265,6 +268,8 @@ function runZgml() {
     trainMs,
     trainMsPerStep: trainMs / fit.steps,
     modelFitNative: fit.native === true,
+    modelFitBulk: fit.nativeBulk === true,
+    modelFitBulkKernel: fit.bulkResult?.kernel ?? null,
     modelFitLoweredBy: fit.compiledPlan?.loweredBy ?? null,
     eagerSingleForwardMs,
     compiledSingleForwardMs,
@@ -537,6 +542,7 @@ async function main() {
     `epochs=${epochs}`,
     `zgml_train=${round(zgml.trainMs)}ms`,
     `zgml_model_fit_native=${zgml.modelFitNative ? "yes" : "no"}:${zgml.modelFitLoweredBy ?? "none"}`,
+    `zgml_model_fit_bulk=${zgml.modelFitBulk ? "yes" : "no"}:${zgml.modelFitBulkKernel ?? "none"}`,
     `zgml_manual_native_train=${round(zgml.nativeTraining.trainMs)}ms`,
     `pytorch_train=${round(pytorch.trainMs)}ms`,
     `zgml_vs_pytorch_train=${ratios.trainZgmlVsPytorch.toFixed(3)}x`,

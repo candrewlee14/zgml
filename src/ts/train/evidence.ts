@@ -123,6 +123,7 @@ export function trainFitEvidenceSignature(evidence: AnyRecord) {
     `lastStep=${evidence.lastStep?.signature ?? "null"}`,
     `lastLoss=${evidence.lastLoss ? 1 : 0}`,
     `native=${evidence.native === true ? 1 : 0}`,
+    `nativeBulk=${evidence.nativeBulk === true || evidence.native_bulk === true ? 1 : 0}`,
     `backend=${evidence.backend ?? "null"}`,
     `compiledPlan=${compiledTrainingPlanSignature(evidence.compiledPlan ?? null)}`,
   ].join("|");

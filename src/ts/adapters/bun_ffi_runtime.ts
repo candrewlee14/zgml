@@ -2391,6 +2391,76 @@ function callBunNativeMlpTraining(call: (...args: any[]) => number, args: any) {
   return { status: statusCode, loss: outLoss[0], correct: Number(outCorrect[0]) };
 }
 
+function callBunNativeMlpBulkTraining(call: (...args: any[]) => number, args: any) {
+  const outLoss = new Float32Array(1);
+  const outCorrect = new BigUint64Array(1);
+  const outSteps = new BigUint64Array(1);
+  const statusCode = call(
+    args.datasetInput,
+    BigInt(args.datasetInput.length),
+    args.datasetTargets,
+    BigInt(args.datasetTargets.length),
+    args.indices,
+    BigInt(args.indices.length),
+    args.batchInput,
+    BigInt(args.batchInput.length),
+    args.batchTargets,
+    BigInt(args.batchTargets.length),
+    args.w1,
+    BigInt(args.w1.length),
+    args.b1,
+    BigInt(args.b1.length),
+    args.w2,
+    BigInt(args.w2.length),
+    args.b2,
+    BigInt(args.b2.length),
+    args.mw1,
+    BigInt(args.mw1.length),
+    args.vw1,
+    BigInt(args.vw1.length),
+    args.mb1,
+    BigInt(args.mb1.length),
+    args.vb1,
+    BigInt(args.vb1.length),
+    args.mw2,
+    BigInt(args.mw2.length),
+    args.vw2,
+    BigInt(args.vw2.length),
+    args.mb2,
+    BigInt(args.mb2.length),
+    args.vb2,
+    BigInt(args.vb2.length),
+    args.hidden,
+    BigInt(args.hidden.length),
+    args.logits,
+    BigInt(args.logits.length),
+    args.gradHidden,
+    BigInt(args.gradHidden.length),
+    args.gradW1,
+    BigInt(args.gradW1.length),
+    args.gradW2,
+    BigInt(args.gradW2.length),
+    BigInt(args.sampleCount),
+    BigInt(args.batch),
+    BigInt(args.inFeatures),
+    BigInt(args.hiddenFeatures),
+    BigInt(args.classes),
+    BigInt(args.epochs),
+    BigInt(args.startStep),
+    args.lr,
+    args.beta1,
+    args.beta2,
+    args.eps,
+    args.weightDecay,
+    outLoss,
+    outCorrect,
+    outSteps,
+  );
+  const expectedSteps = args.epochs * Math.floor(args.sampleCount / args.batch);
+  const steps = Number(outSteps[0]);
+  return { status: statusCode, loss: outLoss[0], correct: Number(outCorrect[0]), steps: steps > 0 ? steps : expectedSteps };
+}
+
 const nativeTraining = createAdapterNativeTrainingSurface({
   f32: (value) => f32(value as TensorLike),
   indexValues,
@@ -2425,6 +2495,14 @@ const nativeTraining = createAdapterNativeTrainingSurface({
   ),
   trainMlpReluCrossEntropyAdamWF32: (args) => callBunNativeMlpTraining(
     bunSymbolGroups.nativeTraining.trainMlpReluCrossEntropyAdamWF32,
+    args,
+  ),
+  trainMlpReluCrossEntropyAdamBulkF32: (args) => callBunNativeMlpBulkTraining(
+    bunSymbolGroups.nativeTraining.trainMlpReluCrossEntropyAdamBulkF32,
+    args,
+  ),
+  trainMlpReluCrossEntropyAdamWBulkF32: (args) => callBunNativeMlpBulkTraining(
+    bunSymbolGroups.nativeTraining.trainMlpReluCrossEntropyAdamWBulkF32,
     args,
   ),
 });

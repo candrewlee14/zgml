@@ -60,6 +60,8 @@ type BunTrainMlpReluCrossEntropyAdamF32 = (
   outCorrect: BigUint64Array,
 ) => number;
 
+type BunTrainMlpReluCrossEntropyAdamBulkF32 = (...args: any[]) => number;
+
 type BunTrainLinearMseSgdF32 = (
   input: Float32Array,
   inputLen: bigint,
@@ -308,35 +310,35 @@ export type BunNativeSymbols = Readonly<{
   zgml_train_linear_mse_sgd_f32: BunTrainLinearMseSgdF32;
   zgml_train_mlp_relu_cross_entropy_adam_f32: BunTrainMlpReluCrossEntropyAdamF32;
   zgml_train_mlp_relu_cross_entropy_adamw_f32: BunTrainMlpReluCrossEntropyAdamF32;
+  zgml_train_mlp_relu_cross_entropy_adam_f32_bulk: BunTrainMlpReluCrossEntropyAdamBulkF32;
+  zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk: BunTrainMlpReluCrossEntropyAdamBulkF32;
   zgml_session_free(session: BunNativeHandle): void;
   zgml_program_free(program: BunNativeHandle): void;
   zgml_model_free(model: BunNativeHandle): void;
 }>;
 
 export function bindBunSymbols(libPath: string): BunNativeSymbols {
+  const ptrLen = [FFIType.ptr, FFIType.u64] as const;
   const trainMlpReluCrossEntropyAdamArgs = [
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
-    FFIType.ptr, FFIType.u64,
+    ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen,
+    ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen,
+    ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen,
+    ...ptrLen,
     FFIType.u64, FFIType.u64, FFIType.u64, FFIType.u64,
     FFIType.u64,
     FFIType.float, FFIType.float, FFIType.float, FFIType.float, FFIType.float,
+    FFIType.ptr,
+    FFIType.ptr,
+  ];
+  const trainMlpReluCrossEntropyAdamBulkArgs = [
+    ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen,
+    ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen,
+    ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen,
+    ...ptrLen, ...ptrLen, ...ptrLen, ...ptrLen,
+    FFIType.u64, FFIType.u64, FFIType.u64, FFIType.u64, FFIType.u64,
+    FFIType.u64, FFIType.u64,
+    FFIType.float, FFIType.float, FFIType.float, FFIType.float, FFIType.float,
+    FFIType.ptr,
     FFIType.ptr,
     FFIType.ptr,
   ];
@@ -797,6 +799,14 @@ export function bindBunSymbols(libPath: string): BunNativeSymbols {
     },
     zgml_train_mlp_relu_cross_entropy_adamw_f32: {
       args: trainMlpReluCrossEntropyAdamArgs,
+      returns: FFIType.i32,
+    },
+    zgml_train_mlp_relu_cross_entropy_adam_f32_bulk: {
+      args: trainMlpReluCrossEntropyAdamBulkArgs,
+      returns: FFIType.i32,
+    },
+    zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk: {
+      args: trainMlpReluCrossEntropyAdamBulkArgs,
       returns: FFIType.i32,
     },
     zgml_session_free: {

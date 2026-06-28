@@ -1369,6 +1369,8 @@ function checkScripts() {
     "const criterion = loss.crossEntropyLoss({ classes: 10 })",
     "const fit = model.fit(trainLoader, {",
     "fit.native !== true || fit.compiledPlan?.loweredBy !== \"zig-ffi\"",
+    "fit.nativeBulk !== true",
+    "zgml_model_fit_bulk",
     "compile.trainingStep(nativeModel, nativeOptimizer",
     "trainManualNativeZgmlVsModelFitZgml",
     "F.cross_entropy(model(train_x.index_select(0, idx)), train_y.index_select(0, idx), reduction=\"mean\")",

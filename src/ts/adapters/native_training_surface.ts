@@ -36,6 +36,17 @@ type NativeTrainingCallArgs = {
   weightDecay: number;
 };
 
+type NativeTrainingBulkMlpAdamCallArgs = NativeTrainingCallArgs & {
+  datasetInput: Float32Array;
+  datasetTargets: Uint32Array;
+  indices: Uint32Array;
+  batchInput: Float32Array;
+  batchTargets: Uint32Array;
+  sampleCount: number;
+  epochs: number;
+  startStep: number;
+};
+
 type NativeTrainingLinearSgdCallArgs = {
   input: Float32Array;
   target: Float32Array;
@@ -74,6 +85,7 @@ type NativeTrainingPlan = Readonly<{
 }>;
 
 type NativeTrainingMlpAdamCall = (args: NativeTrainingCallArgs) => NativeTrainingCallResult;
+type NativeTrainingBulkMlpAdamCall = (args: NativeTrainingBulkMlpAdamCallArgs) => NativeTrainingCallResult & { steps: number };
 type NativeTrainingLinearSgdCall = (args: NativeTrainingLinearSgdCallArgs) => NativeTrainingCallResult;
 
 export type NativeTrainingSurfaceOptions = {
@@ -82,6 +94,8 @@ export type NativeTrainingSurfaceOptions = {
   check: NativeTrainingCheck;
   trainMlpReluCrossEntropyAdamF32: NativeTrainingMlpAdamCall;
   trainMlpReluCrossEntropyAdamWF32: NativeTrainingMlpAdamCall;
+  trainMlpReluCrossEntropyAdamBulkF32?: NativeTrainingBulkMlpAdamCall;
+  trainMlpReluCrossEntropyAdamWBulkF32?: NativeTrainingBulkMlpAdamCall;
   trainLinearMseSgdF32: NativeTrainingLinearSgdCall;
 };
 
@@ -253,6 +267,47 @@ function classTargets(value: unknown, indexValues: NativeTrainingIndexValues) {
   return out;
 }
 
+function tensorDatasetBulkSource(batches: unknown, batch: number, inFeatures: number, indexValues: NativeTrainingIndexValues) {
+  const loader = batches as AnyRecord | null;
+  const dataset = loader?.dataset as AnyRecord | null;
+  if (
+    !loader ||
+    loader.kind !== "zgml.data.batches" ||
+    !dataset ||
+    dataset.kind !== "zgml.data.tensor-dataset" ||
+    loader.collateFn !== null ||
+    loader.collate_fn !== null ||
+    loader.batchSize !== batch ||
+    loader.dropLast === true ||
+    typeof loader.batchRows !== "function"
+  ) return null;
+  const input = dataset.input as AnyRecord | null;
+  const target = dataset.target as unknown;
+  if (!input || !(input.data instanceof Float32Array) || !Array.isArray(input.shape) || input.shape.length !== 2) return null;
+  const sampleCount = positiveInteger(input.shape[0], "native bulk training sample count");
+  const features = positiveInteger(input.shape[1], "native bulk training input features");
+  if (features !== inFeatures || input.data.length !== sampleCount * inFeatures) return null;
+  const targetData = classTargets(target, indexValues);
+  if (targetData.length !== sampleCount) return null;
+  const rows = loader.batchRows() as unknown;
+  if (!Array.isArray(rows)) return null;
+  const flat: number[] = [];
+  for (const rowBatch of rows) {
+    if (!Array.isArray(rowBatch) || rowBatch.length !== batch) return null;
+    for (const row of rowBatch) {
+      if (!Number.isSafeInteger(row) || row < 0 || row >= sampleCount) return null;
+      flat.push(row);
+    }
+  }
+  if (flat.length !== sampleCount || flat.length % batch !== 0) return null;
+  return Object.freeze({
+    datasetInput: input.data as Float32Array,
+    datasetTargets: targetData,
+    indices: new Uint32Array(flat),
+    sampleCount,
+  });
+}
+
 export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfaceOptions) {
   function trainingStep(model: unknown, optimizer: unknown, config: AnyRecord = {}) {
     const loss = config.loss ?? config.criterion ?? "crossEntropy";
@@ -289,6 +344,8 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
     const gradHidden = new Float32Array(batch * layers.first.outFeatures);
     const gradW1 = new Float32Array(layers.first.weight.length);
     const gradW2 = new Float32Array(layers.second.weight.length);
+    const batchInput = new Float32Array(batch * inFeatures);
+    const batchTargets = new Uint32Array(batch);
     const plan = nativeTrainingPlan({
       modelKind: "sequential-mlp-relu",
       optimizerKind: adam.kind,
@@ -304,8 +361,16 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
         gradHidden: gradHidden.length,
         gradW1: gradW1.length,
         gradW2: gradW2.length,
+        batchInput: batchInput.length,
+        batchTargets: batchTargets.length,
       },
     });
+    const bulkKernel = adam.kind === "adamw"
+      ? options.trainMlpReluCrossEntropyAdamWBulkF32
+      : options.trainMlpReluCrossEntropyAdamBulkF32;
+    const bulkKernelName = adam.kind === "adamw"
+      ? "zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk"
+      : "zgml_train_mlp_relu_cross_entropy_adam_f32_bulk";
 
     function step(input: unknown, target: unknown) {
       const inputData = tensorData(input, "compile.trainingStep input", options.f32);
@@ -376,6 +441,80 @@ export function createAdapterNativeTrainingSurface(options: NativeTrainingSurfac
       compile_evidence: () => plan,
       step,
       forward: step,
+      fit(batches: unknown, fitOptions: AnyRecord = {}) {
+        if (typeof bulkKernel !== "function") return null;
+        if (
+          fitOptions.maxSteps !== undefined ||
+          fitOptions.max_steps !== undefined ||
+          fitOptions.onStep !== undefined ||
+          fitOptions.on_step !== undefined ||
+          fitOptions.earlyStopping !== undefined ||
+          fitOptions.early_stopping !== undefined
+        ) return null;
+        const epochs = positiveInteger(fitOptions.epochs ?? 1, "native bulk training epochs");
+        const source = tensorDatasetBulkSource(batches, batch, inFeatures, options.indexValues);
+        if (source === null) return null;
+        const startStep = Number(adam.t);
+        const result = bulkKernel({
+          datasetInput: source.datasetInput,
+          datasetTargets: source.datasetTargets,
+          indices: source.indices,
+          batchInput,
+          batchTargets,
+          input: batchInput,
+          targets: batchTargets,
+          w1: layers.first.weight,
+          b1: layers.first.bias,
+          w2: layers.second.weight,
+          b2: layers.second.bias,
+          mw1: adam.m[0],
+          vw1: adam.v[0],
+          mb1: adam.m[1],
+          vb1: adam.v[1],
+          mw2: adam.m[2],
+          vw2: adam.v[2],
+          mb2: adam.m[3],
+          vb2: adam.v[3],
+          hidden,
+          logits,
+          gradHidden,
+          gradW1,
+          gradW2,
+          batch,
+          inFeatures,
+          hiddenFeatures: layers.first.outFeatures,
+          classes,
+          sampleCount: source.sampleCount,
+          epochs,
+          startStep,
+          step: startStep + 1,
+          lr: finiteNumber(adam.lr, "compile.trainingStep Adam/AdamW lr"),
+          beta1: finiteNumber(adam.beta1, "compile.trainingStep Adam/AdamW beta1"),
+          beta2: finiteNumber(adam.beta2, "compile.trainingStep Adam/AdamW beta2"),
+          eps: finiteNumber(adam.eps, "compile.trainingStep Adam/AdamW eps"),
+          weightDecay: finiteNumber(adam.weightDecay, "compile.trainingStep Adam/AdamW weightDecay"),
+        });
+        options.check(result.status);
+        adam.t = startStep + result.steps;
+        return Object.freeze({
+          kind: "zgml.native-training-bulk-fit",
+          native: true,
+          nativeBulk: true,
+          native_bulk: true,
+          backend: "cpu",
+          loss: result.loss,
+          correct: result.correct,
+          accuracy: result.correct / batch,
+          batch,
+          sampleCount: source.sampleCount,
+          sample_count: source.sampleCount,
+          epochs,
+          steps: result.steps,
+          optimizerStep: adam.t,
+          optimizer_step: adam.t,
+          kernel: bulkKernelName,
+        });
+      },
       dispose() {},
       free() {},
     });

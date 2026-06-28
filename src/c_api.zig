@@ -1849,14 +1849,12 @@ fn eagerLinearF32(
     out_features: usize,
     transposed_weights: bool,
 ) c_int {
-    if (
-        input_ptr == null or
+    if (input_ptr == null or
         weights_ptr == null or
         output_ptr == null or
         batch == 0 or
         in_features == 0 or
-        out_features == 0
-    ) return status(.invalid_argument);
+        out_features == 0) return status(.invalid_argument);
     if (checkedElementCount(batch, in_features) != input_len) return status(.shape_mismatch);
     if (checkedElementCount(in_features, out_features) != weights_len) return status(.shape_mismatch);
     if (bias_len != 0 and (bias_ptr == null or bias_len != out_features)) return status(.shape_mismatch);
@@ -1931,14 +1929,12 @@ export fn zgml_eager_matmul_f32(
     shared: usize,
     cols: usize,
 ) c_int {
-    if (
-        lhs_ptr == null or
+    if (lhs_ptr == null or
         rhs_ptr == null or
         output_ptr == null or
         rows == 0 or
         shared == 0 or
-        cols == 0
-    ) return status(.invalid_argument);
+        cols == 0) return status(.invalid_argument);
     if (checkedElementCount(rows, shared) != lhs_len) return status(.shape_mismatch);
     if (checkedElementCount(shared, cols) != rhs_len) return status(.shape_mismatch);
     if (checkedElementCount(rows, cols) != output_len) return status(.shape_mismatch);
@@ -1977,14 +1973,12 @@ fn eagerLinearActivationF32(
     activation: u32,
     transposed_weights: bool,
 ) c_int {
-    if (
-        input_ptr == null or
+    if (input_ptr == null or
         weights_ptr == null or
         output_ptr == null or
         batch == 0 or
         in_features == 0 or
-        out_features == 0
-    ) return status(.invalid_argument);
+        out_features == 0) return status(.invalid_argument);
     if (checkedElementCount(batch, in_features) != input_len) return status(.shape_mismatch);
     if (checkedElementCount(in_features, out_features) != weights_len) return status(.shape_mismatch);
     if (bias_len != 0 and (bias_ptr == null or bias_len != out_features)) return status(.shape_mismatch);
@@ -2223,8 +2217,7 @@ export fn zgml_eager_conv2d_f32(
     out_h: usize,
     out_w: usize,
 ) c_int {
-    if (
-        input_ptr == null or
+    if (input_ptr == null or
         weights_ptr == null or
         output_ptr == null or
         batch == 0 or
@@ -2239,8 +2232,7 @@ export fn zgml_eager_conv2d_f32(
         dilation_h == 0 or
         dilation_w == 0 or
         out_h == 0 or
-        out_w == 0
-    ) return status(.invalid_argument);
+        out_w == 0) return status(.invalid_argument);
 
     if (checkedElementCount4(batch, in_channels, height, width) != input_len) return status(.shape_mismatch);
     if (checkedElementCount4(out_channels, in_channels, kernel_h, kernel_w) != weights_len) return status(.shape_mismatch);
@@ -2338,8 +2330,7 @@ export fn zgml_eager_pool2d_f32(
     ceil_mode: u32,
     count_include_pad: u32,
 ) c_int {
-    if (
-        input_ptr == null or
+    if (input_ptr == null or
         output_ptr == null or
         batch == 0 or
         channels == 0 or
@@ -2352,8 +2343,7 @@ export fn zgml_eager_pool2d_f32(
         dilation_h == 0 or
         dilation_w == 0 or
         out_h == 0 or
-        out_w == 0
-    ) return status(.invalid_argument);
+        out_w == 0) return status(.invalid_argument);
     if (op != eager_pool_max and op != eager_pool_avg) return status(.invalid_argument);
     if (ceil_mode != 0 and ceil_mode != 1) return status(.invalid_argument);
     if (count_include_pad != 0 and count_include_pad != 1) return status(.invalid_argument);
@@ -2519,21 +2509,17 @@ export fn zgml_train_linear_mse_sgd_f32(
     weight_decay: f32,
     out_loss: ?*f32,
 ) c_int {
-    if (
-        input_ptr == null or target_ptr == null or weight_ptr == null or bias_ptr == null or
+    if (input_ptr == null or target_ptr == null or weight_ptr == null or bias_ptr == null or
         output_ptr == null or grad_weight_ptr == null or out_loss == null or
         batch == 0 or in_features == 0 or out_features == 0 or
-        !finiteSgdConfig(lr, weight_decay)
-    ) return status(.invalid_argument);
+        !finiteSgdConfig(lr, weight_decay)) return status(.invalid_argument);
 
     const input_count = checkedElementCount(batch, in_features) orelse return status(.shape_mismatch);
     const output_count = checkedElementCount(batch, out_features) orelse return status(.shape_mismatch);
     const weight_count = checkedElementCount(in_features, out_features) orelse return status(.shape_mismatch);
-    if (
-        input_len != input_count or target_len != output_count or
+    if (input_len != input_count or target_len != output_count or
         weight_len != weight_count or bias_len != out_features or
-        output_len != output_count or grad_weight_len != weight_count
-    ) return status(.shape_mismatch);
+        output_len != output_count or grad_weight_len != weight_count) return status(.shape_mismatch);
 
     const input = input_ptr.?[0..input_len];
     const target = target_ptr.?[0..target_len];
@@ -2621,24 +2607,21 @@ fn trainMlpReluCrossEntropyAdamLikeF32(
     out_loss: ?*f32,
     out_correct: ?*usize,
 ) c_int {
-    if (
-        input_ptr == null or target_ptr == null or
+    if (input_ptr == null or target_ptr == null or
         w1_ptr == null or b1_ptr == null or w2_ptr == null or b2_ptr == null or
         mw1_ptr == null or vw1_ptr == null or mb1_ptr == null or vb1_ptr == null or
         mw2_ptr == null or vw2_ptr == null or mb2_ptr == null or vb2_ptr == null or
         hidden_ptr == null or logits_ptr == null or grad_hidden_ptr == null or grad_w1_ptr == null or grad_w2_ptr == null or
         out_loss == null or out_correct == null or
         batch == 0 or in_features == 0 or hidden_features == 0 or classes == 0 or t == 0 or
-        !finiteAdamConfig(lr, beta1, beta2, eps, weight_decay)
-    ) return status(.invalid_argument);
+        !finiteAdamConfig(lr, beta1, beta2, eps, weight_decay)) return status(.invalid_argument);
 
     const input_count = checkedElementCount(batch, in_features) orelse return status(.shape_mismatch);
     const hidden_count = checkedElementCount(batch, hidden_features) orelse return status(.shape_mismatch);
     const logits_count = checkedElementCount(batch, classes) orelse return status(.shape_mismatch);
     const w1_count = checkedElementCount(in_features, hidden_features) orelse return status(.shape_mismatch);
     const w2_count = checkedElementCount(hidden_features, classes) orelse return status(.shape_mismatch);
-    if (
-        input_len != input_count or target_len != batch or
+    if (input_len != input_count or target_len != batch or
         w1_len != w1_count or b1_len != hidden_features or
         w2_len != w2_count or b2_len != classes or
         mw1_len != w1_count or vw1_len != w1_count or
@@ -2646,8 +2629,7 @@ fn trainMlpReluCrossEntropyAdamLikeF32(
         mw2_len != w2_count or vw2_len != w2_count or
         mb2_len != classes or vb2_len != classes or
         hidden_len != hidden_count or logits_len != logits_count or grad_hidden_len != hidden_count or
-        grad_w1_len != w1_count or grad_w2_len != w2_count
-    ) return status(.shape_mismatch);
+        grad_w1_len != w1_count or grad_w2_len != w2_count) return status(.shape_mismatch);
 
     const input = input_ptr.?[0..input_len];
     const targets = target_ptr.?[0..target_len];
@@ -2951,6 +2933,417 @@ export fn zgml_train_mlp_relu_cross_entropy_adamw_f32(
         true,
         out_loss,
         out_correct,
+    );
+}
+
+fn trainMlpReluCrossEntropyAdamLikeBulkF32(
+    dataset_input_ptr: ?[*]const f32,
+    dataset_input_len: usize,
+    dataset_target_ptr: ?[*]const u32,
+    dataset_target_len: usize,
+    indices_ptr: ?[*]const u32,
+    indices_len: usize,
+    batch_input_ptr: ?[*]f32,
+    batch_input_len: usize,
+    batch_target_ptr: ?[*]u32,
+    batch_target_len: usize,
+    w1_ptr: ?[*]f32,
+    w1_len: usize,
+    b1_ptr: ?[*]f32,
+    b1_len: usize,
+    w2_ptr: ?[*]f32,
+    w2_len: usize,
+    b2_ptr: ?[*]f32,
+    b2_len: usize,
+    mw1_ptr: ?[*]f32,
+    mw1_len: usize,
+    vw1_ptr: ?[*]f32,
+    vw1_len: usize,
+    mb1_ptr: ?[*]f32,
+    mb1_len: usize,
+    vb1_ptr: ?[*]f32,
+    vb1_len: usize,
+    mw2_ptr: ?[*]f32,
+    mw2_len: usize,
+    vw2_ptr: ?[*]f32,
+    vw2_len: usize,
+    mb2_ptr: ?[*]f32,
+    mb2_len: usize,
+    vb2_ptr: ?[*]f32,
+    vb2_len: usize,
+    hidden_ptr: ?[*]f32,
+    hidden_len: usize,
+    logits_ptr: ?[*]f32,
+    logits_len: usize,
+    grad_hidden_ptr: ?[*]f32,
+    grad_hidden_len: usize,
+    grad_w1_ptr: ?[*]f32,
+    grad_w1_len: usize,
+    grad_w2_ptr: ?[*]f32,
+    grad_w2_len: usize,
+    sample_count: usize,
+    batch: usize,
+    in_features: usize,
+    hidden_features: usize,
+    classes: usize,
+    epochs: usize,
+    start_step: usize,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    weight_decay: f32,
+    decoupled_weight_decay: bool,
+    out_loss: ?*f32,
+    out_correct: ?*usize,
+    out_steps: ?*usize,
+) c_int {
+    if (dataset_input_ptr == null or dataset_target_ptr == null or indices_ptr == null or
+        batch_input_ptr == null or batch_target_ptr == null or out_loss == null or
+        out_correct == null or out_steps == null or sample_count == 0 or batch == 0 or
+        in_features == 0 or hidden_features == 0 or classes == 0 or epochs == 0 or
+        !finiteAdamConfig(lr, beta1, beta2, eps, weight_decay)) return status(.invalid_argument);
+
+    const dataset_input_count = checkedElementCount(sample_count, in_features) orelse return status(.shape_mismatch);
+    const batch_input_count = checkedElementCount(batch, in_features) orelse return status(.shape_mismatch);
+    if (dataset_input_len != dataset_input_count or dataset_target_len != sample_count or
+        indices_len != sample_count or batch_input_len != batch_input_count or
+        batch_target_len != batch or sample_count % batch != 0) return status(.shape_mismatch);
+
+    const dataset_input = dataset_input_ptr.?[0..dataset_input_len];
+    const dataset_target = dataset_target_ptr.?[0..dataset_target_len];
+    const indices = indices_ptr.?[0..indices_len];
+    const batch_input = batch_input_ptr.?[0..batch_input_len];
+    const batch_target = batch_target_ptr.?[0..batch_target_len];
+
+    var total_steps: usize = 0;
+    var last_loss: f32 = 0;
+    var last_correct: usize = 0;
+    const batches_per_epoch = sample_count / batch;
+    for (0..epochs) |epoch| {
+        _ = epoch;
+        for (0..batches_per_epoch) |batch_index| {
+            const batch_base = batch_index * batch;
+            for (0..batch) |row| {
+                const raw_index = indices[batch_base + row];
+                const sample_index: usize = @intCast(raw_index);
+                if (sample_index >= sample_count) return status(.shape_mismatch);
+                const src = dataset_input[sample_index * in_features ..][0..in_features];
+                const dst = batch_input[row * in_features ..][0..in_features];
+                @memcpy(dst, src);
+                batch_target[row] = dataset_target[sample_index];
+            }
+            const step_status = trainMlpReluCrossEntropyAdamLikeF32(
+                batch_input_ptr,
+                batch_input_len,
+                batch_target_ptr,
+                batch_target_len,
+                w1_ptr,
+                w1_len,
+                b1_ptr,
+                b1_len,
+                w2_ptr,
+                w2_len,
+                b2_ptr,
+                b2_len,
+                mw1_ptr,
+                mw1_len,
+                vw1_ptr,
+                vw1_len,
+                mb1_ptr,
+                mb1_len,
+                vb1_ptr,
+                vb1_len,
+                mw2_ptr,
+                mw2_len,
+                vw2_ptr,
+                vw2_len,
+                mb2_ptr,
+                mb2_len,
+                vb2_ptr,
+                vb2_len,
+                hidden_ptr,
+                hidden_len,
+                logits_ptr,
+                logits_len,
+                grad_hidden_ptr,
+                grad_hidden_len,
+                grad_w1_ptr,
+                grad_w1_len,
+                grad_w2_ptr,
+                grad_w2_len,
+                batch,
+                in_features,
+                hidden_features,
+                classes,
+                start_step + total_steps + 1,
+                lr,
+                beta1,
+                beta2,
+                eps,
+                weight_decay,
+                decoupled_weight_decay,
+                &last_loss,
+                &last_correct,
+            );
+            if (step_status != status(.ok)) return step_status;
+            total_steps += 1;
+        }
+    }
+
+    out_loss.?.* = last_loss;
+    out_correct.?.* = last_correct;
+    out_steps.?.* = total_steps;
+    return status(.ok);
+}
+
+export fn zgml_train_mlp_relu_cross_entropy_adam_f32_bulk(
+    dataset_input_ptr: ?[*]const f32,
+    dataset_input_len: usize,
+    dataset_target_ptr: ?[*]const u32,
+    dataset_target_len: usize,
+    indices_ptr: ?[*]const u32,
+    indices_len: usize,
+    batch_input_ptr: ?[*]f32,
+    batch_input_len: usize,
+    batch_target_ptr: ?[*]u32,
+    batch_target_len: usize,
+    w1_ptr: ?[*]f32,
+    w1_len: usize,
+    b1_ptr: ?[*]f32,
+    b1_len: usize,
+    w2_ptr: ?[*]f32,
+    w2_len: usize,
+    b2_ptr: ?[*]f32,
+    b2_len: usize,
+    mw1_ptr: ?[*]f32,
+    mw1_len: usize,
+    vw1_ptr: ?[*]f32,
+    vw1_len: usize,
+    mb1_ptr: ?[*]f32,
+    mb1_len: usize,
+    vb1_ptr: ?[*]f32,
+    vb1_len: usize,
+    mw2_ptr: ?[*]f32,
+    mw2_len: usize,
+    vw2_ptr: ?[*]f32,
+    vw2_len: usize,
+    mb2_ptr: ?[*]f32,
+    mb2_len: usize,
+    vb2_ptr: ?[*]f32,
+    vb2_len: usize,
+    hidden_ptr: ?[*]f32,
+    hidden_len: usize,
+    logits_ptr: ?[*]f32,
+    logits_len: usize,
+    grad_hidden_ptr: ?[*]f32,
+    grad_hidden_len: usize,
+    grad_w1_ptr: ?[*]f32,
+    grad_w1_len: usize,
+    grad_w2_ptr: ?[*]f32,
+    grad_w2_len: usize,
+    sample_count: usize,
+    batch: usize,
+    in_features: usize,
+    hidden_features: usize,
+    classes: usize,
+    epochs: usize,
+    start_step: usize,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    weight_decay: f32,
+    out_loss: ?*f32,
+    out_correct: ?*usize,
+    out_steps: ?*usize,
+) c_int {
+    return trainMlpReluCrossEntropyAdamLikeBulkF32(
+        dataset_input_ptr,
+        dataset_input_len,
+        dataset_target_ptr,
+        dataset_target_len,
+        indices_ptr,
+        indices_len,
+        batch_input_ptr,
+        batch_input_len,
+        batch_target_ptr,
+        batch_target_len,
+        w1_ptr,
+        w1_len,
+        b1_ptr,
+        b1_len,
+        w2_ptr,
+        w2_len,
+        b2_ptr,
+        b2_len,
+        mw1_ptr,
+        mw1_len,
+        vw1_ptr,
+        vw1_len,
+        mb1_ptr,
+        mb1_len,
+        vb1_ptr,
+        vb1_len,
+        mw2_ptr,
+        mw2_len,
+        vw2_ptr,
+        vw2_len,
+        mb2_ptr,
+        mb2_len,
+        vb2_ptr,
+        vb2_len,
+        hidden_ptr,
+        hidden_len,
+        logits_ptr,
+        logits_len,
+        grad_hidden_ptr,
+        grad_hidden_len,
+        grad_w1_ptr,
+        grad_w1_len,
+        grad_w2_ptr,
+        grad_w2_len,
+        sample_count,
+        batch,
+        in_features,
+        hidden_features,
+        classes,
+        epochs,
+        start_step,
+        lr,
+        beta1,
+        beta2,
+        eps,
+        weight_decay,
+        false,
+        out_loss,
+        out_correct,
+        out_steps,
+    );
+}
+
+export fn zgml_train_mlp_relu_cross_entropy_adamw_f32_bulk(
+    dataset_input_ptr: ?[*]const f32,
+    dataset_input_len: usize,
+    dataset_target_ptr: ?[*]const u32,
+    dataset_target_len: usize,
+    indices_ptr: ?[*]const u32,
+    indices_len: usize,
+    batch_input_ptr: ?[*]f32,
+    batch_input_len: usize,
+    batch_target_ptr: ?[*]u32,
+    batch_target_len: usize,
+    w1_ptr: ?[*]f32,
+    w1_len: usize,
+    b1_ptr: ?[*]f32,
+    b1_len: usize,
+    w2_ptr: ?[*]f32,
+    w2_len: usize,
+    b2_ptr: ?[*]f32,
+    b2_len: usize,
+    mw1_ptr: ?[*]f32,
+    mw1_len: usize,
+    vw1_ptr: ?[*]f32,
+    vw1_len: usize,
+    mb1_ptr: ?[*]f32,
+    mb1_len: usize,
+    vb1_ptr: ?[*]f32,
+    vb1_len: usize,
+    mw2_ptr: ?[*]f32,
+    mw2_len: usize,
+    vw2_ptr: ?[*]f32,
+    vw2_len: usize,
+    mb2_ptr: ?[*]f32,
+    mb2_len: usize,
+    vb2_ptr: ?[*]f32,
+    vb2_len: usize,
+    hidden_ptr: ?[*]f32,
+    hidden_len: usize,
+    logits_ptr: ?[*]f32,
+    logits_len: usize,
+    grad_hidden_ptr: ?[*]f32,
+    grad_hidden_len: usize,
+    grad_w1_ptr: ?[*]f32,
+    grad_w1_len: usize,
+    grad_w2_ptr: ?[*]f32,
+    grad_w2_len: usize,
+    sample_count: usize,
+    batch: usize,
+    in_features: usize,
+    hidden_features: usize,
+    classes: usize,
+    epochs: usize,
+    start_step: usize,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    weight_decay: f32,
+    out_loss: ?*f32,
+    out_correct: ?*usize,
+    out_steps: ?*usize,
+) c_int {
+    return trainMlpReluCrossEntropyAdamLikeBulkF32(
+        dataset_input_ptr,
+        dataset_input_len,
+        dataset_target_ptr,
+        dataset_target_len,
+        indices_ptr,
+        indices_len,
+        batch_input_ptr,
+        batch_input_len,
+        batch_target_ptr,
+        batch_target_len,
+        w1_ptr,
+        w1_len,
+        b1_ptr,
+        b1_len,
+        w2_ptr,
+        w2_len,
+        b2_ptr,
+        b2_len,
+        mw1_ptr,
+        mw1_len,
+        vw1_ptr,
+        vw1_len,
+        mb1_ptr,
+        mb1_len,
+        vb1_ptr,
+        vb1_len,
+        mw2_ptr,
+        mw2_len,
+        vw2_ptr,
+        vw2_len,
+        mb2_ptr,
+        mb2_len,
+        vb2_ptr,
+        vb2_len,
+        hidden_ptr,
+        hidden_len,
+        logits_ptr,
+        logits_len,
+        grad_hidden_ptr,
+        grad_hidden_len,
+        grad_w1_ptr,
+        grad_w1_len,
+        grad_w2_ptr,
+        grad_w2_len,
+        sample_count,
+        batch,
+        in_features,
+        hidden_features,
+        classes,
+        epochs,
+        start_step,
+        lr,
+        beta1,
+        beta2,
+        eps,
+        weight_decay,
+        true,
+        out_loss,
+        out_correct,
+        out_steps,
     );
 }
 
@@ -11030,7 +11423,7 @@ test "C ABI native eager linear accepts transposed caller weights" {
         4, 5, 6,
     };
     const weights_out_in = [_]f32{
-        1, 2, 3,
+        1,  2,  3,
         10, 20, 30,
     };
     const bias = [_]f32{ 0.5, -1 };
@@ -11110,8 +11503,8 @@ test "C ABI native linear MSE SGD training learns caller-owned weights" {
     const input = [_]f32{
         -1, -1,
         -1, 1,
-        1, -1,
-        1, 1,
+        1,  -1,
+        1,  1,
     };
     const target = [_]f32{
         -0.5,
@@ -11194,8 +11587,8 @@ test "C ABI native eager linear activation writes caller output" {
         4, 5, 6,
     };
     const weights = [_]f32{
-        1, -1,
-        0, 2,
+        1,    -1,
+        0,    2,
         -0.5, 0.25,
     };
     const bias = [_]f32{ 0.5, -1 };
@@ -11656,18 +12049,18 @@ test "C ABI native eager reduce writes scalar output" {
 
 test "C ABI native eager conv2d writes caller output" {
     const input = [_]f32{
-        1, 2, 3,
-        4, 5, 6,
-        7, 8, 9,
+        1,  2,  3,
+        4,  5,  6,
+        7,  8,  9,
         10, 11, 12,
         13, 14, 15,
         16, 17, 18,
     };
     const weights = [_]f32{
-        1, 0,
-        0, 1,
+        1,  0,
+        0,  1,
         -1, 1,
-        1, -1,
+        1,  -1,
     };
     const bias = [_]f32{0.5};
     var output = [_]f32{0} ** 4;

@@ -211,10 +211,14 @@ back into JavaScript.
 The MNIST/PyTorch comparison now treats ergonomic `model.fit(...)` as the
 primary zgml training lane and requires `native=true` / `loweredBy="zig-ffi"`.
 A June 27, 2026 default run passes numeric parity and reaches the same 87.70%
-accuracy as PyTorch, but full training remains `0.13x` PyTorch because the epoch
-still pays JS data-loader and per-batch FFI overhead. The next training
-performance move is therefore a native-owned fit/epoch loop or bulk batch
-schedule, not another JS callback wrapper.
+accuracy as PyTorch. The ergonomic `model.fit(...)` lane now proves
+`nativeBulk=true` and lowers the contiguous tensor-dataset epoch to
+`zgml_train_mlp_relu_cross_entropy_adam_f32_bulk`, improving the default
+MNIST/PyTorch training ratio from about `0.13x` to `0.188x` while the small
+bounded run reaches `2.226x`. This is the right "TS API, Zig execution"
+architecture, but the default full-training gap remains in the native CPU
+training math path itself. The next large performance move is optimizing the
+native training kernels and batched matmul/update path.
 
 The refined compiler shape is:
 

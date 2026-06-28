@@ -207,6 +207,7 @@ type LossTrainOptimizer = {
 
 type CompiledTrainingStep = AnyRecord & {
   step(input: unknown, target: unknown): unknown;
+  fit?(batches: unknown, fitOptions?: TrainFitOptions): unknown;
   inputShape?: () => readonly number[];
   outputShape?: () => readonly number[];
   plan?: () => CompiledTrainingPlan;
@@ -1572,6 +1573,42 @@ export function createLossTrainHelpers(options: LossTrainHelpersOptions) {
     const batchCount = fitBatchCountEvidence(batches);
     const sampleCount = fitSampleCountEvidence(batches);
     const plan = compiledTrainingPlan(compiled);
+    if (typeof compiled.fit === "function") {
+      const bulkResult = compiled.fit(batches, fitOptions);
+      if (bulkResult !== null && bulkResult !== undefined) {
+        const result = bulkResult as AnyRecord;
+        const latestLoss = compiledTrainingLoss(result);
+        const steps = positiveIntegerOption(result.steps, "compiled native bulk training steps", Number.MAX_SAFE_INTEGER);
+        return trainFitEvidence({
+          kind: "zgml.train.fit",
+          epochs,
+          steps,
+          stoppedEarly: false,
+          stopReason: null,
+          stop_reason: null,
+          batchCount,
+          batch_count: batchCount,
+          sampleCount,
+          sample_count: sampleCount,
+          losses: Object.freeze([latestLoss]),
+          bestLoss: latestLoss,
+          best_loss: latestLoss,
+          bestStep: steps,
+          best_step: steps,
+          finalLoss: latestLoss,
+          lastStep: null,
+          lastLoss: null,
+          native: true,
+          nativeBulk: result.nativeBulk === true || result.native_bulk === true,
+          native_bulk: result.nativeBulk === true || result.native_bulk === true,
+          backend: compiled.backend ?? "native",
+          compiledPlan: plan,
+          compiled_plan: plan,
+          bulkResult: result,
+          bulk_result: result,
+        });
+      }
+    }
     const losses = [];
     let bestLoss: number | null = null;
     let bestStep: number | null = null;
