@@ -86,9 +86,9 @@ export const bunNativeEagerRoutingPolicy = routingPolicy("bun", {
   softmax: "native",
   bmmMinMultiplyAdds: 512,
   elementwiseMinLength: 512,
-  activationMinLength: 65536,
+  activationMinLength: 1024,
   reduceMinLength: 512,
-  disabledActivations: [],
+  disabledActivations: ["relu"],
   disabledUnaryOps: [],
 });
 

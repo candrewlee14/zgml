@@ -1094,9 +1094,8 @@ function checkScripts() {
     "nativeEagerRoutingUnaryOpEnabled",
     "bmmMinMultiplyAdds: 512",
     "elementwiseMinLength: 512",
-    "activationMinLength: 65536",
+    "activationMinLength: 1024",
     "disabledActivations: [\"relu\"]",
-    "disabledActivations: []",
     "disabledUnaryOps: []",
   ]);
   requireIncludes(read("src/ts/adapters/node_ffi_runtime.ts"), "src/ts/adapters/node_ffi_runtime.ts", "Node native eager activation dispatch policy", [

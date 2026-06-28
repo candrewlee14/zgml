@@ -317,6 +317,7 @@ const shader_source =
     \\    float output_rms_eps;
     \\    uint output_scale_src_offset;
     \\    uint output_dst_offset;
+    \\    uint input_scratch_offset;
     \\    uint product_scratch_offset;
     \\    uint output_scratch_offset;
     \\    uint partial_dst_offset;
@@ -1887,6 +1888,59 @@ const shader_source =
     \\            up_sum += x * float(up_weight_data[w_idx]) * up_weight_scales[w_idx >> 5];
     \\        }
     \\        scratch[p.product_scratch_offset + row * p.H + h] = fused_unary(p.first_op, gate_sum) * up_sum;
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_semantic_ffn_input_bridge_stage_input_f32(
+    \\    device const char*  input_weight_data   [[buffer(0)]],
+    \\    device const float* input_weight_scales [[buffer(1)]],
+    \\    device const float* source_input        [[buffer(2)]],
+    \\    device const float* input_residual_secondary [[buffer(3)]],
+    \\    device const float* input_scale_src     [[buffer(4)]],
+    \\    device float*       scratch             [[buffer(5)]],
+    \\    constant QMatmulSemanticFfnInputBridgeParams& p [[buffer(6)]],
+    \\    uint row [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    if (row >= p.M) return;
+    \\    threadgroup float partial[SEMANTIC_FFN_INPUT_BRIDGE_THREADS];
+    \\    threadgroup float residual_values[SEMANTIC_FFN_MAX_DIM];
+    \\
+    \\    float input_ss = 0.0f;
+    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        float sum = 0.0f;
+    \\        uint k = 0;
+    \\        for (; k + 3 < p.input_projection_K; k += 4) {
+    \\            uint w_idx0 = k * p.K + col;
+    \\            uint w_idx1 = w_idx0 + p.K;
+    \\            uint w_idx2 = w_idx1 + p.K;
+    \\            uint w_idx3 = w_idx2 + p.K;
+    \\            uint input_base = p.source_input_offset + row * p.source_input_row_stride + k;
+    \\            sum += source_input[input_base] * float(input_weight_data[w_idx0]) * input_weight_scales[w_idx0 >> 5];
+    \\            sum += source_input[input_base + 1] * float(input_weight_data[w_idx1]) * input_weight_scales[w_idx1 >> 5];
+    \\            sum += source_input[input_base + 2] * float(input_weight_data[w_idx2]) * input_weight_scales[w_idx2 >> 5];
+    \\            sum += source_input[input_base + 3] * float(input_weight_data[w_idx3]) * input_weight_scales[w_idx3 >> 5];
+    \\        }
+    \\        for (; k < p.input_projection_K; k++) {
+    \\            uint w_idx = k * p.K + col;
+    \\            sum += source_input[p.source_input_offset + row * p.source_input_row_stride + k] * float(input_weight_data[w_idx]) * input_weight_scales[w_idx >> 5];
+    \\        }
+    \\        uint linear = row * p.K + col;
+    \\        float residual = sum + input_residual_secondary[p.input_residual_secondary_offset + linear];
+    \\        residual_values[col] = residual;
+    \\        scratch[p.output_scratch_offset + row * p.O + col] = residual;
+    \\        input_ss += residual * residual;
+    \\    }
+    \\    partial[tid] = input_ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = SEMANTIC_FFN_INPUT_BRIDGE_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float input_inv_rms = 1.0f / sqrt(partial[0] / float(p.K) + p.input_rms_eps);
+    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        scratch[p.input_scratch_offset + row * p.K + col] =
+    \\            residual_values[col] * input_inv_rms * input_scale_src[p.input_scale_src_offset + col];
     \\    }
     \\}
     \\
@@ -5076,6 +5130,7 @@ const QMatmulSemanticFfnInputBridgeParams = extern struct {
     output_rms_eps: f32,
     output_scale_src_offset: u32,
     output_dst_offset: u32,
+    input_scratch_offset: u32,
     product_scratch_offset: u32,
     output_scratch_offset: u32,
     partial_dst_offset: u32,
@@ -5103,6 +5158,8 @@ const SemanticFfnInputBridgeCompatibility = struct {
 };
 
 const SemanticFfnInputBridgeScratchLayout = struct {
+    input_element_offset: u32,
+    input_elements: u32,
     product_element_offset: u32,
     product_elements: u32,
     output_element_offset: u32,
@@ -5113,13 +5170,17 @@ const SemanticFfnInputBridgeScratchLayout = struct {
 
     fn fromRequirement(requirement: SemanticWidthScratchRequirement) ?SemanticFfnInputBridgeScratchLayout {
         const total_bytes = requirement.scratchBytes();
+        const input_elements = std.math.mul(u64, @as(u64, requirement.rows), @as(u64, requirement.input)) catch return null;
         const product_elements = f32ElementsFromBytes(requirement.product_bytes) orelse return null;
         const output_elements = f32ElementsFromBytes(requirement.output_bytes) orelse return null;
         const total_elements = f32ElementsFromBytes(total_bytes) orelse return null;
-        const output_element_offset = product_elements;
+        const product_element_offset = input_elements;
+        const output_element_offset = product_element_offset + product_elements;
         if (output_element_offset + output_elements > total_elements) return null;
         return .{
-            .product_element_offset = 0,
+            .input_element_offset = 0,
+            .input_elements = std.math.cast(u32, input_elements) orelse return null,
+            .product_element_offset = std.math.cast(u32, product_element_offset) orelse return null,
             .product_elements = std.math.cast(u32, product_elements) orelse return null,
             .output_element_offset = std.math.cast(u32, output_element_offset) orelse return null,
             .output_elements = std.math.cast(u32, output_elements) orelse return null,
@@ -5998,6 +6059,7 @@ const MetalKernel = enum(u8) {
     qmatmul_semantic_ffn_sublayer_f32,
     qmatmul_semantic_ffn_input_bridge_f32,
     qmatmul_semantic_ffn_input_bridge_product_f32,
+    qmatmul_semantic_ffn_input_bridge_stage_input_f32,
     qmatmul_semantic_ffn_input_bridge_width_partials_f32,
     qmatmul_semantic_ffn_input_bridge_finalize_tiles_f32,
     qmatmul_semantic_ffn_input_bridge_finalize_row_tiles_f32,
@@ -6432,7 +6494,9 @@ fn semanticScratchRequirementForShape(rows: u32, hidden: u32, input: u32, output
 
 fn semanticInputBridgeStagedScratchRequirementForShape(rows: u32, hidden: u32, input: u32, output: u32) ?SemanticWidthScratchRequirement {
     var requirement = semanticScratchRequirementForShape(rows, hidden, input, output) orelse return null;
-    const staged_scratch = std.math.add(usize, requirement.product_bytes, requirement.output_bytes) catch return null;
+    const input_bytes = checkedF32Bytes(std.math.mul(u64, @as(u64, rows), @as(u64, input)) catch return null) orelse return null;
+    const input_and_product = std.math.add(usize, input_bytes, requirement.product_bytes) catch return null;
+    const staged_scratch = std.math.add(usize, input_and_product, requirement.output_bytes) catch return null;
     requirement.scratch_bytes = std.math.add(usize, staged_scratch, requirement.runtime_capacity_bytes) catch return null;
     requirement.down_partial_bytes = requirement.runtime_capacity_bytes;
     return requirement;
@@ -6608,7 +6672,7 @@ test "semantic input bridge compatibility proves exact direct width target shape
     try std.testing.expectEqual(@as(u64, 2304), bridge.direct_width_parallel_partial_slots);
 
     const scratch = bridge.scratchRequirement() orelse return error.TestExpectedEqual;
-    try std.testing.expectEqual(@as(usize, 1090560), scratch.scratchBytes());
+    try std.testing.expectEqual(@as(usize, 1385472), scratch.scratchBytes());
     try std.testing.expectEqual(@as(usize, 9216), scratch.runtimeScratchBytes());
 }
 
@@ -6620,7 +6684,7 @@ test "semantic input bridge compatibility rejects broken residual bridge" {
 
 test "semantic input bridge encode plan requires native qweights and full width scratch" {
     const ops = testSemanticInputBridgeOps();
-    const view = testSemanticInputBridgeView(32, 1090560, &.{});
+    const view = testSemanticInputBridgeView(32, 1385472, &.{});
     defer deinitTestSemanticInputBridgeView(view);
 
     const plan = semanticInputBridgeEncodePlanForTest(view, &ops) orelse return error.TestExpectedEqual;
@@ -6629,21 +6693,23 @@ test "semantic input bridge encode plan requires native qweights and full width 
     try std.testing.expectEqual(@as(u32, 1536), plan.gate_params.N);
     try std.testing.expectEqual(@as(u32, 1536), plan.up_params.N);
     try std.testing.expectEqual(@as(u32, 576), plan.down_params.N);
-    try std.testing.expectEqual(@as(usize, 1090560), plan.scratch.scratchBytes());
+    try std.testing.expectEqual(@as(usize, 1385472), plan.scratch.scratchBytes());
     try std.testing.expectEqual(@as(usize, 786432), plan.scratch.product_bytes);
     try std.testing.expectEqual(@as(usize, 9216), plan.scratch.down_partial_bytes);
     try std.testing.expectEqual(@as(usize, 294912), plan.scratch.output_bytes);
     try std.testing.expectEqual(@as(usize, 9216), plan.scratch.runtimeScratchBytes());
-    try std.testing.expectEqual(@as(u32, 0), plan.scratch_layout.product_element_offset);
+    try std.testing.expectEqual(@as(u32, 0), plan.scratch_layout.input_element_offset);
+    try std.testing.expectEqual(@as(u32, 73728), plan.scratch_layout.input_elements);
+    try std.testing.expectEqual(@as(u32, 73728), plan.scratch_layout.product_element_offset);
     try std.testing.expectEqual(@as(u32, 196608), plan.scratch_layout.product_elements);
-    try std.testing.expectEqual(@as(u32, 196608), plan.scratch_layout.output_element_offset);
+    try std.testing.expectEqual(@as(u32, 270336), plan.scratch_layout.output_element_offset);
     try std.testing.expectEqual(@as(u32, 73728), plan.scratch_layout.output_elements);
     try std.testing.expectEqual(@as(u32, 0), plan.scratch_layout.down_partial_element_offset);
-    try std.testing.expectEqual(@as(u32, 272640), plan.scratch_layout.down_partial_elements);
-    try std.testing.expectEqual(@as(usize, 1090560), plan.scratch_layout.total_bytes);
-    try std.testing.expectEqual(@as(usize, 1090560), plan.scratch_bytes);
+    try std.testing.expectEqual(@as(u32, 346368), plan.scratch_layout.down_partial_elements);
+    try std.testing.expectEqual(@as(usize, 1385472), plan.scratch_layout.total_bytes);
+    try std.testing.expectEqual(@as(usize, 1385472), plan.scratch_bytes);
 
-    const wrong_block = testSemanticInputBridgeView(16, 1090560, &.{});
+    const wrong_block = testSemanticInputBridgeView(16, 1385472, &.{});
     defer deinitTestSemanticInputBridgeView(wrong_block);
     try std.testing.expect(semanticInputBridgeEncodePlanForTest(wrong_block, &ops) == null);
 
@@ -6669,7 +6735,7 @@ test "semantic input bridge policies reserve width scratch" {
     try std.testing.expect(semanticScratchRequirementForCommand(program_mod.CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeDirectSerialCandidate(), &ops, command) == null);
 
     const direct_width = semanticScratchRequirementForCommand(program_mod.CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeDirectWidthCandidate(), &ops, command) orelse return error.TestExpectedEqual;
-    try std.testing.expectEqual(@as(usize, 1090560), direct_width.scratchBytes());
+    try std.testing.expectEqual(@as(usize, 1385472), direct_width.scratchBytes());
     try std.testing.expectEqual(@as(usize, 9216), direct_width.down_partial_bytes);
     try std.testing.expectEqual(@as(usize, 9216), direct_width.runtimeScratchBytes());
 }
@@ -10580,6 +10646,7 @@ const CompiledProgram = struct {
             .output_rms_eps = output_rn.eps,
             .output_scale_src_offset = output_rp.src_offset,
             .output_dst_offset = output_out.dst_offset,
+            .input_scratch_offset = 0,
             .product_scratch_offset = 0,
             .output_scratch_offset = 0,
             .partial_dst_offset = 0,
@@ -10627,31 +10694,59 @@ const CompiledProgram = struct {
             .output_rms_eps = output_rn.eps,
             .output_scale_src_offset = output_rp.src_offset,
             .output_dst_offset = output_out.dst_offset,
+            .input_scratch_offset = plan.scratch_layout.input_element_offset,
             .product_scratch_offset = plan.scratch_layout.product_element_offset,
             .output_scratch_offset = plan.scratch_layout.output_element_offset,
             .partial_dst_offset = partial_offset,
             .partial_cols = output_tiles,
         };
 
-        const product_buffers = [_]DeviceBuffer{
+        const stage_buffers = [_]DeviceBuffer{
             input_w.data,
             input_w.scales,
-            gate_w.data,
-            gate_w.scales,
-            up_w.data,
-            up_w.scales,
             view.device_bufs[input_q.input],
             view.device_bufs[plan.bridge.input_secondary_buf],
             view.device_bufs[input_rp.src],
             scratch_buffer,
         };
         exec.encodeKernel(
-            .qmatmul_semantic_ffn_input_bridge_product_f32,
-            &product_buffers,
+            .qmatmul_semantic_ffn_input_bridge_stage_input_f32,
+            &stage_buffers,
             params,
-            10,
+            6,
             .{ .gx = params.M },
             SEMANTIC_FFN_INPUT_BRIDGE_THREADS,
+        );
+
+        var pair_params = std.mem.zeroes(QMatmulPairFusedEwParams);
+        pair_params.M = plan.gate_params.M;
+        pair_params.N = plan.gate_params.N;
+        pair_params.K = plan.gate_params.K;
+        pair_params.left_block_size = plan.gate_params.block_size;
+        pair_params.right_block_size = plan.up_params.block_size;
+        pair_params.input_offset = plan.scratch_layout.input_element_offset;
+        pair_params.input_row_stride = plan.gate_params.K;
+        pair_params.dst_offset = plan.scratch_layout.product_element_offset;
+        pair_params.final_op = @intFromEnum(product.op);
+        pair_params.n_steps = 1;
+        pair_params.op[0] = @intFromEnum(first.op);
+        pair_params.is_swapped[0] = 0;
+
+        var pair_buffers: [6 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
+        pair_buffers[0] = gate_w.data;
+        pair_buffers[1] = gate_w.scales;
+        pair_buffers[2] = up_w.data;
+        pair_buffers[3] = up_w.scales;
+        pair_buffers[4] = scratch_buffer;
+        pair_buffers[5] = scratch_buffer;
+        for (pair_buffers[6..]) |*buf| buf.* = scratch_buffer;
+        exec.encodeKernel(
+            .qmatmul_pair_fused_elementwise_f32,
+            &pair_buffers,
+            pair_params,
+            14,
+            matmulGrid(pair_params.M, pair_params.N),
+            MATMUL_THREADS,
         );
 
         const partial_buffers = [_]DeviceBuffer{

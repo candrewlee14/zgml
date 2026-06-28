@@ -430,8 +430,8 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   const expectedRuntime = label.includes("bun") ? "bun" : "node";
   const expectedBmmMinMultiplyAdds = 512;
   const expectedElementwiseMinLength = 512;
-  const expectedActivationMinLength = expectedRuntime === "bun" ? 65536 : 512;
-  const expectedDisabledActivations = expectedRuntime === "node" ? "relu" : "";
+  const expectedActivationMinLength = expectedRuntime === "bun" ? 1024 : 512;
+  const expectedDisabledActivations = "relu";
   const expectedDisabledUnaryOps = "";
   const expectedDisabledUnaryOpsSignature = "";
   if (

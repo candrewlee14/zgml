@@ -85,9 +85,9 @@
     "./bun": {
       "types": "./dist/public_api.d.cts",
       "bun": "./dist/bun_native.cjs",
-      "require": "./dist/bun.cjs",
-      "import": "./dist/bun.cjs",
-      "default": "./dist/bun.cjs"
+      "require": "./dist/bun_native.cjs",
+      "import": "./dist/bun_native.cjs",
+      "default": "./dist/bun_native.cjs"
     },
     "./checkpoint": {
       "types": "./dist/checkpoint.d.cts",

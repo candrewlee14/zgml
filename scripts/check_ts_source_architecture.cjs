@@ -443,6 +443,12 @@ function checkPackageExports(errors) {
   if (!packageMetadataMatches(packageJson, expectedMetadata)) {
     errors.push("package.json metadata must match scripts/apply_package_metadata_policy.cjs --check");
   }
+  const bunExport = packageJson.exports?.["./bun"] ?? {};
+  for (const condition of ["bun", "require", "import", "default"]) {
+    if (bunExport[condition] !== "./dist/bun_native.cjs") {
+      errors.push(`package.json ./bun ${condition} export must resolve to ./dist/bun_native.cjs so public Bun imports are native-backed and fail closed`);
+    }
+  }
   if (packageJson.scripts?.["bench:status"] !== "node scripts/bench_status.cjs") {
     errors.push("package.json bench:status must stay the source-checkout benchmark evidence reader");
   }
@@ -940,9 +946,8 @@ function checkPackageExports(errors) {
     "nativeEagerRoutingUnaryOpEnabled",
     "bmmMinMultiplyAdds: 512",
     "elementwiseMinLength: 512",
-    "activationMinLength: 65536",
+    "activationMinLength: 1024",
     "disabledActivations: [\"relu\"]",
-    "disabledActivations: []",
     "disabledUnaryOps: []",
   ]) {
     if (!nativeEagerRoutingPolicySource.includes(required)) {
@@ -16549,6 +16554,8 @@ function checkDistSmokeIsTsOwned(errors) {
     "package must not ship hand-written JS under TS product source",
     "const expectedExports = expectedMetadata.exports;",
     "package.json metadata must match scripts/apply_package_metadata_policy.cjs --check",
+    "const bunExport = packageJson.exports?.[\"./bun\"] ?? {};",
+    "package.json ./bun ${condition} export must resolve to ./dist/bun_native.cjs so public Bun imports are native-backed and fail closed",
     "package export ${subpath} must be owned by scripts/package_metadata_policy.cjs",
     "for (const [subpath, exportSpec] of Object.entries(packageJson.exports ?? {}))",
     "package subpaths follow the TS-owned tsdown artifact convention",

@@ -77,6 +77,12 @@ if (
 if (!packageMetadataMatches(packageJson, expectedMetadata)) {
   errors.push("package.json metadata must match scripts/apply_package_metadata_policy.cjs --check; public npm subpaths are derived from src/ts package metadata policy");
 }
+const bunExport = packageJson.exports?.["./bun"] ?? {};
+for (const condition of ["bun", "require", "import", "default"]) {
+  if (bunExport[condition] !== "./dist/bun_native.cjs") {
+    errors.push(`package.json ./bun ${condition} export must resolve to ./dist/bun_native.cjs so public Bun imports are native-backed and fail closed`);
+  }
+}
 const expectedRootExport = expectedMetadata.exports["."];
 const rootExport = packageJson.exports?.["."];
 if (!rootExport || rootExport.types !== expectedRootExport.types || rootExport.require !== expectedRootExport.require || rootExport.default !== expectedRootExport.default) {

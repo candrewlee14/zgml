@@ -6449,11 +6449,13 @@ artifacts such as `dist/adapters/node_ffi_runtime.cjs`; it no longer falls back
 through `js/generated/**`, and the obsolete `js/node.cjs` compatibility shim has
 been removed.
 The Bun package export
-now uses the Bun condition to resolve to TS-built
+now resolves all public runtime conditions to the TS-built
 `dist/bun_native.cjs`, which loads the concrete
 `src/ts/adapters/bun_ffi_runtime.ts` FFI adapter behind the same TS native API
-contract while Node can still load native-free `dist/bun.cjs` for package-spine
-smokes. `src/ts/adapters/native.ts` owns native-library extension/path/load-info
+contract. The native-free `dist/bun.cjs` artifact can still be loaded directly
+by internal/package-spine checks that want Bun adapter evidence without FFI, but
+the public `zgml/bun` subpath no longer silently falls back to that frontend-only
+artifact under non-Bun conditions. `src/ts/adapters/native.ts` owns native-library extension/path/load-info
 policy and missing-library diagnostics; `src/ts/adapters/bun_host_runtime.ts`
 owns the Bun host shell that supplies import-meta/path/existence hooks.
 `src/ts/runtime/native_status.ts` owns shared native status error formatting/check
@@ -6633,9 +6635,12 @@ assembly now lives in typed `src/ts/adapters/frontend_namespace_surface.ts`
 instead of being hand-copied by Node and Bun concrete runtimes; its remaining
 cleanup is replacing the temporary unchecked CommonJS body with typed TS
 modules. `zgml/bun` now
-resolves to the TS-built Bun native bridge under Bun; that bridge loads
+resolves to the TS-built Bun native bridge for Bun, require, import, and default
+package conditions; that bridge loads
 `src/ts/adapters/bun_ffi_runtime.ts`, checks it against the same contract, and
-re-exports the native surface with identity parity.
+re-exports the native surface with identity parity. Non-Bun consumers therefore
+fail closed on the native bridge instead of receiving a native-free frontend
+surface by accident.
 `examples/types/package-spine-smoke.ts` now imports the dist-backed
 `zgml/frontend`, friendly subpath, adapter evidence, and wildcard package
 declarations directly instead of reaching into `../../js/generated/**`, so
@@ -7141,14 +7146,14 @@ Migration slices:
    TS-authored `npm run smoke:dist` verify those artifacts. `zgml/frontend`, `zgml/node`
    runtime, top-level friendly TS subpaths, adapter evidence, and deep wildcard
    package subpaths now use those dist artifacts. The package root also resolves
-   directly to the TS-built Node bridge at `dist/node.cjs`, and Bun resolves
-   `zgml/bun` to `dist/bun_native.cjs` under the Bun condition. Root,
+   directly to the TS-built Node bridge at `dist/node.cjs`, and `zgml/bun`
+   resolves to `dist/bun_native.cjs` for all public runtime conditions. Root,
    `zgml/node`, and `zgml/bun` type metadata point directly at the TS-owned
    `dist/public_api.d.cts` artifact instead of relying on root declaration
    fallback. The native-free Bun root wrapper is generated from the same
-   package-spine generator as the Node and Bun-native wrappers, so `zgml/bun`
-   has no hand-maintained root export list in either its default frontend path
-   or its Bun-condition native path. The Zig substrate manifest has matching
+   package-spine generator as the Node and Bun-native wrappers, but it is now a
+   direct artifact for adapter evidence rather than the default public
+   `zgml/bun` runtime path. The Zig substrate manifest has matching
    named commands: `npm run generate:native-substrate-manifest` and
    `npm run check:native-substrate-manifest` regenerate or verify
    `src/native_substrate_manifest.zig` from `src/ts/frontend_manifest.ts`, and

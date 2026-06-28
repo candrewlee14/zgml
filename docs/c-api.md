@@ -814,7 +814,8 @@ next ABI milestone is broadening that selector into a general LLaMA-family ABI.
 The JS wrappers hide raw FFI details. The concrete Bun FFI adapter now lives in
 `src/ts/adapters/bun_ffi_runtime.ts`, selected through the TS-owned
 `src/ts/adapters/bun_concrete_runtime.ts` loader policy; the package `zgml/bun` subpath resolves through the TS-built
-`dist/bun_native.cjs` bridge under Bun, with a smoke program in
+`dist/bun_native.cjs` bridge for Bun, require, import, and default runtime
+conditions, with a smoke program in
 `examples/bun_ffi/smoke.ts`:
 
 ```sh
@@ -894,8 +895,10 @@ the Bun `NativeBuffer` public surface, keeping buffer methods out of the
 	of the concrete FFI wrapper and out of host-specific duplicate copies.
 	`src/ts/adapters/bun_model_source_ops.ts` owns Bun model path,
 safetensors load/probe, and supported-checkpoint catalog ABI policy.
-Node can still load native-free
-`dist/bun.cjs` for package-spine checks. The
+Internal package-spine checks can still load native-free `dist/bun.cjs`
+directly when they need Bun adapter evidence without FFI, but the public
+`zgml/bun` subpath fails closed through the native bridge instead of falling
+back to that frontend-only artifact. The
 wrapper uses `koffi` to call the same opaque C handles and currently proves tiny
 linear, fixed tiny LLaMA, fixed SmolLM-135M, and optional compatible-checkpoint
 LLaMA model/program/session lifecycles:

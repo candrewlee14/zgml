@@ -519,9 +519,9 @@ function expectedPackageExports() {
     "./bun": {
       types: packageRootTypes,
       bun: "./dist/bun_native.cjs",
-      require: "./dist/bun.cjs",
-      import: "./dist/bun.cjs",
-      default: "./dist/bun.cjs",
+      require: "./dist/bun_native.cjs",
+      import: "./dist/bun_native.cjs",
+      default: "./dist/bun_native.cjs",
     },
     "./frontend": concreteDistExport("index"),
     "./browser": concreteDistExport("browser"),
