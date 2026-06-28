@@ -87,6 +87,7 @@ export type TensorHostSurfaceOptions<TTensor extends TensorHostValueTarget, TNat
   readonly nativeBufferFromFloat32: (data: Float32Array) => TNativeBuffer;
   readonly nativeFullF32?: (output: Float32Array, value: number) => void;
   readonly nativeArangeF32?: (output: Float32Array, start: number, step: number) => void;
+  readonly nativePermuteF32?: Parameters<typeof createTensorViewHelpers>[0]["nativePermuteInto"];
   readonly createTensorFactoryHelpers: typeof createTensorFactoryHelpers;
   readonly createTensorViewHelpers: typeof createTensorViewHelpers;
   readonly createTensorViewSurfaceHelpers: typeof createTensorViewSurfaceHelpers;
@@ -127,6 +128,7 @@ export function createTensorHostSurface<TTensor extends TensorHostValueTarget, T
     Tensor: options.Tensor,
     addTensorGrad: options.addTensorGrad,
     isGradEnabled: options.isGradEnabled,
+    nativePermuteInto: options.nativePermuteF32,
   });
   const tensorViewSurfaceHelpers = options.createTensorViewSurfaceHelpers({ tensorViewHelpers });
   const tensorPlacementHelpers = options.createTensorPlacementHelpers({

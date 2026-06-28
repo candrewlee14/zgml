@@ -68,6 +68,15 @@ type NativeEagerSoftmaxInto = (
   input: unknown,
   options: Readonly<{ dim: number; logSoftmax?: boolean }>,
 ) => Float32Array;
+type NativeEagerPermuteInto = (
+  output: Float32Array,
+  input: unknown,
+  options: Readonly<{
+    outputShape: Uint32Array;
+    inputStrides: Uint32Array;
+    axes: Uint32Array;
+  }>,
+) => Float32Array;
 
 export type AdapterTensorRuntimeSurfaceOptions<
   TTensor extends AdapterTensorInstance = AdapterTensorInstance,
@@ -111,6 +120,7 @@ export type AdapterTensorRuntimeSurfaceOptions<
   nativeEagerReduceMinLength?: number;
   nativeEagerDotInto?: NativeEagerDotInto;
   nativeEagerSoftmaxInto?: NativeEagerSoftmaxInto;
+  nativeEagerPermuteInto?: NativeEagerPermuteInto;
   nativeFullF32?: (output: Float32Array, value: number) => void;
   nativeArangeF32?: (output: Float32Array, start: number, step: number) => void;
   meanSquaredError: (tensor: TTensor, target: unknown) => TTensor;
@@ -201,6 +211,7 @@ export function createAdapterTensorRuntimeSurface<
     nativeBufferFromFloat32: options.nativeBufferFromFloat32,
     nativeFullF32: options.nativeFullF32,
     nativeArangeF32: options.nativeArangeF32,
+    nativePermuteF32: options.nativeEagerPermuteInto,
     createTensorFactoryHelpers: options.sharedFrontend.createTensorFactoryHelpers,
     createTensorViewHelpers: options.sharedFrontend.createTensorViewHelpers,
     createTensorViewSurfaceHelpers: options.sharedFrontend.createTensorViewSurfaceHelpers,

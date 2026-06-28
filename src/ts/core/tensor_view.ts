@@ -34,11 +34,21 @@ type BivariantCallback<Args extends readonly unknown[], Return> = {
   bivarianceHack(...args: Args): Return;
 }["bivarianceHack"];
 type AddTensorGradCallback = BivariantCallback<[tensor: TensorViewTensor, grad: Float32Array], void>;
+type NativePermuteInto = (
+  output: Float32Array,
+  input: unknown,
+  options: Readonly<{
+    outputShape: Uint32Array;
+    inputStrides: Uint32Array;
+    axes: Uint32Array;
+  }>,
+) => Float32Array;
 
 export type TensorViewHelpersOptions = Readonly<{
   Tensor: TensorConstructor;
   addTensorGrad: AddTensorGradCallback;
   isGradEnabled?: () => boolean;
+  nativePermuteInto?: NativePermuteInto;
 }>;
 
 export type TensorViewSurfaceHelpersOptions = Readonly<{
@@ -51,10 +61,48 @@ export function createTensorViewHelpers(options: TensorViewHelpersOptions) {
   const gradModeEnabled = typeof options.isGradEnabled === "function"
     ? options.isGradEnabled
     : isGradEnabled;
+  const nativePermuteInto = typeof options.nativePermuteInto === "function" ? options.nativePermuteInto : null;
   if (typeof TensorClass !== "function" || typeof addTensorGrad !== "function") {
     throw new Error("tensor view helpers require Tensor and addTensorGrad");
   }
   const TensorCtor = TensorClass as TensorConstructor;
+
+  function u32Array(values: readonly number[], label: string) {
+    const out = new Uint32Array(values.length);
+    for (let i = 0; i < values.length; i += 1) {
+      const value = values[i];
+      if (!Number.isSafeInteger(value) || value < 0 || value > 0xffffffff) {
+        throw new Error(`${label} entry ${i} must be a uint32, got ${value}`);
+      }
+      out[i] = value;
+    }
+    return out;
+  }
+
+  function nativePermuteData(
+    output: Float32Array,
+    tensor: TensorViewTensor,
+    outputShape: readonly number[],
+    inputStrides: readonly number[],
+    axes: readonly number[],
+  ) {
+    if (nativePermuteInto === null) return false;
+    if (
+      outputShape.length !== 2 ||
+      inputStrides.length !== 2 ||
+      axes.length !== 2 ||
+      axes[0] !== 1 ||
+      axes[1] !== 0 ||
+      inputStrides[1] !== 1 ||
+      inputStrides[0] !== outputShape[0]
+    ) return false;
+    nativePermuteInto(output, tensor, {
+      outputShape: u32Array(outputShape, "native permute outputShape"),
+      inputStrides: u32Array(inputStrides, "native permute inputStrides"),
+      axes: u32Array(axes, "native permute axes"),
+    });
+    return true;
+  }
 
   function normalizeAxisIndex(index: number, dim: number, label: string) {
     if (!Number.isSafeInteger(index)) throw new Error(`${label} index must be a safe integer, got ${index}`);
@@ -277,24 +325,28 @@ export function createTensorViewHelpers(options: TensorViewHelpersOptions) {
     const inStrides = rowMajorStrides(tensor.shape);
     const outStrides = rowMajorStrides(outShape);
     const outData = new Float32Array(tensor.length);
-    const outToIn = new Uint32Array(tensor.length);
-    for (let flat = 0; flat < outData.length; flat += 1) {
-      let inIndex = 0;
-      for (let dim = 0; dim < rank; dim += 1) {
-        const coord = Math.floor(flat / outStrides[dim]) % outShape[dim];
-        const inputDim = dim === axis0 ? axis1 : dim === axis1 ? axis0 : dim;
-        inIndex += coord * inStrides[inputDim];
+    const needsGrad = gradModeEnabled() && tensor.requiresGrad;
+    const outToIn = needsGrad ? new Uint32Array(tensor.length) : null;
+    const axes = Array.from({ length: rank }, (_value, dim) => dim === axis0 ? axis1 : dim === axis1 ? axis0 : dim);
+    const wroteNative = nativePermuteData(outData, tensor, outShape, inStrides, axes);
+    if (!wroteNative || outToIn !== null) {
+      for (let flat = 0; flat < outData.length; flat += 1) {
+        let inIndex = 0;
+        for (let dim = 0; dim < rank; dim += 1) {
+          const coord = Math.floor(flat / outStrides[dim]) % outShape[dim];
+          inIndex += coord * inStrides[axes[dim]];
+        }
+        if (outToIn !== null) outToIn[flat] = inIndex;
+        if (!wroteNative) outData[flat] = tensor.data[inIndex];
       }
-      outToIn[flat] = inIndex;
-      outData[flat] = tensor.data[inIndex];
     }
 
     const out = new TensorCtor(outData, outShape, {
-      requiresGrad: gradModeEnabled() && tensor.requiresGrad,
-      prev: gradModeEnabled() && tensor.requiresGrad ? [tensor] : [],
+      requiresGrad: needsGrad,
+      prev: needsGrad ? [tensor] : [],
     });
     out._backward = (grad: Float32Array | null) => {
-      if (!grad) return;
+      if (!grad || outToIn === null) return;
       const inGrad = new Float32Array(tensor.length);
       for (let i = 0; i < grad.length; i += 1) inGrad[outToIn[i]] += grad[i];
       addTensorGrad(tensor, inGrad);
@@ -318,24 +370,28 @@ export function createTensorViewHelpers(options: TensorViewHelpersOptions) {
     const inStrides = rowMajorStrides(tensor.shape);
     const outStrides = rowMajorStrides(outShape);
     const outData = new Float32Array(tensor.length);
-    const outToIn = new Uint32Array(tensor.length);
+    const needsGrad = gradModeEnabled() && tensor.requiresGrad;
+    const outToIn = needsGrad ? new Uint32Array(tensor.length) : null;
+    const wroteNative = nativePermuteData(outData, tensor, outShape, inStrides, axes);
 
-    for (let flat = 0; flat < outData.length; flat += 1) {
-      let inIndex = 0;
-      for (let dim = 0; dim < rank; dim += 1) {
-        const coord = Math.floor(flat / outStrides[dim]) % outShape[dim];
-        inIndex += coord * inStrides[axes[dim]];
+    if (!wroteNative || outToIn !== null) {
+      for (let flat = 0; flat < outData.length; flat += 1) {
+        let inIndex = 0;
+        for (let dim = 0; dim < rank; dim += 1) {
+          const coord = Math.floor(flat / outStrides[dim]) % outShape[dim];
+          inIndex += coord * inStrides[axes[dim]];
+        }
+        if (outToIn !== null) outToIn[flat] = inIndex;
+        if (!wroteNative) outData[flat] = tensor.data[inIndex];
       }
-      outToIn[flat] = inIndex;
-      outData[flat] = tensor.data[inIndex];
     }
 
     const out = new TensorCtor(outData, outShape, {
-      requiresGrad: gradModeEnabled() && tensor.requiresGrad,
-      prev: gradModeEnabled() && tensor.requiresGrad ? [tensor] : [],
+      requiresGrad: needsGrad,
+      prev: needsGrad ? [tensor] : [],
     });
     out._backward = (grad: Float32Array | null) => {
-      if (!grad) return;
+      if (!grad || outToIn === null) return;
       const inGrad = new Float32Array(tensor.length);
       for (let i = 0; i < grad.length; i += 1) inGrad[outToIn[i]] += grad[i];
       addTensorGrad(tensor, inGrad);

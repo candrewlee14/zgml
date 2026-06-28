@@ -100,6 +100,7 @@ export function createNodeSymbolGroups(symbols: NodeNativeSymbols) {
       eagerDotF32: symbols.eagerDotF32,
       eagerFullF32: symbols.eagerFullF32,
       eagerArangeF32: symbols.eagerArangeF32,
+      eagerPermuteF32: symbols.eagerPermuteF32,
       eagerConv2dF32: symbols.eagerConv2dF32,
       eagerPool2dF32: symbols.eagerPool2dF32,
       eagerSoftmaxF32: symbols.eagerSoftmaxF32,

@@ -146,6 +146,16 @@ type NativeEagerDotCall = (args: {
   expectedOutput: number;
 }) => number;
 
+type NativeEagerPermuteCall = (args: {
+  inputData: Float32Array;
+  output: Float32Array;
+  expectedOutput: number;
+  outputShape: Uint32Array;
+  inputStrides: Uint32Array;
+  axes: Uint32Array;
+  rank: number;
+}) => number;
+
 type NativeEagerConv2dCall = (args: {
   inputData: Float32Array;
   weightData: Float32Array;
@@ -209,6 +219,7 @@ type NativeEagerSurfaceOptions = {
   cumsumF32?: NativeEagerCumsumCall;
   momentF32?: NativeEagerMomentCall;
   dotF32?: NativeEagerDotCall;
+  permuteF32?: NativeEagerPermuteCall;
   conv2dF32?: NativeEagerConv2dCall;
   pool2dF32?: NativeEagerPool2dCall;
   matmulF32?: NativeEagerMatmulCall;
@@ -859,6 +870,50 @@ function nativeEagerDotInputs(
   };
 }
 
+function nativeEagerPermuteInputs(
+  output: Float32Array,
+  input: unknown,
+  callOptions: Record<string, unknown>,
+  f32: NativeEagerTensorFactory,
+) {
+  const label = "nativeEager.permuteInto";
+  if (!(output instanceof Float32Array)) {
+    throw new Error(`${label} output must be a Float32Array`);
+  }
+  const inputData = nativeEagerTensorData(input, `${label} input`, f32);
+  if (inputData.length === 0) {
+    throw new Error(`${label} input must be non-empty`);
+  }
+  const outputShape = callOptions.outputShape ?? callOptions.output_shape;
+  const inputStrides = callOptions.inputStrides ?? callOptions.input_strides;
+  const axes = callOptions.axes;
+  if (!(outputShape instanceof Uint32Array) || !(inputStrides instanceof Uint32Array) || !(axes instanceof Uint32Array)) {
+    throw new Error(`${label} requires Uint32Array outputShape, inputStrides, and axes`);
+  }
+  const rank = outputShape.length;
+  if (rank === 0 || inputStrides.length !== rank || axes.length !== rank) {
+    throw new Error(`${label} outputShape, inputStrides, and axes must have the same non-empty rank`);
+  }
+  let expectedOutput = 1;
+  for (let i = 0; i < outputShape.length; i += 1) {
+    const dim = outputShape[i];
+    if (!Number.isSafeInteger(dim) || dim <= 0) throw new Error(`${label} outputShape entries must be positive uint32 values`);
+    expectedOutput *= dim;
+  }
+  if (output.length < expectedOutput) {
+    throw new Error(`${label} output length ${output.length} is smaller than ${expectedOutput}`);
+  }
+  return {
+    inputData,
+    output,
+    expectedOutput,
+    outputShape,
+    inputStrides,
+    axes,
+    rank,
+  };
+}
+
 function nativeEagerConv2dInputs(
   output: Float32Array,
   input: unknown,
@@ -1240,6 +1295,17 @@ export function createAdapterNativeEagerSurface(options: NativeEagerSurfaceOptio
     },
     dot_into(output: Float32Array, lhs: unknown, rhs: unknown) {
       return this.dotInto(output, lhs, rhs);
+    },
+    permuteInto(output: Float32Array, input: unknown, callOptions: Record<string, unknown> = {}) {
+      if (typeof options.permuteF32 !== "function") {
+        throw new Error("nativeEager.permuteInto is unavailable in this runtime");
+      }
+      const args = nativeEagerPermuteInputs(output, input, callOptions, options.f32);
+      options.check(options.permuteF32(args));
+      return output;
+    },
+    permute_into(output: Float32Array, input: unknown, callOptions?: Record<string, unknown>) {
+      return this.permuteInto(output, input, callOptions);
     },
     conv2dInto(output: Float32Array, input: unknown, weights: unknown, callOptions: Record<string, unknown> = {}) {
       if (typeof options.conv2dF32 !== "function") {

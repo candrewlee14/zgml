@@ -371,6 +371,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   if (typeof nativeEager.dotInto !== "function") {
     throw new Error(`${label} expected nativeEager.dotInto`);
   }
+  if (typeof nativeEager.permuteInto !== "function") {
+    throw new Error(`${label} expected nativeEager.permuteInto`);
+  }
   if (typeof nativeEager.bmmInto !== "function") {
     throw new Error(`${label} expected nativeEager.bmmInto`);
   }
@@ -409,6 +412,9 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   }
   if (typeof nativeEagerAlias.dot_into !== "function") {
     throw new Error(`${label} expected native_eager.dot_into alias`);
+  }
+  if (typeof nativeEagerAlias.permute_into !== "function") {
+    throw new Error(`${label} expected native_eager.permute_into alias`);
   }
   if (typeof nativeEagerAlias.conv2d_into !== "function") {
     throw new Error(`${label} expected native_eager.conv2d_into alias`);
@@ -560,6 +566,27 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
     throw new Error(`${label} expected native_eager.dot_into to reuse caller output`);
   }
   expectClose(dotAliasOutput, [33.5], `${label} native_eager.dot_into output`);
+  const permuteInput = adapter.tensor([1, 2, 3, 4, 5, 6], [2, 3]);
+  const permuteOutput = new Float32Array(6);
+  const permuteResult = nativeEager.permuteInto(permuteOutput, permuteInput, {
+    outputShape: new Uint32Array([3, 2]),
+    inputStrides: new Uint32Array([3, 1]),
+    axes: new Uint32Array([1, 0]),
+  });
+  if (permuteResult !== permuteOutput) {
+    throw new Error(`${label} expected nativeEager.permuteInto to reuse caller output`);
+  }
+  expectClose(permuteOutput, [1, 4, 2, 5, 3, 6], `${label} nativeEager.permuteInto output`);
+  const permuteAliasOutput = new Float32Array(6);
+  const permuteAliasResult = nativeEagerAlias.permute_into(permuteAliasOutput, permuteInput, {
+    output_shape: new Uint32Array([3, 2]),
+    input_strides: new Uint32Array([3, 1]),
+    axes: new Uint32Array([1, 0]),
+  });
+  if (permuteAliasResult !== permuteAliasOutput) {
+    throw new Error(`${label} expected native_eager.permute_into to reuse caller output`);
+  }
+  expectClose(permuteAliasOutput, Array.from(permuteOutput), `${label} native_eager.permute_into output`);
   const bmmLhs = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2]);
   const bmmRhs = adapter.tensor([1, 0, 0, 1, 2, 0, 0, 2], [2, 2, 2]);
   const bmmOutput = new Float32Array(8);
@@ -622,6 +649,10 @@ function expectNativeEagerLinearEvidence(adapter: Record<string, any>, label: st
   expectClose(tensorRowBroadcast.data, tensorElementwiseInputData.map((value, index) => value + tensorRowBiasData[index % 256]), `${label} noGrad Tensor row-broadcast native eager output`);
   const tensorLhsRowBroadcast = adapter.noGrad(() => tensorRowBias.sub(tensorRowInput));
   expectClose(tensorLhsRowBroadcast.data, tensorElementwiseInputData.map((value, index) => tensorRowBiasData[index % 256] - value), `${label} noGrad Tensor lhs row-broadcast native eager output`);
+  const tensorTransposeInput = adapter.tensor([1, 2, 3, 4, 5, 6], [2, 3]);
+  expectClose(adapter.noGrad(() => tensorTransposeInput.transpose(0, 1)).data, [1, 4, 2, 5, 3, 6], `${label} noGrad Tensor transpose native eager output`);
+  const tensorPermuteInput = adapter.tensor([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2]);
+  expectClose(adapter.noGrad(() => tensorPermuteInput.permute([1, 2, 0])).data, [1, 5, 2, 6, 3, 7, 4, 8], `${label} noGrad Tensor permute output`);
   const tensorDot = adapter.noGrad(() => tensorElementwiseInput.dot(tensorElementwiseBias));
   const tensorDotExpected = tensorElementwiseInputData.reduce((acc, value, index) => acc + value * tensorElementwiseBiasData[index], 0);
   expectClose(tensorDot.data, [tensorDotExpected], `${label} noGrad Tensor dot native eager output`);

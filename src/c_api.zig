@@ -2036,6 +2036,87 @@ export fn zgml_eager_arange_f32(
     return status(.ok);
 }
 
+export fn zgml_eager_permute_f32(
+    input_ptr: ?[*]const f32,
+    input_len: usize,
+    output_ptr: ?[*]f32,
+    output_len: usize,
+    output_shape_ptr: ?[*]const u32,
+    input_strides_ptr: ?[*]const u32,
+    axes_ptr: ?[*]const u32,
+    rank: usize,
+) c_int {
+    const max_rank = 16;
+    if (input_ptr == null or
+        output_ptr == null or
+        output_shape_ptr == null or
+        input_strides_ptr == null or
+        axes_ptr == null or
+        input_len == 0 or
+        output_len == 0 or
+        rank == 0 or
+        rank > max_rank) return status(.invalid_argument);
+
+    const output_shape = output_shape_ptr.?[0..rank];
+    const input_strides = input_strides_ptr.?[0..rank];
+    const axes = axes_ptr.?[0..rank];
+
+    var out_strides: [max_rank]usize = undefined;
+    var expected_output: usize = 1;
+    for (output_shape) |dim| {
+        if (dim == 0) return status(.invalid_argument);
+        expected_output = std.math.mul(usize, expected_output, @as(usize, dim)) catch return status(.shape_mismatch);
+    }
+    if (expected_output != output_len) return status(.shape_mismatch);
+
+    var stride: usize = 1;
+    var reverse_index = rank;
+    while (reverse_index > 0) {
+        reverse_index -= 1;
+        out_strides[reverse_index] = stride;
+        stride = std.math.mul(usize, stride, @as(usize, output_shape[reverse_index])) catch return status(.shape_mismatch);
+    }
+
+    for (axes) |axis| {
+        if (axis >= rank) return status(.shape_mismatch);
+    }
+
+    const input = input_ptr.?[0..input_len];
+    const output = output_ptr.?[0..output_len];
+    if (rank == 2 and
+        axes[0] == 1 and
+        axes[1] == 0 and
+        input_strides[1] == 1 and
+        input_strides[0] == output_shape[0])
+    {
+        const cols = @as(usize, output_shape[0]);
+        const rows = @as(usize, output_shape[1]);
+        if (rows == 0 or cols == 0 or rows * cols != input_len or output_len != input_len) return status(.shape_mismatch);
+        for (0..cols) |col| {
+            const output_row_base = col * rows;
+            for (0..rows) |row| {
+                output[output_row_base + row] = input[row * cols + col];
+            }
+        }
+        return status(.ok);
+    }
+
+    for (0..output_len) |flat| {
+        var input_index: usize = 0;
+        for (0..rank) |dim| {
+            const coord = flat / out_strides[dim] % @as(usize, output_shape[dim]);
+            input_index = std.math.add(
+                usize,
+                input_index,
+                std.math.mul(usize, coord, @as(usize, input_strides[axes[dim]])) catch return status(.shape_mismatch),
+            ) catch return status(.shape_mismatch);
+        }
+        if (input_index >= input_len) return status(.shape_mismatch);
+        output[flat] = input[input_index];
+    }
+    return status(.ok);
+}
+
 fn eagerLinearF32(
     input_ptr: ?[*]const f32,
     input_len: usize,
@@ -13629,6 +13710,52 @@ test "C ABI native eager tensor factories fill caller output" {
         range_output.len,
         0,
         0,
+    ));
+}
+
+test "C ABI native eager permute writes caller output" {
+    const input = [_]f32{
+        1, 2, 3,
+        4, 5, 6,
+    };
+    var output = [_]f32{0} ** 6;
+    const output_shape = [_]u32{ 3, 2 };
+    const input_strides = [_]u32{ 3, 1 };
+    const axes = [_]u32{ 1, 0 };
+
+    try std.testing.expectEqual(status(.ok), zgml_eager_permute_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        output_shape[0..].ptr,
+        input_strides[0..].ptr,
+        axes[0..].ptr,
+        2,
+    ));
+    try std.testing.expectEqualSlices(f32, &.{ 1, 4, 2, 5, 3, 6 }, &output);
+
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_permute_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len - 1,
+        output_shape[0..].ptr,
+        input_strides[0..].ptr,
+        axes[0..].ptr,
+        2,
+    ));
+
+    const bad_axes = [_]u32{ 0, 2 };
+    try std.testing.expectEqual(status(.shape_mismatch), zgml_eager_permute_f32(
+        input[0..].ptr,
+        input.len,
+        output[0..].ptr,
+        output.len,
+        output_shape[0..].ptr,
+        input_strides[0..].ptr,
+        bad_axes[0..].ptr,
+        2,
     ));
 }
 
