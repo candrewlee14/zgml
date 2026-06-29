@@ -1,8 +1,7 @@
-//! Shared utilities for inference plans (GPT and LLaMA).
+//! Shared utilities for inference plans.
 //!
 //! Contains workspace optimisation (liveness analysis + buffer reuse) and
-//! quantized-matmul dispatch helpers used by both `InferencePlan` and
-//! `LlamaInferencePlan`.
+//! quantized-matmul dispatch helpers used by `LlamaInferencePlan`.
 
 const std = @import("std");
 
@@ -31,7 +30,7 @@ pub fn optimizeWorkspace(comptime T: type, graph: *ComputeGraph(T), alloc: std.m
     for (0..nodes.len) |i| last_use[i] = @intCast(i);
 
     for (nodes, 0..) |node, step| {
-        inline for (.{ node.src0, node.src1 }) |maybe_src| {
+        inline for (.{ node.src0, node.src1, node.src2, node.src3 }) |maybe_src| {
             if (maybe_src) |s| {
                 if (ptr_to_idx.get(s)) |idx| {
                     last_use[idx] = @max(last_use[idx], @as(u32, @intCast(step)));
@@ -119,19 +118,14 @@ pub fn optimizeWorkspace(comptime T: type, graph: *ComputeGraph(T), alloc: std.m
     out_bufs.* = bufs;
 }
 
-/// Check if a matmul node has a non-transposed parameter (weight) source.
+/// Check if a matmul node has a non-transposed right-hand parameter weight.
 /// Transposed weight matmuls are excluded because the quantized kernel
 /// assumes [K, N] row-major layout which doesn't match a transposed
 /// column-major tensor.
 pub fn isWeightMatmul(comptime T: type, node: *Tensor(T)) bool {
     const flags = node.matmul_flags;
-    if (node.src0) |s| {
-        if (s.isParam() and !flags.trans0) return true;
-    }
-    if (node.src1) |s| {
-        if (s.isParam() and !flags.trans1) return true;
-    }
-    return false;
+    const rhs = node.src1 orelse return false;
+    return rhs.isParam() and !flags.trans1;
 }
 
 /// Dispatch a quantized matmul for a node whose weight has been quantized.

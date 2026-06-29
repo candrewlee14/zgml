@@ -24,8 +24,6 @@ const tac = testing.allocator;
 const Tensor = @import("../tensor.zig").Tensor;
 const ComputeGraph = @import("../graph.zig").ComputeGraph;
 const Alloc = std.mem.Allocator;
-const shaped_mod = @import("../shaped.zig");
-const Shaped = shaped_mod.Shaped;
 
 const LlamaBlock = @import("llama_transformer.zig").LlamaBlock;
 const LlamaBlockConfig = @import("llama_transformer.zig").LlamaBlockConfig;
@@ -56,9 +54,6 @@ pub fn LLaMA(comptime T: type, comptime config: LlamaConfig) type {
     };
     const Block = LlamaBlock(T, block_cfg);
     const d_model = config.d_model;
-    const EmbedShape = Shaped(T, .{ d_model, config.vocab_size });
-    const NormShape = Shaped(T, .{d_model});
-    const OutProjShape = Shaped(T, .{ config.vocab_size, d_model });
 
     const params_per_block = Block.n_block_params;
     const out_proj_params: usize = if (config.tied_lm_head) 0 else 1;
@@ -72,37 +67,38 @@ pub fn LLaMA(comptime T: type, comptime config: LlamaConfig) type {
         /// that pin down RoPE leaves, KV-cache writes, and attention nodes.
         pub const CachedForwardTrace = struct {
             logits: *Tensor(T),
+            rope: *Tensor(T),
             layers: [config.n_layers]Block.CachedLayerTrace,
         };
 
-        token_embed: EmbedShape,
+        token_embed: *Tensor(T),
         blocks: [config.n_layers]Block,
-        rms_norm_f: NormShape,
-        out_proj: if (!config.tied_lm_head) OutProjShape else void,
+        rms_norm_f: *Tensor(T),
+        out_proj: if (!config.tied_lm_head) *Tensor(T) else void,
 
         pub fn init(alloc: Alloc) !Self {
             var self: Self = undefined;
 
-            self.token_embed = try EmbedShape.init(alloc);
+            self.token_embed = try Tensor(T).init(alloc, &.{ d_model, config.vocab_size });
             const scale: T = 1.0 / @sqrt(@as(T, @floatFromInt(d_model)));
-            for (self.token_embed.inner.data, 0..) |*d, i| {
+            for (self.token_embed.data, 0..) |*d, i| {
                 const fi: T = @floatFromInt(i);
                 d.* = scale * @sin(fi * 0.1 + 0.3) * @cos(fi * 0.07 + 0.5);
             }
-            self.token_embed.inner.setParam();
+            self.token_embed.setParam();
 
             for (0..config.n_layers) |i| {
                 self.blocks[i] = try Block.init(alloc);
             }
 
-            self.rms_norm_f = try NormShape.init(alloc);
-            _ = self.rms_norm_f.inner.setAllScalar(1);
-            self.rms_norm_f.inner.setParam();
+            self.rms_norm_f = try Tensor(T).init(alloc, &.{d_model});
+            _ = self.rms_norm_f.setAllScalar(1);
+            self.rms_norm_f.setParam();
 
             if (!config.tied_lm_head) {
-                self.out_proj = try OutProjShape.init(alloc);
-                nn.kaimingUniform(T, self.out_proj.inner, 99);
-                self.out_proj.inner.setParam();
+                self.out_proj = try Tensor(T).init(alloc, &.{ config.vocab_size, d_model });
+                nn.kaimingUniform(T, self.out_proj, 99);
+                self.out_proj.setParam();
             }
 
             return self;
@@ -114,7 +110,7 @@ pub fn LLaMA(comptime T: type, comptime config: LlamaConfig) type {
             const seq_len = token_indices.ne[0];
 
             // Token embedding (no positional encoding — RoPE is in each block)
-            var x = self.token_embed.inner.gatherRows(token_indices);
+            var x = self.token_embed.gatherRows(token_indices);
 
             // Transformer blocks
             for (0..config.n_layers) |i| {
@@ -124,13 +120,13 @@ pub fn LLaMA(comptime T: type, comptime config: LlamaConfig) type {
             // Final RMSNorm
             var norm_reduce = [_]usize{ 1, seq_len };
             x = x.rmsNorm(&norm_reduce, @floatCast(config.rms_norm_eps));
-            x = x.mul(self.rms_norm_f.inner.repeatLike(x));
+            x = x.mul(self.rms_norm_f.repeatLike(x));
 
             // Output projection
             if (config.tied_lm_head) {
-                return x.matMul(false, self.token_embed.inner, true);
+                return x.matMul(false, self.token_embed, true);
             } else {
-                return x.matMul(false, self.out_proj.inner, false);
+                return x.matMul(false, self.out_proj, false);
             }
         }
 
@@ -149,22 +145,23 @@ pub fn LLaMA(comptime T: type, comptime config: LlamaConfig) type {
             attn_mask: *Tensor(T),
         ) CachedForwardTrace {
             var x = x_in;
+            const rope_cs = self.blocks[0].rope.getCosSinPackedRange(x_in.alloc.?, pos, x_in.ne[1]);
             var layers: [config.n_layers]Block.CachedLayerTrace = undefined;
             for (0..config.n_layers) |i| {
-                layers[i] = self.blocks[i].forwardCachedMasked(x, k_caches[i], v_caches[i], pos, attn_mask);
+                layers[i] = self.blocks[i].forwardCachedMasked(x, k_caches[i], v_caches[i], pos, attn_mask, rope_cs);
                 x = layers[i].output;
             }
 
             var norm_reduce = [_]usize{ 1, x.ne[1] };
             x = x.rmsNorm(&norm_reduce, @floatCast(config.rms_norm_eps));
-            x = x.mul(self.rms_norm_f.inner.repeatLike(x));
+            x = x.mul(self.rms_norm_f.repeatLike(x));
 
             const logits = if (config.tied_lm_head)
-                x.matMul(false, self.token_embed.inner, true)
+                x.matMul(false, self.token_embed, true)
             else
-                x.matMul(false, self.out_proj.inner, false);
+                x.matMul(false, self.out_proj, false);
 
-            return .{ .logits = logits, .layers = layers };
+            return .{ .logits = logits, .rope = rope_cs, .layers = layers };
         }
 
         /// Return all learnable parameters.
@@ -172,7 +169,7 @@ pub fn LLaMA(comptime T: type, comptime config: LlamaConfig) type {
             var result: [total_params]*Tensor(T) = undefined;
             var idx: usize = 0;
 
-            result[idx] = self.token_embed.inner;
+            result[idx] = self.token_embed;
             idx += 1;
 
             for (0..config.n_layers) |i| {
@@ -182,11 +179,11 @@ pub fn LLaMA(comptime T: type, comptime config: LlamaConfig) type {
                 }
             }
 
-            result[idx] = self.rms_norm_f.inner;
+            result[idx] = self.rms_norm_f;
             idx += 1;
 
             if (!config.tied_lm_head) {
-                result[idx] = self.out_proj.inner;
+                result[idx] = self.out_proj;
                 idx += 1;
             }
 
@@ -325,7 +322,7 @@ test "LLaMA - frozen cached masked forward" {
     // Token embedding lookup (manual for frozen plan)
     const x = try Tensor(f32).init(a, &.{ cfg.d_model, 1 });
     for (0..cfg.d_model) |i| {
-        x.data[i] = model.token_embed.inner.data[0 * cfg.d_model + i]; // token 0
+        x.data[i] = model.token_embed.data[0 * cfg.d_model + i]; // token 0
     }
 
     const trace = model.forwardCachedMasked(x, k_caches, v_caches, 0, attn_mask);

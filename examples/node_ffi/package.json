@@ -1,0 +1,12 @@
+{
+  "name": "zgml-node-ffi-example",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Node FFI smoke wrapper for zgml_c",
+  "scripts": {
+    "smoke": "node smoke.cjs"
+  },
+  "dependencies": {
+    "koffi": "^3.0.2"
+  }
+}

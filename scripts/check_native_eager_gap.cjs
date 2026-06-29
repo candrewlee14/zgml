@@ -1,0 +1,1512 @@
+"use strict";
+
+const { existsSync, mkdirSync, writeFileSync } = require("node:fs");
+const { join, resolve } = require("node:path");
+const { verifyFreshNativeLibrary } = require("./native_freshness.cjs");
+
+const root = resolve(__dirname, "..");
+const artifactDir = process.env.BENCH_NATIVE_EAGER_ARTIFACT_DIR || join("bench-results", "native-eager");
+const writeArtifact = process.env.BENCH_NATIVE_EAGER_WRITE_ARTIFACT !== "0";
+
+function timestampForArtifact(date = new Date()) {
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+function hostRuntime() {
+  const requested = String(process.env.BENCH_NATIVE_EAGER_RUNTIME || "").trim().toLowerCase();
+  if (requested.length > 0) {
+    if (requested !== "node" && requested !== "bun") {
+      throw new Error(`BENCH_NATIVE_EAGER_RUNTIME must be node or bun, got ${requested}`);
+    }
+    return requested;
+  }
+  return process.versions.bun ? "bun" : "node";
+}
+
+const runtime = hostRuntime();
+const runtimeEntry = join(root, "dist", runtime === "bun" ? "bun_native.cjs" : "node.cjs");
+if (!existsSync(runtimeEntry)) {
+  throw new Error(`native eager gap check requires ${runtimeEntry}; run npm run build:package first`);
+}
+const nativeFreshness = verifyFreshNativeLibrary({
+  root,
+  label: `native eager gap check (${runtime})`,
+  allowStaleEnv: "BENCH_NATIVE_EAGER_ALLOW_STALE_NATIVE",
+});
+
+const runtimeExports = require(runtimeEntry);
+const zgml = runtimeExports.zgml ?? runtimeExports.torch ?? runtimeExports;
+const minTimingMs = Number(process.env.BENCH_NATIVE_EAGER_MIN_TIMING_MS || "20");
+if (!Number.isFinite(minTimingMs) || minTimingMs <= 0) {
+  throw new Error(`BENCH_NATIVE_EAGER_MIN_TIMING_MS must be positive, got ${process.env.BENCH_NATIVE_EAGER_MIN_TIMING_MS}`);
+}
+const measureAttempts = Number(process.env.BENCH_NATIVE_EAGER_ATTEMPTS || "3");
+if (!Number.isSafeInteger(measureAttempts) || measureAttempts <= 0) {
+  throw new Error(`BENCH_NATIVE_EAGER_ATTEMPTS must be a positive integer, got ${process.env.BENCH_NATIVE_EAGER_ATTEMPTS}`);
+}
+const minNativeEagerSpeedup = Number(process.env.BENCH_NATIVE_EAGER_MIN_SPEEDUP || "1.0");
+if (!Number.isFinite(minNativeEagerSpeedup) || minNativeEagerSpeedup <= 0) {
+  throw new Error(`BENCH_NATIVE_EAGER_MIN_SPEEDUP must be positive, got ${process.env.BENCH_NATIVE_EAGER_MIN_SPEEDUP}`);
+}
+
+function requestedRows() {
+  const raw = String(process.env.BENCH_NATIVE_EAGER_ROWS || "").trim();
+  if (raw.length === 0) return null;
+  const rows = raw.split(",").map((row) => row.trim()).filter(Boolean);
+  if (rows.length === 0) {
+    throw new Error("BENCH_NATIVE_EAGER_ROWS must include at least one row key when set");
+  }
+  return new Set(rows);
+}
+
+function values(length, scale) {
+  return Array.from({ length }, (_, index) => ((index % 17) - 8) / scale);
+}
+
+function positiveValues(length, scale) {
+  return Array.from({ length }, (_, index) => 0.25 + ((index % 17) + 1) / scale);
+}
+
+function specialValues(length, scale) {
+  return Array.from({ length }, (_, index) => {
+    if (index % 97 === 0) return Number.NaN;
+    if (index % 89 === 0) return Infinity;
+    if (index % 83 === 0) return -Infinity;
+    return ((index % 17) - 8) / scale;
+  });
+}
+
+function msNow() {
+  return Number(process.hrtime.bigint()) / 1e6;
+}
+
+function bench(fn, iterations, timingMs) {
+  const warmupIterations = Math.min(100, iterations);
+  for (let index = 0; index < warmupIterations; index += 1) fn();
+  let elapsed = 0;
+  let totalIterations = 0;
+  const start = msNow();
+  do {
+    for (let index = 0; index < iterations; index += 1) fn();
+    totalIterations += iterations;
+    elapsed = msNow() - start;
+  } while (elapsed < timingMs);
+  return elapsed / totalIterations;
+}
+
+function maxAbsDiff(a, b) {
+  let max = 0;
+  for (let index = 0; index < a.length; index += 1) {
+    max = Math.max(max, Math.abs(a[index] - b[index]));
+  }
+  return max;
+}
+
+function round(value) {
+  return Number(value.toFixed(6));
+}
+
+function timingMsForSpec(spec) {
+  const timingMs = Number.isFinite(spec.minTimingMs) ? Number(spec.minTimingMs) : minTimingMs;
+  if (!Number.isFinite(timingMs) || timingMs <= 0) {
+    throw new Error(`${spec.key} minTimingMs must be positive, got ${spec.minTimingMs}`);
+  }
+  return timingMs;
+}
+
+function floorMargin(row) {
+  const margins = [];
+  if (row.nativeEagerSpeedup !== null && row.nativeEagerSpeedupFloor !== null) {
+    margins.push(row.nativeEagerSpeedup / row.nativeEagerSpeedupFloor);
+  }
+  if (row.nativeEagerModuleSpeedup !== null && row.nativeEagerModuleSpeedupFloor !== null) {
+    margins.push(row.nativeEagerModuleSpeedup / row.nativeEagerModuleSpeedupFloor);
+  }
+  return margins.length === 0 ? 1 : Math.min(...margins);
+}
+
+function medianAttemptIndex(attemptRows) {
+  const ranked = attemptRows
+    .map((row, index) => ({ index, margin: floorMargin(row) }))
+    .sort((left, right) => left.margin - right.margin || left.index - right.index);
+  return ranked[Math.floor(ranked.length / 2)].index;
+}
+
+function runNativeEagerModule(spec, input) {
+  if (typeof spec.nativeEagerModule !== "function") return null;
+  return spec.nativeEagerModuleNoGrad
+    ? zgml.noGrad(() => spec.nativeEagerModule(input))
+    : spec.nativeEagerModule(input);
+}
+
+function benchNativeEagerModule(spec, input, timingMs) {
+  if (typeof spec.nativeEagerModule !== "function") return null;
+  const measure = () => bench(() => {
+    spec.nativeEagerModule(input);
+  }, spec.nativeEagerModuleIterations ?? spec.eagerIterations, timingMs);
+  return spec.nativeEagerModuleNoGrad ? zgml.noGrad(measure) : measure();
+}
+
+function geluScalar(value) {
+  return 0.5 * value * (1 + Math.tanh(Math.sqrt(2 / Math.PI) * (value + 0.044715 * value * value * value)));
+}
+
+function activationScalar(value, activation) {
+  switch (activation) {
+    case "gelu": return geluScalar(value);
+    case "relu": return value > 0 ? value : 0;
+    case "silu": return value / (1 + Math.exp(-value));
+    case "sigmoid": return 1 / (1 + Math.exp(-value));
+    case "tanh": return Math.tanh(value);
+    default: throw new Error(`unsupported native eager reference activation ${activation}`);
+  }
+}
+
+function activationManualEager(input, activation) {
+  const data = input.data ?? input;
+  const out = new Float32Array(data.length);
+  for (let i = 0; i < data.length; i += 1) {
+    out[i] = activationScalar(data[i], activation);
+  }
+  return out;
+}
+
+function lazyMatmulAddActivationEager(input, weightValues, biasValues, batch, inFeatures, outFeatures, activation) {
+  const out = new Float32Array(batch * outFeatures);
+  for (let row = 0; row < batch; row += 1) {
+    for (let col = 0; col < outFeatures; col += 1) {
+      let sum = biasValues[col];
+      for (let feature = 0; feature < inFeatures; feature += 1) {
+        sum += input.data[row * inFeatures + feature] * weightValues[feature * outFeatures + col];
+      }
+      out[row * outFeatures + col] = activationScalar(sum, activation);
+    }
+  }
+  return out;
+}
+
+function nativeEagerBmmInto(output, input, rhs, batch, rows, shared, cols) {
+  return zgml.nativeEager.bmmInto(output, input, rhs, { batch, rows, shared, cols });
+}
+
+function nativeEagerDotInto(output, input, rhs) {
+  return zgml.nativeEager.dotInto(output, input, rhs);
+}
+
+function requireCompiledHotPath(key, session, input, output) {
+  const compatibility = session.requireHotStepParams({ input, output });
+  const plan = session.hotPathPlan({ input, output });
+  if (
+    compatibility.hotPath !== true ||
+    compatibility.runtimeOutputAllocationFree !== true ||
+    compatibility.readbackFree !== true ||
+    plan.hotPath !== true
+  ) {
+    throw new Error(`${key} expected compiled hot path: ${JSON.stringify({ compatibility, plan })}`);
+  }
+}
+
+function benchGap(spec) {
+  const input = spec.input();
+  const compiled = typeof spec.compiled === "function" ? spec.compiled() : null;
+  try {
+    const output = new Float32Array(spec.outputLen);
+    const nativeEagerOutput = new Float32Array(spec.outputLen);
+    if (compiled) {
+      requireCompiledHotPath(spec.key, compiled.session, input, output);
+    }
+    const eagerOutput = spec.eager(input);
+    const eagerData = eagerOutput.data ?? eagerOutput;
+    const nativeEagerResult = typeof spec.nativeEager === "function" ? spec.nativeEager(nativeEagerOutput, input) : null;
+    if (nativeEagerResult && nativeEagerResult !== nativeEagerOutput) {
+      throw new Error(`${spec.key} expected native eager output to reuse caller output`);
+    }
+    const nativeEagerModuleOutput = runNativeEagerModule(spec, input);
+    const nativeEagerModuleData = nativeEagerModuleOutput ? (nativeEagerModuleOutput.data ?? nativeEagerModuleOutput) : null;
+    const nativeEagerDiff = nativeEagerResult ? maxAbsDiff(eagerData, nativeEagerOutput) : null;
+    if (nativeEagerDiff !== null && nativeEagerDiff > spec.tolerance) {
+      throw new Error(`${spec.key} native eager parity failed: max_abs_diff=${nativeEagerDiff}`);
+    }
+    const nativeEagerModuleDiff = nativeEagerModuleData ? maxAbsDiff(eagerData, nativeEagerModuleData) : null;
+    if (nativeEagerModuleDiff !== null && nativeEagerModuleDiff > spec.tolerance) {
+      throw new Error(`${spec.key} native eager module parity failed: max_abs_diff=${nativeEagerModuleDiff}`);
+    }
+    let diff = null;
+    if (compiled) {
+      const compiledOutput = compiled.into(output, input);
+      if (compiledOutput !== output) {
+        throw new Error(`${spec.key} expected compiled output to reuse caller output`);
+      }
+      diff = maxAbsDiff(eagerData, output);
+      if (diff > spec.tolerance) {
+        throw new Error(`${spec.key} compiled parity failed: max_abs_diff=${diff}`);
+      }
+    }
+
+    const nativeEagerSpeedupFloor = Number.isFinite(spec.minNativeEagerSpeedup)
+      ? Number(spec.minNativeEagerSpeedup)
+      : minNativeEagerSpeedup;
+    const nativeEagerModuleSpeedupFloor = Number.isFinite(spec.minNativeEagerModuleSpeedup)
+      ? Number(spec.minNativeEagerModuleSpeedup)
+      : nativeEagerSpeedupFloor;
+    const timingMs = timingMsForSpec(spec);
+    const attemptRows = [];
+    for (let attempt = 0; attempt < measureAttempts; attempt += 1) {
+      const eagerMs = bench(() => {
+        spec.eager(input);
+      }, spec.eagerIterations, timingMs);
+      const preparedMs = compiled
+        ? bench(() => {
+            compiled.into(output, input);
+          }, spec.compiledIterations, timingMs)
+        : null;
+      const nativeEagerMs = typeof spec.nativeEager === "function"
+        ? bench(() => {
+            spec.nativeEager(nativeEagerOutput, input);
+          }, spec.nativeEagerIterations ?? spec.compiledIterations, timingMs)
+        : null;
+      const nativeEagerModuleMs = benchNativeEagerModule(spec, input, timingMs);
+      const speedup = preparedMs === null ? null : eagerMs / preparedMs;
+      attemptRows.push(Object.freeze({
+        attempt: attempt + 1,
+        eagerMs,
+        preparedMs,
+        nativeEagerMs,
+        nativeEagerModuleMs,
+        nativeEagerSpeedup: nativeEagerMs === null ? null : eagerMs / nativeEagerMs,
+        nativeEagerSpeedupFloor,
+        nativeEagerModuleSpeedup: nativeEagerModuleMs === null ? null : eagerMs / nativeEagerModuleMs,
+        nativeEagerModuleSpeedupFloor,
+        speedup,
+      }));
+    }
+    const selectedAttemptIndex = medianAttemptIndex(attemptRows);
+    const selectedAttempt = attemptRows[selectedAttemptIndex];
+    const {
+      eagerMs,
+      preparedMs,
+      nativeEagerMs,
+      nativeEagerModuleMs,
+      speedup,
+    } = selectedAttempt;
+    if (nativeEagerMs !== null && eagerMs / nativeEagerMs < nativeEagerSpeedupFloor) {
+      throw new Error(`${spec.key} native eager speedup ${eagerMs / nativeEagerMs}x below ${nativeEagerSpeedupFloor}x`);
+    }
+    if (nativeEagerModuleMs !== null && eagerMs / nativeEagerModuleMs < nativeEagerModuleSpeedupFloor) {
+      throw new Error(`${spec.key} native eager module speedup ${eagerMs / nativeEagerModuleMs}x below ${nativeEagerModuleSpeedupFloor}x`);
+    }
+    const row = {
+      schema: "zgml.native-eager-gap.v1",
+      key: spec.key,
+      shape: Object.freeze(spec.shape),
+      compiledHotPath: compiled !== null,
+      timingMs: round(timingMs),
+      attempts: measureAttempts,
+      selectedAttempt: selectedAttemptIndex + 1,
+      selection: measureAttempts === 1 ? "single" : "median-floor-margin",
+      eagerMs: round(eagerMs),
+      nativeEagerIntoMs: nativeEagerMs === null ? null : round(nativeEagerMs),
+      nativeEagerSpeedup: nativeEagerMs === null ? null : round(eagerMs / nativeEagerMs),
+      nativeEagerSpeedupFloor: nativeEagerMs === null ? null : round(nativeEagerSpeedupFloor),
+      nativeEagerModuleForwardMs: nativeEagerModuleMs === null ? null : round(nativeEagerModuleMs),
+      nativeEagerModuleSpeedup: nativeEagerModuleMs === null ? null : round(eagerMs / nativeEagerModuleMs),
+      nativeEagerModuleSpeedupFloor: nativeEagerModuleMs === null ? null : round(nativeEagerModuleSpeedupFloor),
+      preparedExecuteIntoMs: preparedMs === null ? null : round(preparedMs),
+      nativeProgramSpeedup: speedup === null ? null : round(speedup),
+      nativeEagerMaxAbsDiff: nativeEagerDiff === null ? null : round(nativeEagerDiff),
+      nativeEagerModuleMaxAbsDiff: nativeEagerModuleDiff === null ? null : round(nativeEagerModuleDiff),
+      maxAbsDiff: diff === null ? null : round(diff),
+      status: compiled ? "gap-measured" : "native-eager-measured",
+      next: spec.next,
+    };
+    return Object.freeze(row);
+  } finally {
+    if (compiled) compiled.dispose();
+  }
+}
+
+function compiledInferenceHandle(model, inputShape) {
+  const fast = zgml.native(model, { backend: "cpu", inputShape });
+  return Object.freeze({
+    session: fast.session,
+    into(output, input) {
+      return fast.into(output, input);
+    },
+    dispose() {
+      fast.dispose();
+    },
+  });
+}
+
+function compiledLazyHandle(graph, bindings, inputShape) {
+  const fast = zgml.native(graph, { backend: "cpu", inputShape }, bindings);
+  return Object.freeze({
+    session: fast.session,
+    into(output, input) {
+      return fast.into(output, input);
+    },
+    dispose() {
+      fast.dispose();
+    },
+  });
+}
+
+function linearBatchedModel() {
+  return new zgml.nn.Sequential(
+    new zgml.nn.Linear(64, 32, {
+      weights: linearWeights,
+      bias: linearBias,
+    }),
+  );
+}
+
+function linearActivationBatchedModel(weights, bias, ActivationModule) {
+  return new zgml.nn.Sequential(
+    new zgml.nn.Linear(64, 64, {
+      weights,
+      bias,
+    }),
+    new ActivationModule(),
+  );
+}
+
+function linearGeluBatchedModel() {
+  return linearActivationBatchedModel(geluWeights, geluBias, zgml.nn.GELU);
+}
+
+function linearReluBatchedModel() {
+  return linearActivationBatchedModel(reluWeights, reluBias, zgml.nn.ReLU);
+}
+
+function linearSiluBatchedModel() {
+  return linearActivationBatchedModel(siluWeights, siluBias, zgml.nn.SiLU);
+}
+
+function linearSigmoidBatchedModel() {
+  return linearActivationBatchedModel(sigmoidWeights, sigmoidBias, zgml.nn.Sigmoid);
+}
+
+function linearTanhBatchedModel() {
+  return linearActivationBatchedModel(tanhWeights, tanhBias, zgml.nn.Tanh);
+}
+
+function softmaxBatchedModel() {
+  return new zgml.nn.Softmax(-1);
+}
+
+function logSoftmaxBatchedModel() {
+  return new zgml.nn.LogSoftmax(-1);
+}
+
+function conv2dBatchedModel() {
+  return new zgml.nn.Sequential(
+    new zgml.nn.Conv2d(1, 1, 3, {
+      weight: conv2dWeights,
+      bias: conv2dBias,
+    }),
+  );
+}
+
+function maxPool2dBatchedModel() {
+  return new zgml.nn.Sequential(new zgml.nn.MaxPool2d(2));
+}
+
+function avgPool2dBatchedModel() {
+  return new zgml.nn.Sequential(new zgml.nn.AvgPool2d(2));
+}
+
+const linearWeights = values(64 * 32, 64);
+const linearBias = values(32, 32);
+const linearWeightTensor = zgml.tensor(linearWeights, [64, 32]);
+const linearBiasTensor = zgml.tensor(linearBias, [32]);
+const linearModel = linearBatchedModel();
+const matmulWeights = values(64 * 64, 36);
+const matmulWeightTensor = zgml.tensor(matmulWeights, [64, 64]);
+const bmmRhsValues = values(16 * 32 * 32, 29);
+const bmmRhsTensor = zgml.tensor(bmmRhsValues, [16, 32, 32]);
+const dotRhsValues = values(128 * 64, 23);
+const dotRhsTensor = zgml.tensor(dotRhsValues, [128 * 64]);
+const rowBroadcastBiasValues = values(256, 19);
+const rowBroadcastBiasTensor = zgml.tensor(rowBroadcastBiasValues, [256]);
+const rowBroadcastMatrixValues = values(512 * 256, 13);
+const rowBroadcastMatrixTensor = zgml.tensor(rowBroadcastMatrixValues, [512, 256]);
+const geluWeights = values(64 * 64, 32);
+const geluBias = values(64, 64);
+const geluWeightTensor = zgml.tensor(geluWeights, [64, 64]);
+const geluBiasTensor = zgml.tensor(geluBias, [64]);
+const linearGeluModel = linearGeluBatchedModel();
+const reluWeights = values(64 * 64, 48);
+const reluBias = values(64, 96);
+const reluWeightTensor = zgml.tensor(reluWeights, [64, 64]);
+const reluBiasTensor = zgml.tensor(reluBias, [64]);
+const linearReluModel = linearReluBatchedModel();
+const siluWeights = values(64 * 64, 40);
+const siluBias = values(64, 80);
+const siluWeightTensor = zgml.tensor(siluWeights, [64, 64]);
+const siluBiasTensor = zgml.tensor(siluBias, [64]);
+const linearSiluModel = linearSiluBatchedModel();
+const sigmoidWeights = values(64 * 64, 56);
+const sigmoidBias = values(64, 112);
+const sigmoidWeightTensor = zgml.tensor(sigmoidWeights, [64, 64]);
+const sigmoidBiasTensor = zgml.tensor(sigmoidBias, [64]);
+const linearSigmoidModel = linearSigmoidBatchedModel();
+const tanhWeights = values(64 * 64, 72);
+const tanhBias = values(64, 144);
+const tanhWeightTensor = zgml.tensor(tanhWeights, [64, 64]);
+const tanhBiasTensor = zgml.tensor(tanhBias, [64]);
+const linearTanhModel = linearTanhBatchedModel();
+const softmaxModel = softmaxBatchedModel();
+const logSoftmaxModel = logSoftmaxBatchedModel();
+const conv2dWeights = values(3 * 3, 24);
+const conv2dBias = values(1, 32);
+const conv2dWeightTensor = zgml.tensor(conv2dWeights, [1, 1, 3, 3]);
+const conv2dBiasTensor = zgml.tensor(conv2dBias, [1]);
+const conv2dModel = conv2dBatchedModel();
+const maxPool2dModel = maxPool2dBatchedModel();
+const avgPool2dModel = avgPool2dBatchedModel();
+
+const nativeEagerNoGradMicroscopeWorkloads = Object.freeze([
+  "zgml.noGrad(() => input.bmm(bmmRhsTensor))",
+  "zgml.noGrad(() => softmaxModel.forward(input))",
+  "zgml.noGrad(() => logSoftmaxModel.forward(input))",
+  "zgml.noGrad(() => input.mul(2))",
+  "zgml.noGrad(() => input.add(rowBroadcastBiasTensor))",
+  "zgml.noGrad(() => input.sub(rowBroadcastMatrixTensor))",
+  "zgml.noGrad(() => input.dot(dotRhsTensor))",
+  "zgml.noGrad(() => input.sum())",
+  "zgml.noGrad(() => input.sumDim(1))",
+  "zgml.noGrad(() => maxPool2dModel.forward(input))",
+  "zgml.noGrad(() => avgPool2dModel.forward(input))",
+  "zgml.noGrad(() => linearModel.forward(input))",
+  "zgml.noGrad(() => linearGeluModel.forward(input))",
+  "zgml.noGrad(() => linearReluModel.forward(input))",
+  "zgml.noGrad(() => linearSiluModel.forward(input))",
+  "zgml.noGrad(() => linearSigmoidModel.forward(input))",
+  "zgml.noGrad(() => linearTanhModel.forward(input))",
+]);
+
+const gapSpecs = Object.freeze([
+  Object.freeze({
+    key: "linear_batched",
+    shape: Object.freeze({ batch: 128, inFeatures: 64, outFeatures: 32 }),
+    outputLen: 128 * 32,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => linearModel.forward(input),
+    nativeEager: (output, input) => zgml.nativeEager.linearInto(output, input, linearWeightTensor, {
+      bias: linearBiasTensor,
+    }),
+    nativeEagerModule: (input) => linearModel.forward(input),
+    nativeEagerModuleNoGrad: true,
+    compiled: () => compiledInferenceHandle(linearBatchedModel(), [128, 64]),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minTimingMs: 60,
+    tolerance: 1e-5,
+    next: "native_eager_linear_or_matmul_storage_slice",
+  }),
+  Object.freeze({
+    key: "matmul_batched",
+    shape: Object.freeze({ batch: 128, inFeatures: 64, outFeatures: 64 }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => input.matmul(matmulWeightTensor),
+    nativeEager: (output, input) => zgml.nativeEager.matmulInto(output, input, matmulWeightTensor),
+    nativeEagerModule: (input) => input.matmul(matmulWeightTensor),
+    nativeEagerModuleNoGrad: true,
+    compiled: () => compiledLazyHandle(
+      zgml.lazy.input([128, 64]).matmul(zgml.lazy.parameter([64, 64], "w")),
+      {
+        weights: new Float32Array(matmulWeights),
+      },
+      [128, 64],
+    ),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-5,
+    next: "native_eager_linear_or_matmul_storage_slice",
+  }),
+  Object.freeze({
+    key: "bmm_batched",
+    shape: Object.freeze({ batch: 16, rows: 32, shared: 32, cols: 32 }),
+    outputLen: 16 * 32 * 32,
+    input: () => zgml.tensor(values(16 * 32 * 32, 13), [16, 32, 32]),
+    eager: (input) => input.bmm(bmmRhsTensor),
+    nativeEager: (output, input) => nativeEagerBmmInto(output, input, bmmRhsTensor, 16, 32, 32, 32),
+    nativeEagerModule: (input) => input.bmm(bmmRhsTensor),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 20,
+    nativeEagerIterations: 200,
+    nativeEagerModuleIterations: 200,
+    compiledIterations: 200,
+    minNativeEagerSpeedup: runtime === "bun" ? 0.9 : 1,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 0.95 : 1,
+    tolerance: 1e-4,
+    next: "native_eager_bmm_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_mul_batched",
+    shape: Object.freeze({ batch: 128, features: 64, op: "mul_scalar" }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => input.mul(2),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, new Float32Array([2]), { op: "mul" }),
+    nativeEagerModule: (input) => input.mul(2),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 8,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 8 : 1,
+    tolerance: 1e-5,
+    next: "native_eager_elementwise_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_div_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "div_scalar" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(positiveValues(512 * 256, 17), [512, 256]),
+    eager: (input) => input.div(1.75),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, new Float32Array([1.75]), { op: "div" }),
+    nativeEagerModule: (input) => input.div(1.75),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 1,
+    tolerance: 1e-6,
+    next: "native_eager_elementwise_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_minimum_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "minimum_scalar" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 31), [512, 256]),
+    eager: (input) => input.minimum(-0.125),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, new Float32Array([-0.125]), { op: "minimum" }),
+    nativeEagerModule: (input) => input.minimum(-0.125),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 1,
+    tolerance: 1e-6,
+    next: "native_eager_elementwise_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_maximum_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "maximum_scalar" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 29), [512, 256]),
+    eager: (input) => input.maximum(0.125),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, new Float32Array([0.125]), { op: "maximum" }),
+    nativeEagerModule: (input) => input.maximum(0.125),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 1,
+    tolerance: 1e-6,
+    next: "native_eager_elementwise_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_neg_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "neg" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 17), [512, 256]),
+    eager: (input) => input.neg(),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "neg" }),
+    nativeEagerModule: (input) => input.neg(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 0,
+    next: "native_eager_unary_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_abs_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "abs" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 19), [512, 256]),
+    eager: (input) => input.abs(),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "abs" }),
+    nativeEagerModule: (input) => input.abs(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 0,
+    next: "native_eager_unary_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_sqrt_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "sqrt" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(positiveValues(512 * 256, 23), [512, 256]),
+    eager: (input) => input.sqrt(),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "sqrt" }),
+    nativeEagerModule: (input) => input.sqrt(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minTimingMs: 60,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 2e-6,
+    next: "native_eager_unary_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_reciprocal_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "reciprocal" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(positiveValues(512 * 256, 23), [512, 256]),
+    eager: (input) => input.reciprocal(),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "reciprocal" }),
+    nativeEagerModule: (input) => input.reciprocal(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minTimingMs: 60,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 2e-6,
+    next: "native_eager_unary_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_rsqrt_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "rsqrt" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(positiveValues(512 * 256, 23), [512, 256]),
+    eager: (input) => input.rsqrt(),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "rsqrt" }),
+    nativeEagerModule: (input) => input.rsqrt(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minTimingMs: 60,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 2e-6,
+    next: "native_eager_unary_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_expm1_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "expm1" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 31), [512, 256]),
+    eager: (input) => input.expm1(),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "expm1" }),
+    nativeEagerModule: (input) => input.expm1(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 2e-6,
+    next: "native_eager_unary_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_log1p_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "log1p" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(positiveValues(512 * 256, 37), [512, 256]),
+    eager: (input) => input.log1p(),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "log1p" }),
+    nativeEagerModule: (input) => input.log1p(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 2e-6,
+    next: "native_eager_unary_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_pow_specialized_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "pow_specialized" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(positiveValues(512 * 256, 23), [512, 256]),
+    eager: (input) => input.pow(0.5),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "sqrt" }),
+    nativeEagerModule: (input) => input.pow(0.5),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 2e-6,
+    next: "native_eager_pow_specialized_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_exp_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "exp" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 31), [512, 256]),
+    eager: (input) => input.exp(),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "exp" }),
+    nativeEagerModule: (input) => input.exp(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 2e-6,
+    next: "native_eager_unary_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_log_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "log" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(positiveValues(512 * 256, 37), [512, 256]),
+    eager: (input) => input.log(),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "log" }),
+    nativeEagerModule: (input) => input.log(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 2e-6,
+    next: "native_eager_unary_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_isfinite_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "isfinite" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(specialValues(512 * 256, 23), [512, 256]),
+    eager: (input) => input.isfinite(),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, null, { op: "isfinite" }),
+    nativeEagerModule: (input) => input.isfinite(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 0,
+    next: "native_eager_unary_predicate_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_add_row_broadcast_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "add_row_broadcast" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
+    eager: (input) => input.add(rowBroadcastBiasTensor),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, rowBroadcastBiasTensor, { op: "add" }),
+    nativeEagerModule: (input) => input.add(rowBroadcastBiasTensor),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 50,
+    nativeEagerIterations: 500,
+    nativeEagerModuleIterations: 500,
+    compiledIterations: 500,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 1,
+    tolerance: 1e-5,
+    next: "native_eager_row_broadcast_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_sub_lhs_row_broadcast_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "sub_lhs_row_broadcast" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(rowBroadcastBiasValues, [256]),
+    eager: (input) => input.sub(rowBroadcastMatrixTensor),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, rowBroadcastMatrixTensor, { op: "sub" }),
+    nativeEagerModule: (input) => input.sub(rowBroadcastMatrixTensor),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 50,
+    nativeEagerIterations: 500,
+    nativeEagerModuleIterations: 500,
+    compiledIterations: 500,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 1,
+    tolerance: 1e-5,
+    next: "native_eager_row_broadcast_storage_slice",
+  }),
+  Object.freeze({
+    key: "dot_batched",
+    shape: Object.freeze({ length: 128 * 64, op: "dot" }),
+    outputLen: 1,
+    input: () => zgml.tensor(values(128 * 64, 13), [128 * 64]),
+    eager: (input) => input.dot(dotRhsTensor),
+    nativeEager: (output, input) => nativeEagerDotInto(output, input, dotRhsTensor),
+    nativeEagerModule: (input) => input.dot(dotRhsTensor),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 1,
+    tolerance: 5e-3,
+    next: "native_eager_dot_storage_slice",
+  }),
+  Object.freeze({
+    key: "activation_relu_batched",
+    shape: Object.freeze({ batch: 512, features: 256, activation: "relu" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
+    eager: (input) => input.relu(),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "relu" }),
+    nativeEagerModule: (input) => input.relu(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: runtime === "node" ? 0.5 : 1.5,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 1e-6,
+    next: runtime === "node" ? "node_relu_prefers_ts_loop_over_ffi_boundary" : "native_eager_activation_storage_slice",
+  }),
+  Object.freeze({
+    key: "activation_relu_policy",
+    shape: Object.freeze({ length: 1024, activation: "relu", policyMinLength: 1024 }),
+    outputLen: 1024,
+    input: () => zgml.tensor(values(1024, 13), [1024]),
+    eager: (input) => activationManualEager(input, "relu"),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "relu" }),
+    nativeEagerModule: (input) => input.relu(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 1000,
+    nativeEagerIterations: 5000,
+    nativeEagerModuleIterations: 5000,
+    compiledIterations: 5000,
+    minNativeEagerSpeedup: 0.8,
+    minNativeEagerModuleSpeedup: 0.5,
+    tolerance: 1e-6,
+    next: "relu_stays_disabled_at_public_native_eager_route",
+  }),
+  Object.freeze({
+    key: "activation_sigmoid_policy",
+    shape: Object.freeze({ length: 1024, activation: "sigmoid", policyMinLength: 1024 }),
+    outputLen: 1024,
+    input: () => zgml.tensor(values(1024, 13), [1024]),
+    eager: (input) => activationManualEager(input, "sigmoid"),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "sigmoid" }),
+    nativeEagerModule: (input) => input.sigmoid(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 1000,
+    nativeEagerIterations: 5000,
+    nativeEagerModuleIterations: 5000,
+    compiledIterations: 5000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 1 : 0.8,
+    tolerance: 1e-6,
+    next: "native_eager_activation_policy_floor",
+  }),
+  Object.freeze({
+    key: "activation_gelu_policy",
+    shape: Object.freeze({ length: 1024, activation: "gelu", policyMinLength: 1024 }),
+    outputLen: 1024,
+    input: () => zgml.tensor(values(1024, 19), [1024]),
+    eager: (input) => activationManualEager(input, "gelu"),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "gelu" }),
+    nativeEagerModule: (input) => input.gelu(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 1000,
+    nativeEagerIterations: 5000,
+    nativeEagerModuleIterations: 5000,
+    compiledIterations: 5000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 1 : 0.8,
+    tolerance: 2e-6,
+    next: "native_eager_activation_policy_floor",
+  }),
+  Object.freeze({
+    key: "activation_silu_policy",
+    shape: Object.freeze({ length: 1024, activation: "silu", policyMinLength: 1024 }),
+    outputLen: 1024,
+    input: () => zgml.tensor(values(1024, 17), [1024]),
+    eager: (input) => activationManualEager(input, "silu"),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "silu" }),
+    nativeEagerModule: (input) => input.silu(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 1000,
+    nativeEagerIterations: 5000,
+    nativeEagerModuleIterations: 5000,
+    compiledIterations: 5000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 1 : 0.8,
+    tolerance: 2e-6,
+    next: "native_eager_activation_policy_floor",
+  }),
+  Object.freeze({
+    key: "activation_tanh_policy",
+    shape: Object.freeze({ length: 1024, activation: "tanh", policyMinLength: 1024 }),
+    outputLen: 1024,
+    input: () => zgml.tensor(values(1024, 23), [1024]),
+    eager: (input) => activationManualEager(input, "tanh"),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "tanh" }),
+    nativeEagerModule: (input) => input.tanh(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 1000,
+    nativeEagerIterations: 5000,
+    nativeEagerModuleIterations: 5000,
+    compiledIterations: 5000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 1 : 0.8,
+    tolerance: 2e-6,
+    next: "native_eager_activation_policy_floor",
+  }),
+  Object.freeze({
+    key: "activation_sigmoid_batched",
+    shape: Object.freeze({ batch: 512, features: 256, activation: "sigmoid" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
+    eager: (input) => input.sigmoid(),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "sigmoid" }),
+    nativeEagerModule: (input) => input.sigmoid(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 1e-6,
+    next: "native_eager_where_module_baseline_split",
+  }),
+  Object.freeze({
+    key: "activation_gelu_batched",
+    shape: Object.freeze({ batch: 512, features: 256, activation: "gelu" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 19), [512, 256]),
+    eager: (input) => input.gelu(),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "gelu" }),
+    nativeEagerModule: (input) => input.gelu(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 2e-6,
+    next: "native_eager_where_module_baseline_split",
+  }),
+  Object.freeze({
+    key: "activation_silu_batched",
+    shape: Object.freeze({ batch: 512, features: 256, activation: "silu" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 17), [512, 256]),
+    eager: (input) => input.silu(),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "silu" }),
+    nativeEagerModule: (input) => input.silu(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 2e-6,
+    next: "native_eager_where_module_baseline_split",
+  }),
+  Object.freeze({
+    key: "activation_tanh_batched",
+    shape: Object.freeze({ batch: 512, features: 256, activation: "tanh" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 23), [512, 256]),
+    eager: (input) => input.tanh(),
+    nativeEager: (output, input) => zgml.nativeEager.activationInto(output, input, { activation: "tanh" }),
+    nativeEagerModule: (input) => input.tanh(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 2e-6,
+    next: "native_eager_where_module_baseline_split",
+  }),
+  Object.freeze({
+    key: "reduce_sum_scalar_batched",
+    shape: Object.freeze({ batch: 128, features: 64, op: "sum" }),
+    outputLen: 1,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => input.sum(),
+    nativeEager: (output, input) => zgml.nativeEager.reduceInto(output, input, { op: "sum" }),
+    nativeEagerModule: (input) => input.sum(),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-4,
+    next: "native_eager_reduce_storage_slice",
+  }),
+  Object.freeze({
+    key: "reduce_sum_dim_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "sum_dim_1" }),
+    outputLen: 512,
+    input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
+    eager: (input) => input.sumDim(1),
+    nativeEager: (output, input) => zgml.nativeEager.reduceDimInto(output, input, { op: "sum", outer: 512, reduce: 256, inner: 1 }),
+    nativeEagerModule: (input) => input.sumDim(1),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-4,
+    next: "native_eager_reduce_dim_storage_slice",
+  }),
+  Object.freeze({
+    key: "argmax_dim_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "argmax_dim_1" }),
+    outputLen: 512,
+    input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
+    eager: (input) => input.argmaxDim(1),
+    nativeEager: (output, input) => zgml.nativeEager.argReduceDimInto(output, input, { op: "argmax", outer: 512, reduce: 256, inner: 1 }),
+    nativeEagerModule: (input) => input.argmaxDim(1),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minTimingMs: 60,
+    minNativeEagerModuleSpeedup: 0.75,
+    tolerance: 0,
+    next: "native_eager_arg_reduce_dim_storage_slice",
+  }),
+  Object.freeze({
+    key: "cumsum_dim_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "cumsum_dim_1" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
+    eager: (input) => input.cumsum(1),
+    nativeEager: (output, input) => zgml.nativeEager.cumsumInto(output, input, { outer: 512, axis: 256, inner: 1 }),
+    nativeEagerModule: (input) => input.cumsum(1),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 0.25,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 1e-5,
+    next: "native_eager_cumsum_storage_slice",
+  }),
+  Object.freeze({
+    key: "variance_dim_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "variance_dim_1" }),
+    outputLen: 512,
+    input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
+    eager: (input) => input.variance(1),
+    nativeEager: (output, input) => zgml.nativeEager.varianceInto(output, input, { outer: 512, reduce: 256, inner: 1 }),
+    nativeEagerModule: (input) => input.variance(1),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 1e-5,
+    next: "native_eager_moment_storage_slice",
+  }),
+  Object.freeze({
+    key: "elementwise_lt_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "lt_scalar" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
+    eager: (input) => input.lt(0.125),
+    nativeEager: (output, input) => zgml.nativeEager.elementwiseInto(output, input, new Float32Array([0.125]), { op: "lt" }),
+    nativeEagerModule: (input) => input.lt(0.125),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: 1.0,
+    minNativeEagerModuleSpeedup: 0.9,
+    tolerance: 0,
+    next: "native_eager_comparison_storage_slice",
+  }),
+  Object.freeze({
+    key: "clamp_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "clamp" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
+    eager: (input) => input.clamp(-0.25, 0.25),
+    nativeEager: (output, input) => zgml.nativeEager.clampInto(output, input, { min: -0.25, max: 0.25 }),
+    nativeEagerModule: (input) => input.clamp(-0.25, 0.25),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: runtime === "bun" ? 0.25 : 1,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 1.25 : 0.95,
+    tolerance: 1e-6,
+    next: "native_eager_clamp_storage_slice",
+  }),
+  Object.freeze({
+    key: "where_batched",
+    shape: Object.freeze({ batch: 512, features: 256, op: "where_scalar" }),
+    outputLen: 512 * 256,
+    input: () => zgml.tensor(values(512 * 256, 13), [512, 256]),
+    eager: (input) => input.lt(0).where(input, 0),
+    nativeEager: (output, input) => {
+      const condition = input.lt(0);
+      return zgml.nativeEager.whereInto(output, condition, input, new Float32Array([0]));
+    },
+    nativeEagerModule: (input) => input.lt(0).where(input, 0),
+    nativeEagerModuleNoGrad: true,
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    minNativeEagerSpeedup: runtime === "bun" ? 15 : 20,
+    minNativeEagerModuleSpeedup: runtime === "bun" ? 15 : 20,
+    tolerance: 1e-6,
+    next: "native_eager_comparison_storage_slice",
+  }),
+  Object.freeze({
+    key: "lazy_matmul_add_gelu_batched",
+    shape: Object.freeze({ batch: 128, inFeatures: 64, outFeatures: 64, fusedOps: "matmul_add_gelu" }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => lazyMatmulAddActivationEager(input, geluWeights, geluBias, 128, 64, 64, "gelu"),
+    nativeEager: (output, input) => zgml.nativeEager.linearActivationInto(output, input, geluWeightTensor, {
+      bias: geluBiasTensor,
+      activation: "gelu",
+    }),
+    nativeEagerModule: (input) => linearGeluModel.forward(input),
+    nativeEagerModuleNoGrad: true,
+    compiled: () => compiledLazyHandle(
+      zgml.lazy.input([128, 64])
+        .matmul(zgml.lazy.parameter([64, 64], "w"))
+        .add(zgml.lazy.parameter([64], "b"))
+        .gelu(),
+      {
+        weights: new Float32Array(geluWeights),
+        bias: new Float32Array(geluBias),
+      },
+      [128, 64],
+    ),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-4,
+    next: "native_eager_fused_matmul_add_gelu_storage_slice",
+  }),
+  Object.freeze({
+    key: "lazy_matmul_add_relu_batched",
+    shape: Object.freeze({ batch: 128, inFeatures: 64, outFeatures: 64, fusedOps: "matmul_add_relu" }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => lazyMatmulAddActivationEager(input, reluWeights, reluBias, 128, 64, 64, "relu"),
+    nativeEager: (output, input) => zgml.nativeEager.linearActivationInto(output, input, reluWeightTensor, {
+      bias: reluBiasTensor,
+      activation: "relu",
+    }),
+    nativeEagerModule: (input) => linearReluModel.forward(input),
+    nativeEagerModuleNoGrad: true,
+    compiled: () => compiledLazyHandle(
+      zgml.lazy.input([128, 64])
+        .matmul(zgml.lazy.parameter([64, 64], "w"))
+        .add(zgml.lazy.parameter([64], "b"))
+        .relu(),
+      {
+        weights: new Float32Array(reluWeights),
+        bias: new Float32Array(reluBias),
+      },
+      [128, 64],
+    ),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-5,
+    next: "native_eager_fused_matmul_add_relu_storage_slice",
+  }),
+  Object.freeze({
+    key: "lazy_matmul_add_silu_batched",
+    shape: Object.freeze({ batch: 128, inFeatures: 64, outFeatures: 64, fusedOps: "matmul_add_silu" }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => lazyMatmulAddActivationEager(input, siluWeights, siluBias, 128, 64, 64, "silu"),
+    nativeEager: (output, input) => zgml.nativeEager.linearActivationInto(output, input, siluWeightTensor, {
+      bias: siluBiasTensor,
+      activation: "silu",
+    }),
+    nativeEagerModule: (input) => linearSiluModel.forward(input),
+    nativeEagerModuleNoGrad: true,
+    compiled: () => compiledLazyHandle(
+      zgml.lazy.input([128, 64])
+        .matmul(zgml.lazy.parameter([64, 64], "w"))
+        .add(zgml.lazy.parameter([64], "b"))
+        .silu(),
+      {
+        weights: new Float32Array(siluWeights),
+        bias: new Float32Array(siluBias),
+      },
+      [128, 64],
+    ),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-5,
+    next: "native_eager_fused_matmul_add_silu_storage_slice",
+  }),
+  Object.freeze({
+    key: "lazy_matmul_add_sigmoid_batched",
+    shape: Object.freeze({ batch: 128, inFeatures: 64, outFeatures: 64, fusedOps: "matmul_add_sigmoid" }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => lazyMatmulAddActivationEager(input, sigmoidWeights, sigmoidBias, 128, 64, 64, "sigmoid"),
+    nativeEager: (output, input) => zgml.nativeEager.linearActivationInto(output, input, sigmoidWeightTensor, {
+      bias: sigmoidBiasTensor,
+      activation: "sigmoid",
+    }),
+    nativeEagerModule: (input) => linearSigmoidModel.forward(input),
+    nativeEagerModuleNoGrad: true,
+    compiled: () => compiledLazyHandle(
+      zgml.lazy.input([128, 64])
+        .matmul(zgml.lazy.parameter([64, 64], "w"))
+        .add(zgml.lazy.parameter([64], "b"))
+        .sigmoid(),
+      {
+        weights: new Float32Array(sigmoidWeights),
+        bias: new Float32Array(sigmoidBias),
+      },
+      [128, 64],
+    ),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-5,
+    next: "native_eager_fused_matmul_add_sigmoid_storage_slice",
+  }),
+  Object.freeze({
+    key: "lazy_matmul_add_tanh_batched",
+    shape: Object.freeze({ batch: 128, inFeatures: 64, outFeatures: 64, fusedOps: "matmul_add_tanh" }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 13), [128, 64]),
+    eager: (input) => lazyMatmulAddActivationEager(input, tanhWeights, tanhBias, 128, 64, 64, "tanh"),
+    nativeEager: (output, input) => zgml.nativeEager.linearActivationInto(output, input, tanhWeightTensor, {
+      bias: tanhBiasTensor,
+      activation: "tanh",
+    }),
+    nativeEagerModule: (input) => linearTanhModel.forward(input),
+    nativeEagerModuleNoGrad: true,
+    compiled: () => compiledLazyHandle(
+      zgml.lazy.input([128, 64])
+        .matmul(zgml.lazy.parameter([64, 64], "w"))
+        .add(zgml.lazy.parameter([64], "b"))
+        .tanh(),
+      {
+        weights: new Float32Array(tanhWeights),
+        bias: new Float32Array(tanhBias),
+      },
+      [128, 64],
+    ),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-5,
+    next: "native_eager_fused_matmul_add_tanh_storage_slice",
+  }),
+  Object.freeze({
+    key: "softmax_batched",
+    shape: Object.freeze({ batch: 128, features: 64, op: "softmax" }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 19), [128, 64]),
+    eager: (input) => softmaxModel.forward(input),
+    nativeEager: (output, input) => zgml.nativeEager.softmaxInto(output, input, { dim: -1 }),
+    nativeEagerModule: (input) => softmaxModel.forward(input),
+    nativeEagerModuleNoGrad: true,
+    compiled: () => compiledInferenceHandle(softmaxBatchedModel(), [128, 64]),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-5,
+    next: "native_eager_softmax_storage_slice",
+  }),
+  Object.freeze({
+    key: "log_softmax_batched",
+    shape: Object.freeze({ batch: 128, features: 64, op: "logSoftmax" }),
+    outputLen: 128 * 64,
+    input: () => zgml.tensor(values(128 * 64, 19), [128, 64]),
+    eager: (input) => logSoftmaxModel.forward(input),
+    nativeEager: (output, input) => zgml.nativeEager.logSoftmaxInto(output, input, { dim: -1 }),
+    nativeEagerModule: (input) => logSoftmaxModel.forward(input),
+    nativeEagerModuleNoGrad: true,
+    compiled: () => compiledInferenceHandle(logSoftmaxBatchedModel(), [128, 64]),
+    eagerIterations: 100,
+    nativeEagerIterations: 1000,
+    nativeEagerModuleIterations: 1000,
+    compiledIterations: 1000,
+    tolerance: 1e-5,
+    next: "native_eager_log_softmax_storage_slice",
+  }),
+  Object.freeze({
+    key: "conv2d_batched",
+    shape: Object.freeze({ batch: 2, inChannels: 1, height: 64, width: 64, outChannels: 1, kernel: 3 }),
+    outputLen: 2 * 1 * 62 * 62,
+    input: () => zgml.tensor(values(2 * 1 * 64 * 64, 11), [2, 1, 64, 64]),
+    eager: (input) => conv2dModel.forward(input),
+    nativeEager: (output, input) => zgml.nativeEager.conv2dInto(output, input, conv2dWeightTensor, {
+      bias: conv2dBiasTensor,
+      outH: 62,
+      outW: 62,
+    }),
+    nativeEagerModule: (input) => conv2dModel.forward(input),
+    nativeEagerModuleNoGrad: true,
+    compiled: () => compiledInferenceHandle(conv2dBatchedModel(), [2, 1, 64, 64]),
+    eagerIterations: 50,
+    nativeEagerIterations: 200,
+    nativeEagerModuleIterations: 200,
+    compiledIterations: 200,
+    minNativeEagerSpeedup: runtime === "bun" ? 0.8 : 0.85,
+    tolerance: 1e-4,
+    next: "native_eager_conv2d_storage_slice",
+  }),
+  Object.freeze({
+    key: "max_pool2d_batched",
+    shape: Object.freeze({ batch: 2, channels: 2, height: 256, width: 256, kernel: 2 }),
+    outputLen: 2 * 2 * 128 * 128,
+    input: () => zgml.tensor(values(2 * 2 * 256 * 256, 13), [2, 2, 256, 256]),
+    eager: (input) => maxPool2dModel.forward(input),
+    nativeEager: (output, input) => zgml.nativeEager.pool2dInto(output, input, {
+      op: "max",
+      kernelH: 2,
+      kernelW: 2,
+      strideH: 2,
+      strideW: 2,
+      outH: 128,
+      outW: 128,
+    }),
+    nativeEagerModule: (input) => maxPool2dModel.forward(input),
+    nativeEagerModuleNoGrad: true,
+    compiled: () => compiledInferenceHandle(maxPool2dBatchedModel(), [2, 2, 256, 256]),
+    eagerIterations: 50,
+    nativeEagerIterations: 200,
+    nativeEagerModuleIterations: 200,
+    compiledIterations: 200,
+    minNativeEagerSpeedup: 0.9,
+    tolerance: 1e-5,
+    next: "native_eager_max_pool2d_storage_slice",
+  }),
+  Object.freeze({
+    key: "avg_pool2d_batched",
+    shape: Object.freeze({ batch: 2, channels: 2, height: 256, width: 256, kernel: 2 }),
+    outputLen: 2 * 2 * 128 * 128,
+    input: () => zgml.tensor(values(2 * 2 * 256 * 256, 17), [2, 2, 256, 256]),
+    eager: (input) => avgPool2dModel.forward(input),
+    nativeEager: (output, input) => zgml.nativeEager.pool2dInto(output, input, {
+      op: "avg",
+      kernelH: 2,
+      kernelW: 2,
+      strideH: 2,
+      strideW: 2,
+      outH: 128,
+      outW: 128,
+      countIncludePad: true,
+    }),
+    nativeEagerModule: (input) => avgPool2dModel.forward(input),
+    nativeEagerModuleNoGrad: true,
+    compiled: () => compiledInferenceHandle(avgPool2dBatchedModel(), [2, 2, 256, 256]),
+    eagerIterations: 50,
+    nativeEagerIterations: 200,
+    nativeEagerModuleIterations: 200,
+    compiledIterations: 200,
+    minNativeEagerSpeedup: runtime === "bun" ? 0.35 : 0.4,
+    minNativeEagerModuleSpeedup: 0.95,
+    tolerance: 1e-5,
+    next: "native_eager_avg_pool2d_storage_slice",
+  }),
+]);
+
+const requestedRowKeys = requestedRows();
+const selectedGapSpecs = requestedRowKeys === null
+  ? gapSpecs
+  : Object.freeze(gapSpecs.filter((spec) => requestedRowKeys.has(spec.key)));
+if (requestedRowKeys !== null) {
+  const selectedKeys = new Set(selectedGapSpecs.map((spec) => spec.key));
+  const missingKeys = Array.from(requestedRowKeys).filter((key) => !selectedKeys.has(key));
+  if (missingKeys.length > 0) {
+    throw new Error(`BENCH_NATIVE_EAGER_ROWS contains unknown row keys: ${missingKeys.join(", ")}`);
+  }
+}
+
+const rows = Object.freeze(selectedGapSpecs.map(benchGap));
+const result = Object.freeze({
+  schema: "zgml.native-eager-gap.v1",
+  runtime,
+  entry: runtimeEntry,
+  nativeFreshness,
+  config: Object.freeze({
+    minTimingMs,
+    measureAttempts,
+    minNativeEagerSpeedup,
+    rows: selectedGapSpecs.map((spec) => spec.key),
+    noGradMicroscopeWorkloads: nativeEagerNoGradMicroscopeWorkloads,
+  }),
+  status: "gap-measured",
+  rows,
+  next: "native_eager_linear_or_matmul_storage_slice",
+});
+let artifactPath = null;
+if (writeArtifact) {
+  const resolvedArtifactDir = resolve(root, artifactDir);
+  mkdirSync(resolvedArtifactDir, { recursive: true });
+  artifactPath = join(resolvedArtifactDir, `native-eager-${timestampForArtifact()}-${process.pid}.json`);
+  writeFileSync(artifactPath, `${JSON.stringify(result, null, 2)}\n`);
+}
+process.stdout.write(`NATIVE_EAGER_GAP_JSON ${JSON.stringify(result)}\n`);
+for (const row of rows) {
+  const nativeEager = row.nativeEagerIntoMs === null
+    ? "native_eager_into=n/a"
+    : `native_eager_into=${row.nativeEagerIntoMs}ms native_eager_speedup=${row.nativeEagerSpeedup}x`;
+  const nativeEagerModule = row.nativeEagerModuleForwardMs === null
+    ? "native_eager_module=n/a"
+    : `native_eager_module=${row.nativeEagerModuleForwardMs}ms native_eager_module_speedup=${row.nativeEagerModuleSpeedup}x`;
+  const compiled = row.compiledHotPath
+    ? `prepared_execute_into=${row.preparedExecuteIntoMs}ms speedup=${row.nativeProgramSpeedup}x`
+    : "prepared_execute_into=n/a speedup=n/a";
+  process.stdout.write(`native eager gap: runtime=${runtime} ${row.key} timing_ms=${row.timingMs} attempts=${row.attempts} selected_attempt=${row.selectedAttempt} eager=${row.eagerMs}ms ${nativeEager} ${nativeEagerModule} ${compiled} next=${row.next}\n`);
+}
+if (artifactPath) {
+  process.stdout.write(`native eager artifact: ${artifactPath}\n`);
+}

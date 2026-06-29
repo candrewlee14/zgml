@@ -236,7 +236,8 @@ pub const GGUFFile = struct {
         var metadata: std.StringHashMapUnmanaged(MetaValue) = .{};
         errdefer metadata.deinit(alloc);
 
-        for (0..kv_count) |_| {
+        const kv_count_usize: usize = std.math.cast(usize, kv_count) orelse return error.InvalidFormat;
+        for (0..kv_count_usize) |_| {
             const key = readString(buf, &cursor);
             const value = readMetaValue(buf, &cursor);
             try metadata.put(alloc, key, value);
@@ -246,7 +247,8 @@ pub const GGUFFile = struct {
         var tensors: std.StringHashMapUnmanaged(TensorInfo) = .{};
         errdefer tensors.deinit(alloc);
 
-        for (0..tensor_count) |_| {
+        const tensor_count_usize: usize = std.math.cast(usize, tensor_count) orelse return error.InvalidFormat;
+        for (0..tensor_count_usize) |_| {
             const name = readString(buf, &cursor);
             const n_dims = readVal(u32, buf, &cursor);
             var dims: [4]u64 = .{ 1, 1, 1, 1 };

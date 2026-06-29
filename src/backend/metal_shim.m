@@ -51,38 +51,6 @@ void* mtl_create_pipeline(void* device, void* library, const char* name) {
     return pipeline;
 }
 
-void mtl_dispatch_compute(
-    void* queue,
-    void* pipeline,
-    void** buffers,
-    unsigned int num_buffers,
-    const void* params,
-    size_t params_size,
-    unsigned int params_index,
-    unsigned int grid_x,
-    unsigned int grid_y,
-    unsigned int threads_x,
-    unsigned int threads_y
-) {
-    id<MTLCommandBuffer> cmd = [(id<MTLCommandQueue>)queue commandBuffer];
-    id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-    [enc setComputePipelineState:(id<MTLComputePipelineState>)pipeline];
-
-    for (unsigned int i = 0; i < num_buffers; i++) {
-        [enc setBuffer:(id<MTLBuffer>)buffers[i] offset:0 atIndex:i];
-    }
-    if (params && params_size > 0) {
-        [enc setBytes:params length:params_size atIndex:params_index];
-    }
-
-    MTLSize grid = MTLSizeMake(grid_x, grid_y, 1);
-    MTLSize group = MTLSizeMake(threads_x, threads_y, 1);
-    [enc dispatchThreadgroups:grid threadsPerThreadgroup:group];
-    [enc endEncoding];
-    [cmd commit];
-    [cmd waitUntilCompleted];
-}
-
 // ── Batched command encoding ─────────────────────────────────────
 
 // Wrapper holding a command buffer + compute encoder for batched dispatch.

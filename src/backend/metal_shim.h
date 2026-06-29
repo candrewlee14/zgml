@@ -22,22 +22,6 @@ void* mtl_buffer_contents(void* buffer);
 void* mtl_compile_source(void* device, const char* source, size_t len);
 void* mtl_create_pipeline(void* device, void* library, const char* name);
 
-// Compute dispatch: encode + commit + wait (synchronous).
-// Binds `num_buffers` MTLBuffers at indices 0..num_buffers-1,
-// then copies `params_size` bytes at index `params_index` via setBytes.
-void mtl_dispatch_compute(
-    void* queue,
-    void* pipeline,
-    void** buffers,
-    unsigned int num_buffers,
-    const void* params,
-    size_t params_size,
-    unsigned int params_index,
-    unsigned int grid_x,
-    unsigned int grid_y,
-    unsigned int threads_x,
-    unsigned int threads_y);
-
 // Batched command encoding — multiple dispatches share one command buffer.
 // mtl_begin_commands creates a command buffer + encoder (returned as opaque handle).
 // mtl_encode_dispatch encodes a dispatch into an existing session.

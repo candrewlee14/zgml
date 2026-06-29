@@ -1,0 +1,329 @@
+"use strict";
+
+const { spawnSync } = require("node:child_process");
+const { existsSync, statSync } = require("node:fs");
+const { resolve } = require("node:path");
+const { benchmarkBinaryMetadata, nativeLibraryPath, newestNativeSourceMtimeMs } = require("./native_freshness.cjs");
+
+const root = resolve(__dirname, "..");
+const frontierBenchmarkBinary = "./zig-out/bin/bench-frontier";
+const fullModelBenchmarkBinary = "./zig-out/bin/bench-llama-smollm";
+
+function runCaptured(command, args, env = process.env) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const err = new Error(`${command} ${args.join(" ")} failed with status ${result.status ?? 1}`);
+    err.output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    throw err;
+  }
+  return result.stdout ?? "";
+}
+
+function runInherited(label, command, args, env = process.env) {
+  console.log(`[next-perf] ${label}: ${[command, ...args].join(" ")}`);
+  const result = spawnSync(command, args, { stdio: "inherit", env });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const signal = result.signal ? ` signal=${result.signal}` : "";
+    throw new Error(`${label} failed with status ${result.status}${signal}`);
+  }
+}
+
+function envWithDefaults(defaults) {
+  return { ...process.env, ...Object.fromEntries(Object.entries(defaults).filter(([key]) => process.env[key] === undefined)) };
+}
+
+function perfNextLine() {
+  const output = runCaptured(process.execPath, ["scripts/bench_status.cjs"]);
+  const line = output.split(/\r?\n/).find((row) => row.startsWith("perf-next:"));
+  if (!line) throw new Error("bench_status did not print a perf-next line");
+  return line;
+}
+
+function freshQsemanticThroughput(line) {
+  const match = line.match(/:fresh=source:[^, ]+,throughput=smollm:([0-9.]+)x,full:([0-9.]+)x/);
+  if (!match) return null;
+  const smollm = Number(match[1]);
+  const full = Number(match[2]);
+  if (!Number.isFinite(smollm) || !Number.isFinite(full)) return null;
+  return { smollm, full };
+}
+
+function chooseLane(line, env = process.env) {
+  const forced = String(env.BENCH_NEXT_PERF_LANE ?? "").trim();
+  if (forced) return forced;
+  const steady = env.BENCH_NEXT_PERF_STEADY === "1";
+  const hasSemanticThroughputFrontier = /frontier=(?:semantic_ffn_sublayer_throughput_kernel|semantic_width_parallel_kernel):candidate=ready/.test(line);
+  const q8PromptNeedsSteadySemanticBridge =
+    /q8_prompt=semantic_bridge_candidate:[^ ]*:next=steady_semantic_bridge_candidate/.test(line);
+  const q8PromptNeedsSemanticBridgeKernel =
+    /q8_prompt=semantic_bridge_candidate:[^ ]*:next=semantic_bridge_throughput_kernel/.test(line);
+  const q8PromptNeedsWidthParallelKernel =
+    /q8_prompt=semantic_bridge_candidate:[^ ]*:next=semantic_width_parallel_kernel/.test(line);
+  const qsemanticInputBridgeNeedsWidthParallelKernel =
+    /qsemantic_input_bridge=[^ ]*:next=semantic_with_input_width_parallel_kernel/.test(line);
+  const q8PromptNeedsInputBridgeWorkPartitioning =
+    /q8_prompt=semantic_bridge_candidate:[^ ]*:next=semantic_input_bridge_work_partitioning/.test(line);
+  const currentQ8NeedsSemanticInputWidth =
+    /q8_current=prompt:[^ ]*:target=semantic_ffn_sublayer_with_input_row_chain:[0-9]+:next=semantic_with_input_width_parallel_kernel/.test(line);
+  const currentQ8NeedsSemanticThroughput =
+    /q8_current=prompt:[^ ]*:target=semantic_ffn_sublayer:[0-9]+:next=semantic_ffn_sublayer_throughput_kernel/.test(line);
+  const freshThroughput = freshQsemanticThroughput(line);
+  const hasFreshQsemanticThroughput = hasSemanticThroughputFrontier && freshThroughput !== null;
+  const qsemanticThroughputBelowDefault =
+    hasSemanticThroughputFrontier &&
+    (!freshThroughput || freshThroughput.smollm < 1 || freshThroughput.full < 1);
+  if (qsemanticThroughputBelowDefault) return "qsemantic_throughput";
+  if (q8PromptNeedsInputBridgeWorkPartitioning) return "q8_prompt_semantic";
+  if (qsemanticInputBridgeNeedsWidthParallelKernel) return "qsemantic_input_bridge";
+  if (currentQ8NeedsSemanticInputWidth) return "qsemantic_input_bridge";
+  if (q8PromptNeedsWidthParallelKernel) return "qsemantic_bridge";
+  if (q8PromptNeedsSemanticBridgeKernel) return "qsemantic_throughput";
+  if (q8PromptNeedsSteadySemanticBridge) return "q8_prompt";
+  if (currentQ8NeedsSemanticThroughput && hasFreshQsemanticThroughput) return "q8_prompt";
+  if (currentQ8NeedsSemanticThroughput && !steady) return "qsemantic_throughput";
+  if (currentQ8NeedsSemanticThroughput && steady && hasSemanticThroughputFrontier) return "qsemantic_throughput";
+  if (/q8_prompt=promoted_semantic_default/.test(line)) return "ggml";
+  if (hasFreshQsemanticThroughput && /q8_prompt=semantic_throughput_kernel/.test(line)) return "q8_prompt";
+  if (
+    !steady &&
+    /frontier=(?:semantic_ffn_sublayer_throughput_kernel|semantic_width_parallel_kernel):candidate=ready/.test(line)
+  ) return "qsemantic_throughput";
+  if (
+    steady &&
+    /frontier=(?:semantic_ffn_sublayer_throughput_kernel|semantic_width_parallel_kernel):candidate=ready/.test(line) &&
+    /q8_prompt=semantic_throughput_kernel/.test(line)
+  ) return "q8_prompt";
+  if (/frontier=(?:semantic_ffn_sublayer_throughput_kernel|semantic_width_parallel_kernel)/.test(line)) return "qsemantic";
+  if (/q8_prompt=semantic_throughput_kernel/.test(line)) return "q8_prompt";
+  if (/pytorch=(?!none\b)[^ ]+/.test(line)) return "pytorch";
+  if (/full_model=/.test(line)) return "qsemantic";
+  return "status";
+}
+
+function validateLane(lane) {
+  const known = new Set(["status", "pytorch", "qsemantic", "qsemantic_throughput", "qsemantic_bridge", "qsemantic_input_bridge", "qproj", "q8_prompt", "q8_prompt_semantic", "ggml"]);
+  if (!known.has(lane)) throw new Error(`unknown BENCH_NEXT_PERF_LANE: ${lane}`);
+}
+
+function nextPerfBuildMode(env = process.env) {
+  const raw = env.BENCH_NEXT_PERF_BUILD;
+  if (raw === undefined || raw === "") return "auto";
+  if (raw === "0") return "never";
+  if (raw === "1") return "force";
+  throw new Error(`BENCH_NEXT_PERF_BUILD must be 0, 1, or unset for auto; got ${raw}`);
+}
+
+function benchmarkBinaryNeedsBuild(binary) {
+  const metadata = benchmarkBinaryMetadata({ root, binary, build: "0" });
+  return metadata.stale || !metadata.binaryExists;
+}
+
+function nativeLibraryNeedsBuild() {
+  const libPath = nativeLibraryPath(root);
+  if (!existsSync(libPath)) return true;
+  const libStat = statSync(libPath);
+  const newestSource = newestNativeSourceMtimeMs([resolve(root, "build.zig"), resolve(root, "src")]);
+  return newestSource.mtimeMs > libStat.mtimeMs + 1;
+}
+
+function laneUsesFrontierBenchmark(lane) {
+  return lane === "qsemantic" || lane === "qsemantic_throughput" || lane === "qsemantic_bridge" || lane === "qsemantic_input_bridge" || lane === "qproj";
+}
+
+function laneUsesFullModelBenchmark(lane) {
+  return lane === "q8_prompt" || lane === "q8_prompt_semantic" || lane === "ggml";
+}
+
+function laneBuildPlan(lane, mode = nextPerfBuildMode()) {
+  const frontier =
+    laneUsesFrontierBenchmark(lane) && (mode === "force" || (mode === "auto" && benchmarkBinaryNeedsBuild(frontierBenchmarkBinary)));
+  const fullModel =
+    laneUsesFullModelBenchmark(lane) && (mode === "force" || (mode === "auto" && benchmarkBinaryNeedsBuild(fullModelBenchmarkBinary)));
+  const nativeFfi = lane === "pytorch" && (mode === "force" || (mode === "auto" && nativeLibraryNeedsBuild()));
+  return { mode, frontier, fullModel, nativeFfi };
+}
+
+function buildPlanLabel(plan) {
+  if (plan.mode === "force") return "yes";
+  if (plan.mode === "never") return "no";
+  if (plan.frontier || plan.fullModel || plan.nativeFfi) return "auto:yes";
+  return "auto:fresh";
+}
+
+function main() {
+  const line = perfNextLine();
+  const lane = chooseLane(line);
+  validateLane(lane);
+  const buildPlan = laneBuildPlan(lane);
+  const dryRun = process.argv.includes("--dry-run") || process.env.BENCH_NEXT_PERF_DRY_RUN === "1";
+  const steady = process.env.BENCH_NEXT_PERF_STEADY === "1" || /q8_prompt=semantic_bridge_candidate:[^ ]*:next=steady_semantic_bridge_candidate/.test(line);
+  console.log(`[next-perf] ${line}`);
+  console.log(`[next-perf] lane=${lane} build=${buildPlanLabel(buildPlan)} steady=${steady ? "yes" : "no"} dry_run=${dryRun ? "yes" : "no"}`);
+
+  if (lane === "status") return;
+  if (dryRun) return;
+
+  if (buildPlan.frontier) {
+    runInherited("build frontier benchmark artifact", "zig", ["build", "-Doptimize=ReleaseFast", "bench-frontier-build", "-fincremental", "--summary", "failures"]);
+  }
+  if (buildPlan.fullModel) {
+    runInherited("build benchmark artifacts", "zig", ["build", "-Doptimize=ReleaseFast", "bench-build", "-fincremental", "--summary", "failures"]);
+  }
+  if (buildPlan.nativeFfi) {
+    runInherited("build native ffi", "zig", ["build", "ffi-c", "-Doptimize=ReleaseFast", "-fincremental", "--summary", "failures"]);
+  }
+
+  if (lane === "qsemantic") {
+    runInherited(
+      "qsemantic frontier",
+      process.execPath,
+      ["scripts/check_frontier_bench.cjs"],
+      envWithDefaults({
+        BENCH_FRONTIER_BUILD: "0",
+        BENCH_FRONTIER_ATTEMPTS: steady ? "3" : "1",
+        BENCH_FRONTIER_FILTER: "qsemantic",
+      }),
+    );
+    return;
+  }
+
+  if (lane === "qsemantic_throughput") {
+    runInherited(
+      "qsemantic throughput frontier",
+      process.execPath,
+      ["scripts/check_frontier_bench.cjs"],
+      envWithDefaults({
+        BENCH_FRONTIER_BUILD: "0",
+        BENCH_FRONTIER_ATTEMPTS: steady ? "3" : "1",
+        BENCH_QSEMANTIC_VARIANTS: "throughput_candidate",
+        BENCH_FRONTIER_FILTER: "qsemantic",
+      }),
+    );
+    return;
+  }
+
+  if (lane === "qsemantic_bridge") {
+    runInherited(
+      "qsemantic bridge frontier",
+      process.execPath,
+      ["scripts/check_frontier_bench.cjs"],
+      envWithDefaults({
+        BENCH_FRONTIER_BUILD: "0",
+        BENCH_FRONTIER_ATTEMPTS: "3",
+        BENCH_QSEMANTIC_VARIANTS: "throughput_candidate",
+        BENCH_FRONTIER_FILTER: "qsemantic bridge",
+      }),
+    );
+    return;
+  }
+
+  if (lane === "qsemantic_input_bridge") {
+    runInherited(
+      "qsemantic input bridge frontier",
+      process.execPath,
+      ["scripts/check_frontier_bench.cjs"],
+      envWithDefaults({
+        BENCH_FRONTIER_BUILD: "0",
+        BENCH_FRONTIER_ATTEMPTS: "3",
+        BENCH_QSEMANTIC_VARIANTS: "throughput_candidate",
+        BENCH_FRONTIER_FILTER: "qsemantic input bridge",
+      }),
+    );
+    return;
+  }
+
+  if (lane === "qproj") {
+    runInherited(
+      "qproj frontier",
+      process.execPath,
+      ["scripts/check_frontier_bench.cjs"],
+      envWithDefaults({
+        BENCH_FRONTIER_BUILD: "0",
+        BENCH_FRONTIER_ATTEMPTS: steady ? "3" : "1",
+        BENCH_FRONTIER_FILTER: "qproj",
+      }),
+    );
+    return;
+  }
+
+  if (lane === "q8_prompt") {
+    runInherited(
+      "q8 prompt viable full-model",
+      process.execPath,
+      ["scripts/check_q8_prompt_candidate.cjs"],
+      envWithDefaults({
+        BENCH_BUILD_ZGML: "0",
+        BENCH_CANDIDATE_ATTEMPTS: steady ? "3" : "1",
+        BENCH_Q8_PROMPT_LANES: "command,two_phase,semantic",
+        BENCH_Q8_PROMPT_PAIR_DEFAULTS: steady ? "1" : "0",
+      }),
+    );
+    return;
+  }
+
+  if (lane === "q8_prompt_semantic") {
+    runInherited(
+      "q8 prompt semantic full-model",
+      process.execPath,
+      ["scripts/check_q8_prompt_candidate.cjs"],
+      envWithDefaults({
+        BENCH_BUILD_ZGML: "0",
+        BENCH_CANDIDATE_ATTEMPTS: steady ? "3" : "1",
+        BENCH_Q8_PROMPT_LANES: "semantic",
+        BENCH_Q8_PROMPT_PAIR_DEFAULTS: "1",
+      }),
+    );
+    return;
+  }
+
+  if (lane === "pytorch") {
+    runInherited(
+      "pytorch current gap",
+      process.execPath,
+      ["scripts/check_pytorch_comparison.cjs"],
+      envWithDefaults({
+        BENCH_PYTORCH_INSTALL: "1",
+        BENCH_PYTORCH_ATTEMPTS: steady ? "3" : "1",
+        BENCH_PYTORCH_MIN_TIMING_MS: steady ? "150" : "8",
+        BENCH_MODULE_PROGRAM_MIN_TIMING_MS: steady ? "150" : "8",
+        BENCH_PYTORCH_KEYS: "linear_batched,log_softmax_classifier_batched",
+      }),
+    );
+    return;
+  }
+
+  if (lane === "ggml") {
+    runInherited(
+      "ggml smoke",
+      "./scripts/bench_vs_ggml.sh",
+      [
+        process.env.BENCH_GGML_PROMPT ?? "128",
+        process.env.BENCH_GGML_GEN ?? "40",
+        process.env.BENCH_GGML_REPS ?? "1",
+      ],
+      envWithDefaults({
+        BENCH_BUILD_ZGML: "0",
+        BENCH_ALLOW_QUARANTINED: "1",
+        BENCH_ZGML_SAMPLES: "1",
+      }),
+    );
+  }
+}
+
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    if (error && typeof error === "object" && "output" in error) process.stderr.write(String(error.output));
+    console.error(`[next-perf] ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+}
+
+module.exports = { chooseLane, freshQsemanticThroughput, laneBuildPlan, nextPerfBuildMode, validateLane };

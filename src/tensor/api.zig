@@ -13,7 +13,6 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Alloc = std.mem.Allocator;
 const Op = @import("../op.zig").Op;
-const indexlib = @import("../index.zig");
 const max_dims = @import("../tensor.zig").max_dims;
 
 pub fn Api(comptime Self: type, comptime T: type) type {
@@ -21,15 +20,6 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         /// Get the tensor's allocator. Panics if not set.
         inline fn a(self: *Self) Alloc {
             return self.alloc.?;
-        }
-
-        fn wrapIndexTensor(self: *Self, indices: anytype) *Self {
-            const Idx = @TypeOf(indices.*.data[0]);
-            const IndexTensor = indexlib.IndexTensor(Idx);
-            const typed_indices: *const IndexTensor = indices;
-            const vals = typed_indices.toUsizeOwned(a(self)) catch unreachable;
-            defer a(self).free(vals);
-            return Self.initIndexVectorCopy(a(self), vals) catch unreachable;
         }
 
         fn scalarRepeatLike(self: *Self, val: T, other: *Self) *Self {
@@ -74,7 +64,7 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const is_node = self.grad != null;
             const res = Self.initHelper(alloc, ne, self.data) catch unreachable;
             res.op = op;
-            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.grad = if (is_node) copyTensorShape(res) else null;
             res.src0 = self;
             res.src1 = null;
             res.strides = strides;
@@ -85,7 +75,7 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         fn unaryOp(self: *Self, op: Op, inplace: bool) *Self {
             const alloc = a(self);
             const is_node: bool = !inplace and self.grad != null;
-            const res = if (inplace) self.view() else self.copyTensorShape();
+            const res = if (inplace) self.view() else copyTensorShape(self);
             res.op = op;
             res.grad = if (is_node) blk: {
                 const g = Self.initHelper(alloc, &self.ne, null) catch unreachable;
@@ -148,9 +138,9 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return self.mul(aux(other.recip()));
         }
 
-        /// Element-wise square. Decomposes to `mul(self, self)`.
+        /// Element-wise square.
         pub fn sqr(self: *Self) *Self {
-            return self.mul(self);
+            return unaryOp(self, .sqr, false);
         }
 
         // ---------------------------------------------------------------
@@ -181,11 +171,17 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         pub fn step(self: *Self) *Self {
             return unaryOp(self, .step, false);
         }
-        pub fn reluPrimitive(self: *Self) *Self {
-            return unaryOp(self, .relu, false);
-        }
         pub fn gelu(self: *Self) *Self {
             return unaryOp(self, .gelu, false);
+        }
+        pub fn sigmoid(self: *Self) *Self {
+            return unaryOp(self, .sigmoid, false);
+        }
+        pub fn silu(self: *Self) *Self {
+            return unaryOp(self, .silu, false);
+        }
+        pub fn tanh(self: *Self) *Self {
+            return unaryOp(self, .tanh, false);
         }
         /// Element-wise ReLU primitive.
         pub fn relu(self: *Self) *Self {
@@ -200,9 +196,25 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         pub fn sumAll(self: *Self) *Self {
             return sum(self, &.{1});
         }
+        /// Product-reduce all elements into a scalar.
+        pub fn prodAll(self: *Self) *Self {
+            return prod(self, &.{1});
+        }
         /// Max-reduce all elements into a scalar.
         pub fn maxAll(self: *Self) *Self {
             return max(self, &.{1});
+        }
+        /// Min-reduce all elements into a scalar.
+        pub fn minAll(self: *Self) *Self {
+            return min(self, &.{1});
+        }
+        /// Argmax-reduce all elements into a scalar index.
+        pub fn argmaxAll(self: *Self) *Self {
+            return argmax(self, &.{1});
+        }
+        /// Argmin-reduce all elements into a scalar index.
+        pub fn argminAll(self: *Self) *Self {
+            return argmin(self, &.{1});
         }
 
         /// Sum (reduce) elements into the given target shape.
@@ -213,7 +225,20 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const is_node: bool = self.grad != null;
             const res = Self.init(alloc, ne) catch unreachable;
             res.op = .sum;
-            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.grad = if (is_node) copyTensorShape(res) else null;
+            res.src0 = self;
+            return res;
+        }
+
+        /// Product-reduce elements into the given target shape.
+        pub fn prod(self: *Self, ne: []const usize) *Self {
+            const alloc = a(self);
+            assert(ne.len <= max_dims);
+            assert(self.canSumToShape(ne));
+            const is_node: bool = self.grad != null;
+            const res = Self.init(alloc, ne) catch unreachable;
+            res.op = .prod;
+            res.grad = if (is_node) copyTensorShape(res) else null;
             res.src0 = self;
             return res;
         }
@@ -226,9 +251,87 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const is_node: bool = self.grad != null;
             const res = Self.init(alloc, ne) catch unreachable;
             res.op = .max;
-            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.grad = if (is_node) copyTensorShape(res) else null;
             res.src0 = self;
             return res;
+        }
+
+        /// Min-reduce elements into the given target shape.
+        pub fn min(self: *Self, ne: []const usize) *Self {
+            const alloc = a(self);
+            assert(ne.len <= max_dims);
+            assert(self.canSumToShape(ne));
+            const is_node: bool = self.grad != null;
+            const res = Self.init(alloc, ne) catch unreachable;
+            res.op = .min;
+            res.grad = if (is_node) copyTensorShape(res) else null;
+            res.src0 = self;
+            return res;
+        }
+
+        /// Argmax-reduce elements into the given target shape, returning f32 indices.
+        pub fn argmax(self: *Self, ne: []const usize) *Self {
+            const alloc = a(self);
+            assert(ne.len <= max_dims);
+            assert(self.canSumToShape(ne));
+            const res = Self.init(alloc, ne) catch unreachable;
+            res.op = .argmax;
+            res.src0 = self;
+            return res;
+        }
+
+        /// Argmin-reduce elements into the given target shape, returning f32 indices.
+        pub fn argmin(self: *Self, ne: []const usize) *Self {
+            const alloc = a(self);
+            assert(ne.len <= max_dims);
+            assert(self.canSumToShape(ne));
+            const res = Self.init(alloc, ne) catch unreachable;
+            res.op = .argmin;
+            res.src0 = self;
+            return res;
+        }
+
+        fn reduceShapeForDim(self: *Self, dim: usize) [max_dims]usize {
+            assert(dim < self.n_dims);
+            var out_ne = self.ne;
+            out_ne[dim] = 1;
+            return out_ne;
+        }
+
+        /// Sum-reduce one dimension while preserving rank.
+        pub fn sumDim(self: *Self, dim: usize) *Self {
+            const out_ne = reduceShapeForDim(self, dim);
+            return self.sum(out_ne[0..self.n_dims]);
+        }
+
+        /// Product-reduce one dimension while preserving rank.
+        pub fn prodDim(self: *Self, dim: usize) *Self {
+            const out_ne = reduceShapeForDim(self, dim);
+            return self.prod(out_ne[0..self.n_dims]);
+        }
+
+        /// Max-reduce one dimension while preserving rank.
+        pub fn maxDim(self: *Self, dim: usize) *Self {
+            const out_ne = reduceShapeForDim(self, dim);
+            return self.max(out_ne[0..self.n_dims]);
+        }
+
+        /// Min-reduce one dimension while preserving rank.
+        pub fn minDim(self: *Self, dim: usize) *Self {
+            const out_ne = reduceShapeForDim(self, dim);
+            return self.min(out_ne[0..self.n_dims]);
+        }
+
+        /// Argmax-reduce one dimension while preserving rank.
+        pub fn argmaxDim(self: *Self, dim: usize) *Self {
+            const out_ne = reduceShapeForDim(self, dim);
+            return self.argmax(out_ne[0..self.n_dims]);
+        }
+
+        /// Argmin-reduce one dimension while preserving rank.
+        pub fn argminDim(self: *Self, dim: usize) *Self {
+            const out_ne = reduceShapeForDim(self, dim);
+            return self.argmin(out_ne[0..self.n_dims]);
         }
 
         /// Sum into another tensor's shape.
@@ -237,10 +340,12 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             assert(self.canSumTo(other));
             const is_node: bool = self.grad != null;
             if (self.isSameShape(other) and !is_node) return self;
-            const res = other.view();
+            const res = Self.initHelper(alloc, other.ne[0..other.n_dims], other.data) catch unreachable;
             res.op = .sum;
             res.grad = if (is_node) Self.initHelper(alloc, &res.ne, null) catch unreachable else null;
             res.src0 = self;
+            res.strides = other.strides;
+            res.storage_offset = other.storage_offset;
             return res;
         }
 
@@ -249,6 +354,12 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const s = aux(self.sum(ne));
             const count: T = @floatFromInt(self.nElems() / s.nElems());
             return s.mul(scalarRepeatLike(self, 1.0 / count, s));
+        }
+
+        /// Mean-reduce one dimension while preserving rank.
+        pub fn meanDim(self: *Self, dim: usize) *Self {
+            const out_ne = reduceShapeForDim(self, dim);
+            return self.mean(out_ne[0..self.n_dims]);
         }
 
         // ---------------------------------------------------------------
@@ -305,10 +416,16 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const is_node: bool = self.grad != null;
             const res = Self.init(alloc, self.ne[0..self.n_dims]) catch unreachable;
             res.op = .softmax;
-            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.grad = if (is_node) copyTensorShape(res) else null;
             res.src0 = self;
             res.setReduceNe(ne);
             return res;
+        }
+
+        /// Numerically stable softmax over one dimension.
+        pub fn softmaxDim(self: *Self, dim: usize) *Self {
+            const out_ne = reduceShapeForDim(self, dim);
+            return self.softmax(out_ne[0..self.n_dims]);
         }
 
         /// Numerically stable log-softmax.
@@ -320,7 +437,15 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const sum_t = aux(exps.sum(ne));
             const log_norm = aux(sum_t.log());
             const rep_log = aux(log_norm.repeatLike(shifted));
-            return shifted.sub(rep_log);
+            const res = shifted.sub(rep_log);
+            res.setReduceNe(ne);
+            return res;
+        }
+
+        /// Numerically stable log-softmax over one dimension.
+        pub fn logSoftmaxDim(self: *Self, dim: usize) *Self {
+            const out_ne = reduceShapeForDim(self, dim);
+            return self.logSoftmax(out_ne[0..self.n_dims]);
         }
 
         /// RMS normalization: `x / sqrt(mean(x²) + eps)`.
@@ -335,7 +460,7 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const is_node: bool = self.grad != null;
             const res = Self.init(alloc, self.ne[0..self.n_dims]) catch unreachable;
             res.op = .rmsnorm;
-            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.grad = if (is_node) copyTensorShape(res) else null;
             res.src0 = self;
             res.setReduceNe(ne);
             res.setOpEps(eps);
@@ -362,7 +487,7 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const is_node = self.grad != null or k.grad != null or v.grad != null;
             const res = Self.init(alloc, &.{ self.ne[0], self.ne[1] }) catch unreachable;
             res.op = .attention;
-            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.grad = if (is_node) copyTensorShape(res) else null;
             res.src0 = self;
             res.src1 = k;
             res.src2 = v;
@@ -387,7 +512,7 @@ pub fn Api(comptime Self: type, comptime T: type) type {
 
         /// Add a lower-dimensional bias tensor, auto-broadcasting to self's shape.
         pub fn addBias(self: *Self, bias: *Self) *Self {
-            return self.add(aux(bias.repeatLike(self)));
+            return self.add(bias);
         }
 
         /// Scale every element by a scalar value.
@@ -417,11 +542,16 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const res = Self.init(alloc, out_ne[0..@min(self.n_dims, other.n_dims)]) catch unreachable;
             res.op = .matmul;
             res.matmul_flags = .{ .trans0 = trans_self, .trans1 = trans_other };
-            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.grad = if (is_node) copyTensorShape(res) else null;
             res.src0 = self;
             res.src1 = other;
             res.assertValidMatMulDims(self, trans_self, other, trans_other);
             return res;
+        }
+
+        /// Common matrix multiply without transpose flags.
+        pub fn mm(self: *Self, other: *Self) *Self {
+            return self.matMul(false, other, false);
         }
 
         // ---------------------------------------------------------------
@@ -467,9 +597,9 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         pub fn reshape(self: *Self, ne: []const usize) *Self {
             const target = if (self.isContiguous()) self else aux(self.contiguous());
             const ne_prod = blk: {
-                var prod: usize = 1;
-                for (ne) |item| prod *= item;
-                break :blk prod;
+                var product: usize = 1;
+                for (ne) |item| product *= item;
+                break :blk product;
             };
             assert(target.nElems() == ne_prod);
             var strides: [max_dims]usize = [_]usize{0} ** max_dims;
@@ -530,14 +660,14 @@ pub fn Api(comptime Self: type, comptime T: type) type {
         // ---------------------------------------------------------------
 
         pub fn gatherRows(self: *Self, indices: *Self) *Self {
-            const alloc = a(self);
+            const alloc = if (self.isParam()) a(indices) else a(self);
             assert(self.isMatrix());
             assert(indices.isVector());
             assert(indices.hasIndexBuffer() or indices.data.len == indices.ne[0]);
             const is_node = self.grad != null;
             const res = Self.init(alloc, &.{ self.ne[0], indices.ne[0] }) catch unreachable;
             res.op = .gather_rows;
-            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.grad = if (is_node) copyTensorShape(res) else null;
             res.src0 = self;
             res.src1 = indices;
             return res;
@@ -552,7 +682,7 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const is_node = self.grad != null;
             const res = Self.init(alloc, &.{indices.ne[0]}) catch unreachable;
             res.op = .pick_rows;
-            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.grad = if (is_node) copyTensorShape(res) else null;
             res.src0 = self;
             res.src1 = indices;
             return res;
@@ -569,7 +699,7 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const is_node = updates.grad != null;
             const res = Self.init(alloc, self.ne[0..self.n_dims]) catch unreachable;
             res.op = .scatter_add_rows;
-            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.grad = if (is_node) copyTensorShape(res) else null;
             res.src0 = updates;
             res.src1 = indices;
             return res;
@@ -586,7 +716,7 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const is_node = updates.grad != null;
             const res = Self.init(alloc, self.ne[0..self.n_dims]) catch unreachable;
             res.op = .scatter_add_picks;
-            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.grad = if (is_node) copyTensorShape(res) else null;
             res.src0 = updates;
             res.src1 = indices;
             return res;
@@ -628,7 +758,7 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             const is_node = self.grad != null or cos_sin.grad != null;
             const res = Self.init(alloc, self.ne[0..self.n_dims]) catch unreachable;
             res.op = .rope;
-            res.grad = if (is_node) res.copyTensorShape() else null;
+            res.grad = if (is_node) copyTensorShape(res) else null;
             res.src0 = self;
             res.src1 = cos_sin;
             return res;
@@ -727,8 +857,8 @@ pub fn Api(comptime Self: type, comptime T: type) type {
                 0,
             ));
 
-            const prod = aux(windows_expanded.mul(kernel_view));
-            return prod.sum(&.{ out_w, out_h, 1, 1, 1, c_out, batch }).reshape(&.{ out_w, out_h, c_out, batch });
+            const product = aux(windows_expanded.mul(kernel_view));
+            return product.sum(&.{ out_w, out_h, 1, 1, 1, c_out, batch }).reshape(&.{ out_w, out_h, c_out, batch });
         }
 
         /// 2×2 max pooling with stride 2. Composite op.
@@ -755,14 +885,25 @@ pub fn Api(comptime Self: type, comptime T: type) type {
             return windows.max(&.{ out_w, out_h, 1, 1, C, N }).reshape(&.{ out_w, out_h, C, N });
         }
 
-        pub fn gatherRowsIdx(self: *Self, indices: anytype) *Self {
-            const idx_tensor = wrapIndexTensor(self, indices);
-            return self.gatherRows(idx_tensor);
-        }
+        /// 2x2 average pooling with stride 2. Composite op.
+        /// self: input  [W, H, C, N]  (W and H must be even)
+        /// result:      [W/2, H/2, C, N]
+        pub fn avgPool2d(self: *Self) *Self {
+            assert(self.n_dims == 4);
+            assert(self.ne[0] % 2 == 0);
+            assert(self.ne[1] % 2 == 0);
+            const out_w = self.ne[0] / 2;
+            const out_h = self.ne[1] / 2;
+            const C = self.ne[2];
+            const N = self.ne[3];
 
-        pub fn pickRowsIdx(self: *Self, indices: anytype) *Self {
-            const idx_tensor = wrapIndexTensor(self, indices);
-            return self.pickRows(idx_tensor);
+            const windows = aux(self.asStrided(
+                &.{ out_w, out_h, 2, 2, C, N },
+                &.{ self.strides[0] * 2, self.strides[1] * 2, self.strides[0], self.strides[1], self.strides[2], self.strides[3] },
+                0,
+            ));
+
+            return windows.mean(&.{ out_w, out_h, 1, 1, C, N }).reshape(&.{ out_w, out_h, C, N });
         }
     };
 }

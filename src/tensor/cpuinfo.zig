@@ -23,13 +23,6 @@ pub fn detectSimdWidth() SimdWidth {
     };
 }
 
-/// Optimal SIMD vector lane count for a given element type, based on runtime detection.
-pub fn optimalVecSize(comptime T: type) usize {
-    const width = detectSimdWidth();
-    const lanes = @as(usize, @intFromEnum(width)) / @sizeOf(T);
-    return if (lanes >= 4) lanes else 4;
-}
-
 // ---------------------------------------------------------------------------
 // x86/x86_64: CPUID-based detection
 // ---------------------------------------------------------------------------

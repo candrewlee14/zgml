@@ -25,25 +25,16 @@ pub const SafetensorsFile = struct {
     header_json: []const u8,
     data_start: usize,
 
-    pub fn open(alloc: Alloc, path: []const u8, io: std.Io) !SafetensorsFile {
-        const file = try std.Io.Dir.cwd().openFile(io, path, .{});
-        defer file.close(io);
-
-        const file_size = (try file.stat(io)).size;
-        if (file_size < 8) return error.InvalidFormat;
-
-        // Read entire file into aligned buffer
-        const buf = try alloc.alignedAlloc(u8, .@"4", file_size);
+    pub fn fromOwnedBuffer(alloc: Alloc, buf: []align(4) u8) !SafetensorsFile {
         errdefer alloc.free(buf);
-        const bytes_read = try file.readPositionalAll(io, buf, 0);
-        if (bytes_read != file_size) return error.UnexpectedEof;
+        if (buf.len < 8) return error.InvalidFormat;
 
-        // Parse header length
         const header_len = std.mem.readInt(u64, buf[0..8], .little);
-        if (8 + header_len > file_size) return error.InvalidFormat;
+        const header_len_usize: usize = std.math.cast(usize, header_len) orelse return error.InvalidFormat;
+        if (8 + header_len_usize > buf.len) return error.InvalidFormat;
 
-        const header_json = buf[8..][0..header_len];
-        const data_start = 8 + header_len;
+        const header_json = buf[8..][0..header_len_usize];
+        const data_start = 8 + header_len_usize;
 
         return .{
             .alloc = alloc,
@@ -51,6 +42,32 @@ pub const SafetensorsFile = struct {
             .header_json = header_json,
             .data_start = data_start,
         };
+    }
+
+    pub fn fromBytes(alloc: Alloc, bytes: []const u8) !SafetensorsFile {
+        const buf = try alloc.alignedAlloc(u8, .@"4", bytes.len);
+        errdefer alloc.free(buf);
+        @memcpy(buf, bytes);
+        return fromOwnedBuffer(alloc, buf);
+    }
+
+    pub fn open(alloc: Alloc, path: []const u8, io: std.Io) !SafetensorsFile {
+        const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+        defer file.close(io);
+
+        const stat_size = (try file.stat(io)).size;
+        const file_size: usize = std.math.cast(usize, stat_size) orelse return error.InvalidFormat;
+        if (file_size < 8) return error.InvalidFormat;
+
+        // Read entire file into aligned buffer
+        const buf = try alloc.alignedAlloc(u8, .@"4", file_size);
+        var buf_owned = true;
+        errdefer if (buf_owned) alloc.free(buf);
+        const bytes_read = try file.readPositionalAll(io, buf, 0);
+        if (bytes_read != file_size) return error.UnexpectedEof;
+
+        buf_owned = false;
+        return fromOwnedBuffer(alloc, buf);
     }
 
     pub fn deinit(self: *SafetensorsFile) void {
@@ -74,6 +91,13 @@ pub const SafetensorsFile = struct {
         const bytes = self.getTensorBytes(offset_start, offset_end);
         const n = bytes.len / @sizeOf(f16);
         return @as([*]const f16, @ptrCast(@alignCast(bytes.ptr)))[0..n];
+    }
+
+    /// Get tensor data as raw 16-bit elements, used for BF16 conversion.
+    pub fn getTensorU16(self: *const SafetensorsFile, offset_start: usize, offset_end: usize) []const u16 {
+        const bytes = self.getTensorBytes(offset_start, offset_end);
+        const n = bytes.len / @sizeOf(u16);
+        return @as([*]const u16, @ptrCast(@alignCast(bytes.ptr)))[0..n];
     }
 
     /// Simple JSON key lookup — finds "key": and returns the value.
@@ -127,12 +151,14 @@ pub const SafetensorsFile = struct {
             const dtype_key = "dtype";
             if (std.mem.indexOf(u8, json[obj_abs..], dtype_key)) |dt_start| {
                 const dt_abs = obj_abs + dt_start + dtype_key.len;
-                if (std.mem.indexOf(u8, json[dt_abs..], "F16") != null) {
-                    // Check it's before the next key
-                    const next_quote = std.mem.indexOf(u8, json[dt_abs..], "\"") orelse json.len - dt_abs;
-                    if (std.mem.indexOf(u8, json[dt_abs..][0..next_quote + 10], "F16") != null) {
-                        dtype = .f16;
-                    }
+                const next_quote = std.mem.indexOf(u8, json[dt_abs..], "\"") orelse json.len - dt_abs;
+                const dtype_window = json[dt_abs..][0..@min(next_quote + 10, json.len - dt_abs)];
+                if (std.mem.indexOf(u8, dtype_window, "BF16") != null) {
+                    dtype = .bf16;
+                } else if (std.mem.indexOf(u8, dtype_window, "F16") != null) {
+                    dtype = .f16;
+                } else if (std.mem.indexOf(u8, dtype_window, "F64") != null) {
+                    dtype = .f64;
                 }
             }
 

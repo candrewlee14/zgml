@@ -18,7 +18,8 @@ pub const max_dims = 8;
 ///
 /// Tensors form the nodes of a computation graph. "Lazy" operations (e.g. `add`,
 /// `mul`, `matMul`) record the operation without computing it — the actual math
-/// runs when `compute()` is called (usually via `ComputeGraph`).
+/// runs through `Tensor.compute()` for eager leaf tests or through
+/// `ComputeGraph.infer()` / `ComputeGraph.run()` for graph execution.
 ///
 /// The runtime layout deliberately keeps hot execution metadata (`ne`, `strides`,
 /// `storage_offset`, `op`, `data`) separate from colder lifecycle bookkeeping
@@ -85,7 +86,6 @@ pub fn Tensor(comptime T: type) type {
         // -- delegation to split-out implementations --
         const api = @import("tensor/api.zig").Api(Self, T);
         const fwd = @import("tensor/forward.zig").Ops(Self, T);
-        const bwd = @import("tensor/backward.zig").Ops(Self);
 
         /// Number of logical dimensions.
         n_dims: u8,
@@ -111,6 +111,13 @@ pub fn Tensor(comptime T: type) type {
         /// Gradient tensor, populated during backward pass. Only present for parameters
         /// and intermediate nodes that contribute to a parameter's gradient.
         grad: ?*Self,
+        /// Original owned gradient buffer for parameters.
+        ///
+        /// `grad` may temporarily point at a graph-built gradient expression
+        /// after `ComputeGraph.buildBackward`; this pointer keeps the durable
+        /// buffer available so persistent module parameters can be restored
+        /// after a graph lifetime ends.
+        param_grad: ?*Self,
         /// First source tensor (left operand or sole input).
         src0: ?*Self,
         /// Second source tensor (right operand for binary ops).
@@ -141,6 +148,29 @@ pub fn Tensor(comptime T: type) type {
             return try initHelper(alloc, ne, null);
         }
 
+        /// Create a tensor from a slice. Shape product must match `data.len`.
+        pub fn fromSlice(alloc: Alloc, ne: []const usize, data: []const T) Alloc.Error!*Self {
+            const tensor = try Self.init(alloc, ne);
+            tensor.setData(data);
+            return tensor;
+        }
+
+        /// Create a tensor filled with `val`.
+        pub fn full(alloc: Alloc, ne: []const usize, val: T) Alloc.Error!*Self {
+            const tensor = try Self.init(alloc, ne);
+            return tensor.setAllScalar(val);
+        }
+
+        /// Create a tensor filled with zeros.
+        pub fn zeros(alloc: Alloc, ne: []const usize) Alloc.Error!*Self {
+            return try Self.full(alloc, ne, 0);
+        }
+
+        /// Create a tensor filled with ones.
+        pub fn ones(alloc: Alloc, ne: []const usize) Alloc.Error!*Self {
+            return try Self.full(alloc, ne, 1);
+        }
+
         /// Create a tensor filled with evenly spaced values in `[start, end)`.
         pub fn initLinspace(alloc: Alloc, ne: []const usize, start: T, end: T) Alloc.Error!*Self {
             const tensor = try Self.init(alloc, ne);
@@ -153,10 +183,34 @@ pub fn Tensor(comptime T: type) type {
             return tensor;
         }
 
+        pub const linspace = initLinspace;
+
         /// Create a scalar (1-element) tensor with value `val`.
         pub fn initScalar(alloc: Alloc, val: T) Alloc.Error!*Self {
             const tensor = try Self.init(alloc, &.{1});
             return tensor.setAllScalar(val);
+        }
+
+        pub const scalar = initScalar;
+
+        /// Create a rank-1 tensor containing `[start, end)` with `step_value`.
+        pub fn arange(alloc: Alloc, start: T, end: T, step_value: T) Alloc.Error!*Self {
+            assert(step_value != 0);
+            var len: usize = 0;
+            var value = start;
+            if (step_value > 0) {
+                while (value < end) : (value += step_value) len += 1;
+            } else {
+                while (value > end) : (value += step_value) len += 1;
+            }
+            assert(len > 0);
+            const tensor = try Self.init(alloc, &.{len});
+            value = start;
+            for (tensor.data) |*d| {
+                d.* = value;
+                value += step_value;
+            }
+            return tensor;
         }
 
         /// Create a tensor filled with uniform random values in `[0, 1)`.
@@ -164,6 +218,23 @@ pub fn Tensor(comptime T: type) type {
             const tensor = try Self.init(alloc, ne);
             for (tensor.data) |*d| {
                 d.* = rng.float(T);
+            }
+            return tensor;
+        }
+
+        pub const rand = initRand;
+
+        /// Create a tensor filled with standard normal random values.
+        pub fn randn(alloc: Alloc, rng: *std.Random, ne: []const usize) Alloc.Error!*Self {
+            const tensor = try Self.init(alloc, ne);
+            var i: usize = 0;
+            while (i < tensor.data.len) : (i += 2) {
+                const box_u = @max(rng.float(T), @as(T, 0.0000001));
+                const box_v = rng.float(T);
+                const radius = @sqrt(@as(T, -2) * @log(box_u));
+                const angle = @as(T, 2) * @as(T, std.math.pi) * box_v;
+                tensor.data[i] = radius * @cos(angle);
+                if (i + 1 < tensor.data.len) tensor.data[i + 1] = radius * @sin(angle);
             }
             return tensor;
         }
@@ -185,6 +256,7 @@ pub fn Tensor(comptime T: type) type {
                 .storage_offset = 0,
                 .op = .none,
                 .grad = null,
+                .param_grad = null,
                 .src0 = null,
                 .src1 = null,
                 .name = null,
@@ -223,6 +295,7 @@ pub fn Tensor(comptime T: type) type {
                 .storage_offset = 0,
                 .op = .none,
                 .grad = null,
+                .param_grad = null,
                 .src0 = null,
                 .src1 = null,
                 .name = null,
@@ -264,11 +337,6 @@ pub fn Tensor(comptime T: type) type {
             return self.src3;
         }
 
-        pub fn setSources(self: *Self, src0: ?*Self, src1: ?*Self) void {
-            self.src0 = src0;
-            self.src1 = src1;
-        }
-
         /// Set the scalar multiplier used by composite ops that embed a scale (attention).
         pub fn setOpScale(self: *Self, scale_val: T) void {
             self.op_scale = scale_val;
@@ -290,19 +358,8 @@ pub fn Tensor(comptime T: type) type {
             return self.op;
         }
 
-        pub fn setOp(self: *Self, op: Op) void {
-            self.op = op;
-        }
-
         pub fn isOp(self: *const Self, op: Op) bool {
             return self.op == op;
-        }
-
-        pub fn sourceIs(self: *const Self, which: enum { src0, src1 }, other: *Self) bool {
-            return switch (which) {
-                .src0 => self.src0 == other,
-                .src1 => self.src1 == other,
-            };
         }
 
         pub fn gradOrNull(self: *const Self) ?*Self {
@@ -315,6 +372,20 @@ pub fn Tensor(comptime T: type) type {
 
         pub fn setGrad(self: *Self, grad: ?*Self) void {
             self.grad = grad;
+        }
+
+        pub fn paramGradOrNull(self: *const Self) ?*Self {
+            return self.param_grad;
+        }
+
+        pub fn syncAndRestoreParamGrad(self: *Self) void {
+            const base = self.param_grad orelse return;
+            if (self.grad) |current| {
+                if (current != base and current.data.ptr != base.data.ptr and current.nElems() == base.nElems()) {
+                    @memcpy(base.data, current.data[0..base.nElems()]);
+                }
+            }
+            self.grad = base;
         }
 
         pub fn isParam(self: *const Self) bool {
@@ -355,10 +426,11 @@ pub fn Tensor(comptime T: type) type {
         ///   are usually released by `ComputeGraph` arena teardown
         pub fn deinit(self: *Self) void {
             const al = self.alloc.?;
-            // Only free grad for params we own — in graph contexts, the arena
-            // handles cleanup. Grad tensors from buildBackward may have shared
-            // references, so we only free the simple case (param with no sources).
-            if (self.ownsStandaloneParamGrad()) {
+            // Free only the durable parameter grad buffer. If `.grad` points at
+            // a graph-built expression, that expression is owned by the graph.
+            if (self.param_grad) |param_grad| {
+                param_grad.deinit();
+            } else if (self.ownsStandaloneParamGrad()) {
                 self.grad.?.deinit();
             }
             if (self.source0()) |src0| {
@@ -378,7 +450,9 @@ pub fn Tensor(comptime T: type) type {
         pub fn setParam(self: *Self) void {
             self.bookkeeping.role = .parameter;
             assert(!self.hasGrad());
-            self.setGrad(self.copyTensorShape());
+            const grad_buf = api.copyTensorShape(self);
+            self.param_grad = grad_buf;
+            self.setGrad(grad_buf);
         }
 
         // ---------------------------------------------------------------
@@ -394,12 +468,7 @@ pub fn Tensor(comptime T: type) type {
         // family directly.
         // ---------------------------------------------------------------
 
-        fn repeatInto(self: *Self, other: *Self) *Self {
-            return api.repeatInto(self, other);
-        }
-
         pub const view = api.view;
-        pub const copyTensorShape = api.copyTensorShape;
         pub const add = api.add;
         pub const addInplace = api.addInplace;
         pub const sub = api.sub;
@@ -411,43 +480,60 @@ pub fn Tensor(comptime T: type) type {
         pub const exp = api.exp;
         pub const log = api.log;
         pub const abs = api.abs;
-        pub const sgn = api.sgn; // Internal: used by backward pass only
+        pub const sgn = api.sgn;
+        pub const step = api.step;
         pub const neg = api.neg;
-        pub const step = api.step; // Internal: used by backward pass only
         pub const relu = api.relu;
         pub const gelu = api.gelu;
+        pub const sigmoid = api.sigmoid;
+        pub const silu = api.silu;
+        pub const tanh = api.tanh;
         pub const sumAll = api.sumAll;
+        pub const prodAll = api.prodAll;
         pub const maxAll = api.maxAll;
+        pub const minAll = api.minAll;
+        pub const argmaxAll = api.argmaxAll;
+        pub const argminAll = api.argminAll;
         pub const sum = api.sum;
+        pub const prod = api.prod;
         pub const max = api.max;
+        pub const min = api.min;
+        pub const argmax = api.argmax;
+        pub const argmin = api.argmin;
+        pub const sumDim = api.sumDim;
+        pub const prodDim = api.prodDim;
+        pub const maxDim = api.maxDim;
+        pub const minDim = api.minDim;
+        pub const argmaxDim = api.argmaxDim;
+        pub const argminDim = api.argminDim;
 
         pub const sumInto = api.sumInto;
         pub const mean = api.mean;
+        pub const meanDim = api.meanDim;
         pub const softmax = api.softmax;
+        pub const softmaxDim = api.softmaxDim;
         pub const logSoftmax = api.logSoftmax;
+        pub const logSoftmaxDim = api.logSoftmaxDim;
         pub const rmsNorm = api.rmsNorm;
         pub const attention = api.attention;
         pub const layerNorm = api.layerNorm;
         pub const repeat = api.repeat;
         pub const repeatLike = api.repeatLike;
         pub const matMul = api.matMul;
+        pub const mm = api.mm;
         pub const gatherRows = api.gatherRows;
-        pub const scatterAddRows = api.scatterAddRows; // Internal: used by backward pass only
         pub const pickRows = api.pickRows;
-        pub const scatterAddPicks = api.scatterAddPicks; // Internal: used by backward pass only
-        pub const gatherRowsIdx = api.gatherRowsIdx;
-        pub const pickRowsIdx = api.pickRowsIdx;
         pub const addBias = api.addBias;
         pub const scaleByVal = api.scaleByVal;
         pub const conv2d = api.conv2d;
         pub const maxPool2d = api.maxPool2d;
+        pub const avgPool2d = api.avgPool2d;
         pub const contiguous = api.contiguous;
         pub const reshapeLike = api.reshapeLike;
         pub const reshape = api.reshape;
         pub const transpose = api.transpose;
         pub const permute = api.permute;
         pub const asStrided = api.asStrided;
-        pub const scatterAddView = api.scatterAddView; // Internal: used by backward pass only
         pub const broadcastTo = api.broadcastTo;
         pub const sliceAssign = api.sliceAssign;
         pub const sliceAssignRows = api.sliceAssignRows;
@@ -467,38 +553,11 @@ pub fn Tensor(comptime T: type) type {
         pub const computeAdd = fwd.computeAdd;
         pub const computeMul = fwd.computeMul;
         pub const computeSub = fwd.computeSub;
-        pub const computeDiv = fwd.computeDiv;
-        pub const computeNeg = fwd.computeNeg;
-        pub const computeAbs = fwd.computeAbs;
-        pub const computeSgn = fwd.computeSgn;
-        pub const computeStep = fwd.computeStep;
         pub const computeRelu = fwd.computeRelu;
-        pub const computeSqrt = fwd.computeSqrt;
-        pub const computeRecip = fwd.computeRecip;
-        pub const computeExp = fwd.computeExp;
-        pub const computeLog = fwd.computeLog;
-        pub const computeGelu = fwd.computeGelu;
         pub const computeSum = fwd.computeSum;
-        pub const computeMax = fwd.computeMax;
-        pub const computeSoftmax = fwd.computeSoftmax;
-        pub const computeRmsNorm = fwd.computeRmsNorm;
-        pub const computeAttention = fwd.computeAttention;
         pub const computeRepeat = fwd.computeRepeat;
-        pub const computeGatherRows = fwd.computeGatherRows;
-        pub const computeScatterAddRows = fwd.computeScatterAddRows;
-        pub const computePickRows = fwd.computePickRows;
-        pub const computeScatterAddPicks = fwd.computeScatterAddPicks;
-        pub const computeTranspose = fwd.computeTranspose;
         pub const computeMatMul = fwd.computeMatMul;
-        pub const computeMatMulWithBackend = fwd.computeMatMulWithBackend;
-        pub const computeMatMulParallel = fwd.computeMatMulParallel;
         pub const assertValidMatMulDims = fwd.assertValidMatMulDims;
-
-        // ---------------------------------------------------------------
-        // Backward — delegated to tensor/backward.zig
-        // ---------------------------------------------------------------
-
-        pub const backward = bwd.backward;
 
         // ---------------------------------------------------------------
         // Utility methods
@@ -663,38 +722,6 @@ pub fn Tensor(comptime T: type) type {
             }
             return true;
         }
-
-        // ---------------------------------------------------------------
-        // Fused elementwise operations
-        //
-        // `map` and `map2` apply a user-provided function element-wise in a
-        // single pass over memory. No intermediate tensors are allocated.
-        // The result is an eagerly-computed leaf tensor (.op = .none).
-        //
-        // LLVM auto-vectorizes the loop in ReleaseFast builds. For explicit
-        // SIMD control, use the compute* functions in tensor/forward.zig.
-        // ---------------------------------------------------------------
-
-        /// Apply a unary function element-wise: `dst[i] = f(self[i])`.
-        /// Computes eagerly — no graph node is created.
-        pub fn map(self: *Self, comptime f: fn (T) T) Alloc.Error!*Self {
-            const dst = try Self.init(self.alloc.?, self.ne[0..self.n_dims]);
-            for (self.data, dst.data) |x, *d| {
-                d.* = f(x);
-            }
-            return dst;
-        }
-
-        /// Apply a binary function element-wise: `dst[i] = f(self[i], other[i])`.
-        /// Both tensors must have the same shape. Computes eagerly.
-        pub fn map2(self: *Self, other: *Self, comptime f: fn (T, T) T) Alloc.Error!*Self {
-            assert(self.isSameShape(other));
-            const dst = try Self.init(self.alloc.?, self.ne[0..self.n_dims]);
-            for (self.data, other.data, dst.data) |aa, b, *d| {
-                d.* = f(aa, b);
-            }
-            return dst;
-        }
     };
 }
 
@@ -706,6 +733,12 @@ test {
 const testing = std.testing;
 const tac = std.testing.allocator;
 const ComputeGraph = @import("graph.zig").ComputeGraph;
+
+fn inferF32(output: *Tensor(f32)) !void {
+    var g = ComputeGraph(f32).init(tac);
+    defer g.deinit();
+    try g.infer(output);
+}
 
 test "ref all decls" {
     _ = testing.refAllDecls(Tensor(f32));
@@ -745,6 +778,41 @@ test "initLinspace" {
         for (t.data, 0..) |v, i| {
             try testing.expectEqual(@as(f32, @floatFromInt(i)) * 0.5, v);
         }
+    }
+}
+
+test "tensor factory helpers" {
+    {
+        const t = try Tensor(f32).zeros(tac, &.{ 2, 2 });
+        defer t.deinit();
+        try testing.expectEqualSlices(f32, &.{ 0, 0, 0, 0 }, t.data);
+    }
+    {
+        const t = try Tensor(f32).ones(tac, &.{3});
+        defer t.deinit();
+        try testing.expectEqualSlices(f32, &.{ 1, 1, 1 }, t.data);
+    }
+    {
+        const t = try Tensor(f32).full(tac, &.{2}, 7);
+        defer t.deinit();
+        try testing.expectEqualSlices(f32, &.{ 7, 7 }, t.data);
+    }
+    {
+        const t = try Tensor(f32).fromSlice(tac, &.{ 2, 2 }, &.{ 1, 2, 3, 4 });
+        defer t.deinit();
+        try testing.expectEqualSlices(f32, &.{ 1, 2, 3, 4 }, t.data);
+    }
+    {
+        const t = try Tensor(f32).arange(tac, 1, 6, 2);
+        defer t.deinit();
+        try testing.expectEqualSlices(f32, &.{ 1, 3, 5 }, t.data);
+    }
+    {
+        var prng = std.Random.DefaultPrng.init(0);
+        var rng = prng.random();
+        const t = try Tensor(f32).randn(tac, &rng, &.{4});
+        defer t.deinit();
+        for (t.data) |v| try testing.expect(std.math.isFinite(v));
     }
 }
 
@@ -843,8 +911,7 @@ test "compute conv2d composite view path" {
     });
 
     const y = x.conv2d(k);
-    try g.buildForward(y);
-    g.compute();
+    try g.infer(y);
 
     try testing.expectEqualSlices(f32, &.{ 2, 4, 6, 8 }, y.data);
 }
@@ -868,10 +935,7 @@ test "backward conv2d composite view path" {
     k.setParam();
 
     const out = x.conv2d(k).sumAll();
-    try g.buildForward(out);
-    try g.buildBackward(false);
-    _ = out.grad.?.setAllScalar(1);
-    g.compute();
+    try g.run(out);
 
     try testing.expectApproxEqAbs(@as(f32, 3), x.grad.?.data[0], 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 3), x.grad.?.data[1], 1e-5);
@@ -938,8 +1002,7 @@ test "compute mean" {
     t1.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
 
     const dst = t1.mean(&.{1});
-    try g.buildForward(dst);
-    g.compute();
+    try g.infer(dst);
 
     try testing.expectApproxEqAbs(@as(f32, 3.5), dst.data[0], 1e-10);
 }
@@ -955,6 +1018,23 @@ test "compute matmul" {
 
     const dst = t1.matMul(false, t2, false);
     defer dst.deinit();
+    dst.computeMatMul(t1, false, t2, false);
+
+    try testing.expectEqualSlices(f32, &.{ 9, 12, 15, 19, 26, 33, 29, 40, 51 }, dst.data);
+}
+
+test "mm is common matmul without transpose flags" {
+    const t1 = try Tensor(f32).init(tac, &.{ 2, 3 });
+    defer t1.deinit();
+    t1.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
+
+    const t2 = try Tensor(f32).init(tac, &.{ 3, 2 });
+    defer t2.deinit();
+    t2.setData(&[_]f32{ 1, 2, 3, 4, 5, 6 });
+
+    const dst = t1.mm(t2);
+    defer dst.deinit();
+    try testing.expectEqual(Tensor(f32).MatMulFlags{}, dst.matmul_flags);
     dst.computeMatMul(t1, false, t2, false);
 
     try testing.expectEqualSlices(f32, &.{ 9, 12, 15, 19, 26, 33, 29, 40, 51 }, dst.data);
@@ -1147,10 +1227,7 @@ test "backward - exp" {
     const x = try Tensor(f32).initScalar(a, 1.5);
     x.setParam();
     const out = x.exp();
-    try g.buildForward(out);
-    try g.buildBackward(false);
-    _ = out.grad.?.setAllScalar(1);
-    g.compute();
+    try g.run(out);
 
     const expected = std.math.exp(@as(f32, 1.5));
     try testing.expectApproxEqAbs(expected, out.data[0], 1e-6);
@@ -1165,10 +1242,7 @@ test "backward - log" {
     const x = try Tensor(f32).initScalar(a, 4.0);
     x.setParam();
     const out = x.log();
-    try g.buildForward(out);
-    try g.buildBackward(false);
-    _ = out.grad.?.setAllScalar(1);
-    g.compute();
+    try g.run(out);
 
     try testing.expectApproxEqAbs(std.math.log(f32, std.math.e, 4.0), out.data[0], 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 0.25), x.grad.?.data[0], 1e-6);
@@ -1184,10 +1258,7 @@ test "backward - reshape" {
     x.setParam();
     const reshaped = x.reshape(&.{ 3, 2 });
     const out = reshaped.sumAll();
-    try g.buildForward(out);
-    try g.buildBackward(false);
-    _ = out.grad.?.setAllScalar(1);
-    g.compute();
+    try g.run(out);
 
     try testing.expectEqualSlices(f32, &.{ 1, 1, 1, 1, 1, 1 }, x.grad.?.data);
 }
@@ -1204,10 +1275,7 @@ test "backward - transpose" {
     const weights = try Tensor(f32).init(a, &.{ 3, 2 });
     weights.setData(&.{ 1, 2, 3, 4, 5, 6 });
     const out = transposed.mul(weights).sumAll();
-    try g.buildForward(out);
-    try g.buildBackward(false);
-    _ = out.grad.?.setAllScalar(1);
-    g.compute();
+    try g.run(out);
 
     try testing.expectEqualSlices(f32, &.{ 1, 4, 2, 5, 3, 6 }, x.grad.?.data);
 }
@@ -1224,6 +1292,48 @@ test "compute max reduction" {
     try testing.expectEqualSlices(f32, &.{ 5, 4, 6 }, dst.data);
 }
 
+test "dim reductions preserve rank" {
+    var arena = ComputeGraph(f32).init(tac);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const t = try Tensor(f32).init(a, &.{ 2, 3 });
+    t.setData(&.{ 1, 5, 2, 4, 3, 6 });
+
+    const sum0 = t.sumDim(0);
+    try inferF32(sum0);
+    try testing.expectEqual(@as(u8, 2), sum0.n_dims);
+    try testing.expectEqual(@as(usize, 1), sum0.ne[0]);
+    try testing.expectEqual(@as(usize, 3), sum0.ne[1]);
+    try testing.expectEqualSlices(f32, &.{ 6, 6, 9 }, sum0.data);
+
+    const sum1 = t.sumDim(1);
+    try inferF32(sum1);
+    try testing.expectEqual(@as(usize, 2), sum1.ne[0]);
+    try testing.expectEqual(@as(usize, 1), sum1.ne[1]);
+    try testing.expectEqualSlices(f32, &.{ 6, 15 }, sum1.data);
+
+    const mean0 = t.meanDim(0);
+    try inferF32(mean0);
+    try testing.expectEqualSlices(f32, &.{ 3, 3, 4.5 }, mean0.data);
+
+    const max1 = t.maxDim(1);
+    try inferF32(max1);
+    try testing.expectEqualSlices(f32, &.{ 3, 6 }, max1.data);
+
+    const min1 = t.minDim(1);
+    try inferF32(min1);
+    try testing.expectEqualSlices(f32, &.{ 1, 4 }, min1.data);
+
+    const argmax1 = t.argmaxDim(1);
+    try inferF32(argmax1);
+    try testing.expectEqualSlices(f32, &.{ 0, 1 }, argmax1.data);
+
+    const argmin1 = t.argminDim(1);
+    try inferF32(argmin1);
+    try testing.expectEqualSlices(f32, &.{ 0, 1 }, argmin1.data);
+}
+
 test "compute softmax" {
     var g = ComputeGraph(f32).init(tac);
     defer g.deinit();
@@ -1232,8 +1342,7 @@ test "compute softmax" {
     const t = try Tensor(f32).init(a, &.{3});
     t.setData(&.{ 1, 2, 3 });
     const s = t.softmax(&.{1});
-    try g.buildForward(s);
-    g.compute();
+    try g.infer(s);
 
     const e1 = std.math.exp(@as(f32, 1));
     const e2 = std.math.exp(@as(f32, 2));
@@ -1242,6 +1351,33 @@ test "compute softmax" {
     try testing.expectApproxEqAbs(e1 / denom, s.data[0], 1e-6);
     try testing.expectApproxEqAbs(e2 / denom, s.data[1], 1e-6);
     try testing.expectApproxEqAbs(e3 / denom, s.data[2], 1e-6);
+}
+
+test "dim softmax helpers preserve rank" {
+    var arena = ComputeGraph(f32).init(tac);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const t = try Tensor(f32).init(a, &.{ 2, 3 });
+    t.setData(&.{ 1, 5, 2, 4, 3, 6 });
+
+    const s0 = t.softmaxDim(0);
+    try inferF32(s0);
+    try testing.expectEqualSlices(usize, &.{ 2, 3 }, s0.ne[0..s0.n_dims]);
+    {
+        const d = std.math.exp(@as(f32, 1)) + std.math.exp(@as(f32, 5));
+        try testing.expectApproxEqAbs(std.math.exp(@as(f32, 1)) / d, s0.data[0], 1e-6);
+        try testing.expectApproxEqAbs(std.math.exp(@as(f32, 5)) / d, s0.data[1], 1e-6);
+    }
+
+    const ls1 = t.logSoftmaxDim(1);
+    try inferF32(ls1);
+    try testing.expectEqualSlices(usize, &.{ 2, 3 }, ls1.ne[0..ls1.n_dims]);
+    {
+        const d = std.math.exp(@as(f32, 1)) + std.math.exp(@as(f32, 2)) + std.math.exp(@as(f32, 3));
+        try testing.expectApproxEqAbs(@as(f32, 1) - std.math.log(f32, std.math.e, d), ls1.data[0], 1e-6);
+        try testing.expectApproxEqAbs(@as(f32, 3) - std.math.log(f32, std.math.e, d), ls1.data[4], 1e-6);
+    }
 }
 
 test "backward - softmax" {
@@ -1253,11 +1389,10 @@ test "backward - softmax" {
     x.setData(&.{ 1, 2, 3 });
     x.setParam();
     const y = x.softmax(&.{1});
-    try g.buildForward(y);
-    try g.buildBackward(false);
-    // dL/dy = [0, 1, 0]
-    y.grad.?.setData(&.{ 0, 1, 0 });
-    g.compute();
+    const dy = try Tensor(f32).init(a, &.{3});
+    dy.setData(&.{ 0, 1, 0 });
+    const loss = y.mul(dy).sumAll();
+    try g.run(loss);
 
     const e1 = std.math.exp(@as(f32, 1));
     const e2 = std.math.exp(@as(f32, 2));
@@ -1281,8 +1416,7 @@ test "compute rmsNorm" {
     x.setData(&.{ 1, 2, -1, 0.5 });
     const eps: f32 = 1e-5;
     const y = x.rmsNorm(&.{1}, eps);
-    try g.buildForward(y);
-    g.compute();
+    try g.infer(y);
 
     var sum_sq: f32 = 0;
     for (x.data) |v| sum_sq += v * v;
@@ -1303,11 +1437,10 @@ test "backward - rmsnorm" {
     x.setParam();
     const eps: f32 = 1e-5;
     const y = x.rmsNorm(&.{1}, eps);
-    try g.buildForward(y);
-    try g.buildBackward(false);
-    // dL/dy
-    y.grad.?.setData(&.{ 0.1, -0.2, 0.3, 0.4 });
-    g.compute();
+    const dy = try Tensor(f32).init(a, &.{4});
+    dy.setData(&.{ 0.1, -0.2, 0.3, 0.4 });
+    const loss = y.mul(dy).sumAll();
+    try g.run(loss);
 
     // Analytical: dx = s*dy - y*(sum(y*dy)/N)
     const N: f32 = 4.0;
@@ -1317,11 +1450,11 @@ test "backward - rmsnorm" {
     const s = 1.0 / @sqrt(mean_sq + eps);
 
     var inner: f32 = 0;
-    for (x.data, 0..) |v, i| inner += (v * s) * y.grad.?.data[i];
+    for (x.data, 0..) |v, i| inner += (v * s) * dy.data[i];
     inner /= N;
 
     for (x.data, 0..) |v, i| {
-        const want = s * y.grad.?.data[i] - (v * s) * inner;
+        const want = s * dy.data[i] - (v * s) * inner;
         try testing.expectApproxEqAbs(want, x.grad.?.data[i], 1e-5);
     }
 }
@@ -1334,8 +1467,7 @@ test "compute logSoftmax" {
     const t = try Tensor(f32).init(a, &.{3});
     t.setData(&.{ 1, 2, 3 });
     const ls = t.logSoftmax(&.{1});
-    try g.buildForward(ls);
-    g.compute();
+    try g.infer(ls);
 
     const e1 = std.math.exp(@as(f32, 1));
     const e2 = std.math.exp(@as(f32, 2));
@@ -1385,15 +1517,11 @@ test "backward - gatherRows accumulates repeated indices" {
     });
     table.setParam();
 
-    const indices = try Tensor(f32).init(a, &.{3});
-    indices.setData(&.{ 1, 3, 1 });
+    const indices = try Tensor(f32).initIndexVectorCopy(a, &.{ 1, 3, 1 });
 
     const gathered = table.gatherRows(indices);
     const out = gathered.sumAll();
-    try g.buildForward(out);
-    try g.buildBackward(false);
-    _ = out.grad.?.setAllScalar(1);
-    g.compute();
+    try g.run(out);
 
     try testing.expectEqualSlices(f32, &.{
         0, 0,
@@ -1436,94 +1564,15 @@ test "backward - pickRows" {
     });
     logits.setParam();
 
-    const indices = try Tensor(f32).init(a, &.{3});
-    indices.setData(&.{ 3, 0, 2 });
+    const indices = try Tensor(f32).initIndexVectorCopy(a, &.{ 3, 0, 2 });
 
     const picked = logits.pickRows(indices);
     const out = picked.sumAll();
-    try g.buildForward(out);
-    try g.buildBackward(false);
-    _ = out.grad.?.setAllScalar(1);
-    g.compute();
+    try g.run(out);
 
     try testing.expectEqualSlices(f32, &.{
         0, 0, 0, 1,
         1, 0, 0, 0,
         0, 0, 1, 0,
     }, logits.grad.?.data);
-}
-
-test "compute gatherRowsIdx" {
-    const IndexTensor = @import("index.zig").IndexTensor;
-
-    const table = try Tensor(f32).init(tac, &.{ 2, 4 });
-    defer table.deinit();
-    table.setData(&.{
-        1, 2,
-        3, 4,
-        5, 6,
-        7, 8,
-    });
-
-    const indices = try IndexTensor(i32).initCopy(tac, &.{ 3, 1 });
-    defer indices.deinit(tac);
-
-    const out = table.gatherRowsIdx(indices);
-    defer out.deinit();
-    out.compute();
-
-    try testing.expectEqualSlices(f32, &.{ 7, 8, 3, 4 }, out.data);
-}
-
-test "compute pickRowsIdx" {
-    const IndexTensor = @import("index.zig").IndexTensor;
-
-    const logits = try Tensor(f32).init(tac, &.{ 4, 3 });
-    defer logits.deinit();
-    logits.setData(&.{
-        1, 2,  3,  4,
-        5, 6,  7,  8,
-        9, 10, 11, 12,
-    });
-
-    const indices = try IndexTensor(i32).initCopy(tac, &.{ 3, 0, 2 });
-    defer indices.deinit(tac);
-
-    const out = logits.pickRowsIdx(indices);
-    defer out.deinit();
-    out.compute();
-
-    try testing.expectEqualSlices(f32, &.{ 4, 5, 11 }, out.data);
-}
-
-test "backward - gatherRowsIdx accumulates repeated indices" {
-    const IndexTensor = @import("index.zig").IndexTensor;
-
-    var g = ComputeGraph(f32).init(tac);
-    defer g.deinit();
-    const a = g.allocator();
-
-    const table = try Tensor(f32).init(a, &.{ 2, 4 });
-    table.setData(&.{
-        1, 2,
-        3, 4,
-        5, 6,
-        7, 8,
-    });
-    table.setParam();
-
-    const indices = try IndexTensor(i32).initCopy(a, &.{ 1, 3, 1 });
-    const gathered = table.gatherRowsIdx(indices);
-    const out = gathered.sumAll();
-    try g.buildForward(out);
-    try g.buildBackward(false);
-    _ = out.grad.?.setAllScalar(1);
-    g.compute();
-
-    try testing.expectEqualSlices(f32, &.{
-        0, 0,
-        2, 2,
-        0, 0,
-        1, 1,
-    }, table.grad.?.data);
 }

@@ -1,0 +1,247 @@
+{
+  "schema": "zgml.laptop-model-suite.v1",
+  "purpose": "Standard mid-size laptop-grade model coverage for proving zgml against PyTorch beyond tiny synthetic and SmolLM-only benchmarks.",
+  "tiers": {
+    "pr": {
+      "description": "Cheap enough for routine PR evidence; must stay green before claiming the suite is healthy."
+    },
+    "laptop_core": {
+      "description": "The main local-workstation proof: real models that should fit and run on a modern laptop without cloud hardware."
+    },
+    "frontier": {
+      "description": "Strategic model families that define missing compiler/runtime work before they become required gates."
+    }
+  },
+  "models": [
+    {
+      "id": "llm.smollm_135m.q8_0",
+      "tier": "pr",
+      "domain": "llm",
+      "architecture": "LLaMA-family decoder-only transformer",
+      "model": "SmolLM-135M Q8_0 GGUF",
+      "source": "https://huggingface.co/mradermacher/SmolLM-135M-GGUF",
+      "localPath": "data/smollm/SmolLM-135M.Q8_0.gguf",
+      "format": "gguf",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "llama.cpp",
+      "zgmlStatus": "next",
+      "benchmark": {
+        "command": "BENCH_NEXT_PERF_LANE=ggml node scripts/run_next_perf.cjs",
+        "metric": "prompt/decode tok/s vs PyTorch Transformers, plus secondary llama.cpp percentage",
+        "gate": "executable today against llama.cpp; PyTorch reference harness required before suite-ready"
+      },
+      "why": "Keeps the current executable-stencil LLM path cheap while making PyTorch the promotion target."
+    },
+    {
+      "id": "llm.smollm2_360m.instruct.q8_0",
+      "tier": "laptop_core",
+      "domain": "llm",
+      "architecture": "LLaMA-family decoder-only transformer",
+      "model": "SmolLM2-360M-Instruct",
+      "source": "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct",
+      "format": "safetensors-primary, gguf-secondary",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "llama.cpp",
+      "zgmlStatus": "target",
+      "benchmark": {
+        "command": "npm run bench:laptop:llm:pytorch:run",
+        "metric": "probe coverage now; prompt/decode tok/s, memory peak, logits/prediction agreement vs PyTorch once executable",
+        "gate": "must move from LLaMA-family probe-only to load/compile from PyTorch-compatible weights; performance target starts at PyTorch parity"
+      },
+      "why": "First step above toy scale while still fast enough for frequent laptop runs."
+    },
+    {
+      "id": "llm.smollm2_1_7b.instruct.q4",
+      "tier": "laptop_core",
+      "domain": "llm",
+      "architecture": "LLaMA-family decoder-only transformer",
+      "model": "SmolLM2-1.7B-Instruct",
+      "source": "https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct",
+      "format": "safetensors-primary, gguf-secondary",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "llama.cpp",
+      "zgmlStatus": "next",
+      "benchmark": {
+        "metric": "prompt/decode tok/s, KV-cache bytes, cold-load ms, hot session step ms, agreement vs PyTorch",
+        "gate": "must compile/load from PyTorch-compatible weights; performance target starts at PyTorch parity"
+      },
+      "why": "A real laptop-sized assistant model that should expose cache, allocator, and command-scheduling costs."
+    },
+    {
+      "id": "llm.qwen3_0_6b.instruct.q4",
+      "tier": "laptop_core",
+      "domain": "llm",
+      "architecture": "Qwen3 decoder-only transformer with Q/K norm coverage",
+      "model": "Qwen3-0.6B",
+      "source": "https://huggingface.co/Qwen/Qwen3-0.6B",
+      "format": "safetensors-primary, gguf-secondary",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "llama.cpp",
+      "zgmlStatus": "target",
+      "benchmark": {
+        "metric": "prompt/decode tok/s, architecture feature coverage, agreement vs PyTorch",
+        "gate": "must probe architecture metadata and match PyTorch logits before execution becomes required"
+      },
+      "why": "Prevents overfitting the runtime to one LLaMA-family checkpoint shape."
+    },
+    {
+      "id": "llm.qwen3_1_7b.instruct.q4",
+      "tier": "frontier",
+      "domain": "llm",
+      "architecture": "Qwen3 decoder-only transformer with Q/K norm coverage",
+      "model": "Qwen3-1.7B",
+      "source": "https://huggingface.co/Qwen/Qwen3-1.7B",
+      "format": "safetensors-primary, gguf-secondary",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "llama.cpp",
+      "zgmlStatus": "target",
+      "benchmark": {
+        "metric": "prompt/decode tok/s, memory peak, shape-specialization cache reuse, agreement vs PyTorch",
+        "gate": "frontier until Qwen3 0.6B is green"
+      },
+      "why": "Mid-size architecture diversity at a scale where laptop memory pressure starts to matter."
+    },
+    {
+      "id": "llm.phi3_mini_4k.q4",
+      "tier": "frontier",
+      "domain": "llm",
+      "architecture": "Phi-3 decoder-only transformer",
+      "model": "Phi-3-mini-4k-instruct",
+      "source": "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct",
+      "format": "safetensors-primary, gguf-secondary",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "llama.cpp",
+      "zgmlStatus": "unsupported-target",
+      "benchmark": {
+        "metric": "loader/probe support first, then prompt/decode tok/s and agreement vs PyTorch",
+        "gate": "not required until Phi architecture metadata and op coverage exist"
+      },
+      "why": "Useful negative/control target for proving the model loader generalizes beyond LLaMA/Qwen/SmolLM."
+    },
+    {
+      "id": "encoder.distilbert_sst2",
+      "tier": "laptop_core",
+      "domain": "text-encoder",
+      "architecture": "BERT-family encoder transformer",
+      "model": "DistilBERT SST-2 or equivalent ONNX/safetensors export",
+      "source": "https://huggingface.co/distilbert/distilbert-base-uncased-finetuned-sst-2-english",
+      "format": "onnx-or-safetensors",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "ONNX Runtime",
+      "zgmlStatus": "unsupported-target",
+      "benchmark": {
+        "metric": "sentences/s, p50/p95 ms, max_abs_diff vs reference logits",
+        "gate": "front-end graph import and encoder attention support required"
+      },
+      "why": "Covers bidirectional attention, classifier heads, and the non-generative ML use case."
+    },
+    {
+      "id": "vision.mobilenet_v3_small",
+      "tier": "laptop_core",
+      "domain": "vision",
+      "architecture": "MobileNetV3-style CNN",
+      "model": "MobileNetV3 Small ONNX",
+      "source": "https://pytorch.org/vision/stable/models/generated/torchvision.models.mobilenet_v3_small.html",
+      "format": "onnx",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "ONNX Runtime",
+      "zgmlStatus": "unsupported-target",
+      "benchmark": {
+        "metric": "images/s, p50/p95 ms, top-1 agreement, max_abs_diff",
+        "gate": "depthwise/grouped conv, batchnorm folding, and resize/preprocess story required"
+      },
+      "why": "Laptop AI is not only token generation; this catches CNN and image-preprocess gaps."
+    },
+    {
+      "id": "vision.clip_vit_b32",
+      "tier": "frontier",
+      "domain": "multimodal-encoder",
+      "architecture": "CLIP text+vision encoders",
+      "model": "CLIP ViT-B/32",
+      "source": "https://huggingface.co/openai/clip-vit-base-patch32",
+      "format": "onnx-or-safetensors",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "ONNX Runtime",
+      "zgmlStatus": "unsupported-target",
+      "benchmark": {
+        "metric": "image embeddings/s, text embeddings/s, cosine agreement",
+        "gate": "ViT patch embed, encoder stack, normalization, and tokenizer story required"
+      },
+      "why": "Forces the library to handle real embedding workflows and multimodal tensor shapes."
+    },
+    {
+      "id": "diffusion.taesd_decoder",
+      "tier": "laptop_core",
+      "domain": "diffusion",
+      "architecture": "Tiny autoencoder decoder",
+      "model": "TAESD decoder",
+      "source": "https://huggingface.co/madebyollin/taesd",
+      "format": "safetensors-or-onnx",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "ONNX Runtime",
+      "zgmlStatus": "unsupported-target",
+      "benchmark": {
+        "metric": "latent-to-image ms, max_abs_diff or image metric vs reference",
+        "gate": "upsample/conv/norm activation coverage required"
+      },
+      "why": "Smallest useful diffusion-adjacent target; catches image decoder kernels before full UNet."
+    },
+    {
+      "id": "diffusion.sd15_unet_step",
+      "tier": "frontier",
+      "domain": "diffusion",
+      "architecture": "Stable Diffusion UNet denoiser",
+      "model": "Stable Diffusion 1.5 UNet single denoise step",
+      "source": "https://huggingface.co/runwayml/stable-diffusion-v1-5",
+      "format": "safetensors-or-onnx",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "ONNX Runtime or stable-diffusion.cpp",
+      "zgmlStatus": "unsupported-target",
+      "benchmark": {
+        "metric": "one denoise step ms at 512x512 latent size, memory peak, numeric/image agreement",
+        "gate": "frontier until attention, conv, norm, and scheduler inputs are modeled"
+      },
+      "why": "The canonical laptop diffusion workload, but too broad to make a first required gate."
+    },
+    {
+      "id": "voice.whisper_tiny_en",
+      "tier": "laptop_core",
+      "domain": "voice",
+      "architecture": "Whisper encoder-decoder speech transformer",
+      "model": "Whisper tiny.en",
+      "source": "https://huggingface.co/openai/whisper-tiny.en",
+      "format": "onnx-or-safetensors",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "ONNX Runtime or whisper.cpp",
+      "zgmlStatus": "unsupported-target",
+      "benchmark": {
+        "metric": "audio seconds/s, encoder ms, decoder token/s, transcript agreement",
+        "gate": "mel feature pipeline, encoder-decoder attention, and tokenizer/decoder loop required"
+      },
+      "why": "Voice is a different host/runtime shape: streaming-ish input, encoder cache, decoder loop."
+    },
+    {
+      "id": "voice.whisper_base_en",
+      "tier": "frontier",
+      "domain": "voice",
+      "architecture": "Whisper encoder-decoder speech transformer",
+      "model": "Whisper base.en",
+      "source": "https://huggingface.co/openai/whisper-base.en",
+      "format": "onnx-or-safetensors",
+      "primaryReference": "PyTorch",
+      "secondaryReference": "ONNX Runtime or whisper.cpp",
+      "zgmlStatus": "unsupported-target",
+      "benchmark": {
+        "metric": "audio seconds/s, memory peak, transcript agreement",
+        "gate": "frontier until tiny.en is green"
+      },
+      "why": "A mid-size voice model after the tiny path is technically proven."
+    }
+  ],
+  "promotionPolicy": [
+    "A model starts as unsupported-target until loader/probe evidence exists.",
+    "A target moves to next when it can load, compile/probe, and produce a reference-comparable output shape.",
+    "A target moves to ready only after a checked PyTorch benchmark artifact captures speed, memory, and numeric or task-level correctness.",
+    "Only ready models can become required PR gates; laptop_core models should become nightly or manual release gates first."
+  ]
+}

@@ -13,9 +13,10 @@ const program_mod = @import("program.zig");
 const c = @cImport(@cInclude("metal_shim.h"));
 const DeviceOpTag = std.meta.Tag(backend_mod.DeviceOp);
 
-fn nowNs() i96 {
-    return std.Io.Clock.awake.now(std.Io.Threaded.global_single_threaded.io()).nanoseconds;
-}
+const compute_op_softmax: u32 = 100;
+const compute_op_layernorm: u32 = 101;
+const compute_op_rmsnorm: u32 = 102;
+const compute_op_logsoftmax: u32 = 103;
 
 fn DeviceOpPayload(comptime tag: DeviceOpTag) type {
     inline for (@typeInfo(backend_mod.DeviceOp).@"union".fields) |field| {
@@ -39,6 +40,29 @@ fn deviceOpAt(comptime tag: DeviceOpTag, ops: []const backend_mod.DeviceOp, idx:
 // ── Tile size for simdgroup kernel ────────────────────────────────
 
 const TILE: u32 = 32; // output tile per threadgroup (TILE x TILE)
+// Row-chain tiled kernels have a separate tile so future qrow tuning cannot
+// perturb the normal qmatmul/matmul path. Shared TILE=16 hurt full-model Q8 prompt throughput,
+// and shared TILE=64 broke row-chain correctness in the focused qrow-region probe.
+const ROW_CHAIN_TILE: u32 = 32;
+const MAX_ROW_CHAIN_COLS: u32 = 4096;
+const MAX_ROW_CHAIN_K: u32 = 2048;
+const QMATMUL_ROW_CHAIN_THREADS: u32 = 256;
+const SEMANTIC_FFN_THREADS: u32 = 512;
+const SEMANTIC_FFN_INPUT_BRIDGE_THREADS: u32 = 1024;
+const SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS: u32 = 128;
+const ROW_CHAIN_WIDTH_LANES: u32 = 4;
+const ROW_CHAIN_WIDTH_THREADGROUP_MEMORY_LIMIT_BYTES: usize = 32 * 1024;
+const ROW_CHAIN_WIDTH_THREADGROUP_FLOATS: usize =
+    @as(usize, ROW_CHAIN_WIDTH_LANES) * @as(usize, ROW_CHAIN_TILE) * 8 * 2 +
+    @as(usize, ROW_CHAIN_WIDTH_LANES) * @as(usize, ROW_CHAIN_TILE) * @as(usize, ROW_CHAIN_TILE);
+const ROW_CHAIN_WIDTH_THREADGROUP_BYTES: usize = ROW_CHAIN_WIDTH_THREADGROUP_FLOATS * @sizeOf(f32);
+comptime {
+    if (ROW_CHAIN_WIDTH_THREADGROUP_BYTES > ROW_CHAIN_WIDTH_THREADGROUP_MEMORY_LIMIT_BYTES) {
+        @compileError("row-chain width-partial threadgroup memory exceeds the current Metal device budget");
+    }
+}
+const SEMANTIC_FFN_MAX_DIM: u32 = 1024;
+const SEMANTIC_FFN_MAX_HIDDEN: u32 = 1536;
 // 4 simdgroups per threadgroup (128 threads), each handles 8x8 sub-tiles
 // Shared memory per K step: TILE*8 + 8*TILE = 512 floats = 2 KB
 
@@ -50,7 +74,18 @@ const shader_source =
     \\using namespace metal;
     \\
     \\constant uint TILE = 32;
+    \\constant uint ROW_CHAIN_TILE = 32;
     \\constant uint NSUB = 4; // 2x2 arrangement of 8x8 sub-tiles per simdgroup
+    \\constant uint QMATVEC_DOT_THREADS = 64;
+    \\constant uint QMATMUL_ROW_CHAIN_THREADS = 256;
+    \\constant uint SEMANTIC_FFN_THREADS = 512;
+    \\constant uint SEMANTIC_FFN_INPUT_BRIDGE_THREADS = 1024;
+    \\constant uint SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS = 128;
+    \\constant uint ROW_CHAIN_WIDTH_LANES = 4;
+    \\constant uint MAX_ROW_CHAIN_COLS = 4096;
+    \\constant uint MAX_ROW_CHAIN_K = 2048;
+    \\constant uint SEMANTIC_FFN_MAX_DIM = 1024;
+    \\constant uint SEMANTIC_FFN_MAX_HIDDEN = 1536;
     \\
     \\struct MatMulParams {
     \\    uint M; uint N; uint K;
@@ -134,6 +169,206 @@ const shader_source =
     \\        uint cr = gRow + r, cc = gCol + c;
     \\        if (cr < p.M && cc < p.N)
     \\            C[p.dst_offset + cr * p.dst_row_stride + cc] = tC[i];
+    \\    }
+    \\}
+    \\
+    \\float matmul_elementwise_unary(uint op, float v) {
+    \\    switch (op) {
+    \\        case 9: return -v;
+    \\        case 10: return abs(v);
+    \\        case 11: return sign(v);
+    \\        case 12: return (v > 0.0f) ? 1.0f : 0.0f;
+    \\        case 13: return max(v, 0.0f);
+    \\        case 14: return sqrt(v);
+    \\        case 15: return 1.0f / v;
+    \\        case 16: return exp(v);
+    \\        case 17: return log(v);
+    \\        case 18: {
+    \\            float c = 0.7978845608f * (v + 0.044715f * v * v * v);
+    \\            return 0.5f * v * (1.0f + precise::tanh(c));
+    \\        }
+    \\        case 34: return v * v;
+    \\        case 39: return 1.0f / (1.0f + exp(-v));
+    \\        case 40: return v / (1.0f + exp(-v));
+    \\        case 41: return precise::tanh(v);
+    \\        default: return v;
+    \\    }
+    \\}
+    \\
+    \\struct MatmulElementwiseParams {
+    \\    uint M; uint N; uint K;
+    \\    uint a_row_stride; uint a_col_stride;
+    \\    uint b_row_stride; uint b_col_stride;
+    \\    uint a_offset; uint b_offset;
+    \\    uint dst_offset; uint dst_row_stride;
+    \\    uint write_primary;
+    \\    uint ew_op;
+    \\    uint ew_is_swapped;
+    \\    uint ew_dst_offset;
+    \\    uint ew_secondary_offset;
+    \\};
+    \\
+    \\kernel void matmul_elementwise_f32(
+    \\    device const float* A [[buffer(0)]],
+    \\    device const float* B [[buffer(1)]],
+    \\    device float* C       [[buffer(2)]],
+    \\    device const float* secondary [[buffer(3)]],
+    \\    device float* ew_output       [[buffer(4)]],
+    \\    constant MatmulElementwiseParams& p [[buffer(5)]],
+    \\    uint2 group_id  [[threadgroup_position_in_grid]],
+    \\    uint  simd_idx  [[simdgroup_index_in_threadgroup]],
+    \\    uint  lane      [[thread_index_in_simdgroup]],
+    \\    uint  tid       [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = group_id.y * TILE;
+    \\    const uint gCol = group_id.x * TILE;
+    \\    const uint sRow = (simd_idx / 2) * 16;
+    \\    const uint sCol = (simd_idx % 2) * 16;
+    \\
+    \\    simdgroup_float8x8 acc[4] = {
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\    };
+    \\
+    \\    threadgroup float tA[TILE * 8];
+    \\    threadgroup float tB[8 * TILE];
+    \\
+    \\    for (uint kt = 0; kt < p.K; kt += 8) {
+    \\        for (uint i = tid; i < TILE * 8; i += 128) {
+    \\            uint r = i / 8, c = i % 8;
+    \\            uint ar = gRow + r, ac = kt + c;
+    \\            tA[i] = (ar < p.M && ac < p.K)
+    \\                ? A[p.a_offset + ar * p.a_row_stride + ac * p.a_col_stride] : 0.0f;
+    \\        }
+    \\        for (uint i = tid; i < 8 * TILE; i += 128) {
+    \\            uint r = i / TILE, c = i % TILE;
+    \\            uint br = kt + r, bc = gCol + c;
+    \\            tB[i] = (br < p.K && bc < p.N)
+    \\                ? B[p.b_offset + br * p.b_row_stride + bc * p.b_col_stride] : 0.0f;
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        simdgroup_float8x8 a0, a1, b0, b1;
+    \\        simdgroup_load(a0, tA + (sRow + 0) * 8, 8);
+    \\        simdgroup_load(a1, tA + (sRow + 8) * 8, 8);
+    \\        simdgroup_load(b0, tB + (sCol + 0), TILE);
+    \\        simdgroup_load(b1, tB + (sCol + 8), TILE);
+    \\
+    \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
+    \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
+    \\        simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
+    \\        simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
+    \\
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\
+    \\    threadgroup float tC[TILE * TILE];
+    \\    simdgroup_store(acc[0], tC + (sRow + 0) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(acc[1], tC + (sRow + 0) * TILE + sCol + 8, TILE);
+    \\    simdgroup_store(acc[2], tC + (sRow + 8) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(acc[3], tC + (sRow + 8) * TILE + sCol + 8, TILE);
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint i = tid; i < TILE * TILE; i += 128) {
+    \\        uint r = i / TILE, c = i % TILE;
+    \\        uint cr = gRow + r, cc = gCol + c;
+    \\        if (cr < p.M && cc < p.N) {
+    \\            float val = tC[i];
+    \\            uint linear = cr * p.N + cc;
+    \\            float other = secondary[p.ew_secondary_offset + linear];
+    \\            float ew = val;
+    \\            if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
+    \\            else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
+    \\            else ew = matmul_elementwise_unary(p.ew_op, val);
+    \\            if (p.write_primary != 0) C[p.dst_offset + cr * p.dst_row_stride + cc] = val;
+    \\            ew_output[p.ew_dst_offset + linear] = ew;
+    \\        }
+    \\    }
+    \\}
+    \\
+    \\struct MatmulRowChainParams {
+    \\    uint M; uint N; uint K;
+    \\    uint a_row_stride; uint a_col_stride;
+    \\    uint b_row_stride; uint b_col_stride;
+    \\    uint a_offset; uint b_offset;
+    \\    uint ew_op;
+    \\    uint ew_is_swapped;
+    \\    uint ew_secondary_offset;
+    \\    uint ew_dst_offset;
+    \\    uint write_ew_output;
+    \\    float rms_eps;
+    \\    uint scale_src_offset;
+    \\    uint scaled_dst_offset;
+    \\};
+    \\
+    \\struct QMatmulSemanticFfnInputBridgeParams {
+    \\    uint M; uint H; uint K; uint O;
+    \\    uint input_projection_K;
+    \\    uint input_block_size;
+    \\    uint gate_block_size;
+    \\    uint up_block_size;
+    \\    uint down_block_size;
+    \\    uint source_input_offset;
+    \\    uint source_input_row_stride;
+    \\    uint input_residual_secondary_offset;
+    \\    float input_rms_eps;
+    \\    uint input_scale_src_offset;
+    \\    uint first_op;
+    \\    float output_rms_eps;
+    \\    uint output_scale_src_offset;
+    \\    uint output_dst_offset;
+    \\    uint input_scratch_offset;
+    \\    uint product_scratch_offset;
+    \\    uint output_scratch_offset;
+    \\    uint partial_dst_offset;
+    \\    uint partial_cols;
+    \\};
+    \\
+    \\kernel void matmul_row_chain_f32(
+    \\    device const float* A [[buffer(0)]],
+    \\    device const float* B [[buffer(1)]],
+    \\    device const float* secondary [[buffer(2)]],
+    \\    device const float* scale_src [[buffer(3)]],
+    \\    device float* scaled_dst [[buffer(4)]],
+    \\    device float* ew_output [[buffer(5)]],
+    \\    constant MatmulRowChainParams& p [[buffer(6)]],
+    \\    uint row [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    if (row >= p.M) return;
+    \\    threadgroup float partial[QMATVEC_DOT_THREADS];
+    \\    threadgroup float row_values[MAX_ROW_CHAIN_COLS];
+    \\    float ss = 0.0f;
+    \\
+    \\    for (uint col = tid; col < p.N; col += QMATVEC_DOT_THREADS) {
+    \\        float sum = 0.0f;
+    \\        for (uint k = 0; k < p.K; k++) {
+    \\            sum += A[p.a_offset + row * p.a_row_stride + k * p.a_col_stride] *
+    \\                   B[p.b_offset + k * p.b_row_stride + col * p.b_col_stride];
+    \\        }
+    \\        uint linear = row * p.N + col;
+    \\        float other = secondary[p.ew_secondary_offset + linear];
+    \\        float ew = sum;
+    \\        if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + sum : sum + other;
+    \\        else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * sum : sum * other;
+    \\        else ew = matmul_elementwise_unary(p.ew_op, sum);
+    \\        row_values[col] = ew;
+    \\        ss += ew * ew;
+    \\    }
+    \\
+    \\    partial[tid] = ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = QMATVEC_DOT_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float inv_rms = 1.0f / sqrt(partial[0] / float(p.N) + p.rms_eps);
+    \\
+    \\    for (uint col = tid; col < p.N; col += QMATVEC_DOT_THREADS) {
+    \\        uint linear = row * p.N + col;
+    \\        float ew = row_values[col];
+    \\        if (p.write_ew_output != 0) ew_output[p.ew_dst_offset + linear] = ew;
+    \\        scaled_dst[p.scaled_dst_offset + linear] = ew * inv_rms * scale_src[p.scale_src_offset + col];
     \\    }
     \\}
     \\
@@ -372,181 +607,131 @@ const shader_source =
     \\    }
     \\}
     \\
-    \\constant uint MAX_QMATMUL_ROPE_STORE_BATCH = 4;
+    \\constant uint MAX_DENSE_MATMUL_BATCH = 4;
+    \\constant uint MAX_DENSE_MATMUL_BATCH_SIDECARS = 8;
     \\
-    \\struct QMatmulRopeStoreBatch4Params {
+    \\struct DenseMatmulBatch4Params {
     \\    uint n_ops; uint max_tiles_y;
-    \\    uint M[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint N[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint K[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint block_size[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint input_offset[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint input_row_stride[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint dst_offset[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint dst_row_stride[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint write_primary[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint rope_half_d[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint rope_src_col_start[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint rope_cs_off[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint rope_cs_cs[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint slice_dst_offset[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint slice_dst_row_stride[MAX_QMATMUL_ROPE_STORE_BATCH];
-    \\    uint slice_dst_col_stride[MAX_QMATMUL_ROPE_STORE_BATCH];
+    \\    uint M[MAX_DENSE_MATMUL_BATCH];
+    \\    uint N[MAX_DENSE_MATMUL_BATCH];
+    \\    uint K[MAX_DENSE_MATMUL_BATCH];
+    \\    uint input_offset[MAX_DENSE_MATMUL_BATCH];
+    \\    uint input_row_stride[MAX_DENSE_MATMUL_BATCH];
+    \\    uint input_col_stride[MAX_DENSE_MATMUL_BATCH];
+    \\    uint weight_offset[MAX_DENSE_MATMUL_BATCH];
+    \\    uint weight_row_stride[MAX_DENSE_MATMUL_BATCH];
+    \\    uint weight_col_stride[MAX_DENSE_MATMUL_BATCH];
+    \\    uint dst_offset[MAX_DENSE_MATMUL_BATCH];
+    \\    uint dst_row_stride[MAX_DENSE_MATMUL_BATCH];
+    \\    uint write_primary[MAX_DENSE_MATMUL_BATCH];
+    \\    uint sidecar_count[MAX_DENSE_MATMUL_BATCH];
+    \\    uint sidecar_kind[MAX_DENSE_MATMUL_BATCH * MAX_DENSE_MATMUL_BATCH_SIDECARS];
+    \\    uint slice_rows[MAX_DENSE_MATMUL_BATCH * MAX_DENSE_MATMUL_BATCH_SIDECARS];
+    \\    uint slice_cols[MAX_DENSE_MATMUL_BATCH * MAX_DENSE_MATMUL_BATCH_SIDECARS];
+    \\    uint slice_src_col_start[MAX_DENSE_MATMUL_BATCH * MAX_DENSE_MATMUL_BATCH_SIDECARS];
+    \\    uint slice_dst_offset[MAX_DENSE_MATMUL_BATCH * MAX_DENSE_MATMUL_BATCH_SIDECARS];
+    \\    uint slice_dst_row_stride[MAX_DENSE_MATMUL_BATCH * MAX_DENSE_MATMUL_BATCH_SIDECARS];
+    \\    uint slice_dst_col_stride[MAX_DENSE_MATMUL_BATCH * MAX_DENSE_MATMUL_BATCH_SIDECARS];
     \\};
     \\
-    \\kernel void qmatmul_rope_store_batch4_f32(
-    \\    device const char*  w0 [[buffer(0)]],
-    \\    device const float* s0 [[buffer(1)]],
-    \\    device const float* i0 [[buffer(2)]],
-    \\    device float*       o0 [[buffer(3)]],
-    \\    device const float* cs0 [[buffer(4)]],
-    \\    device float*       dst0 [[buffer(5)]],
-    \\    device const char*  w1 [[buffer(6)]],
-    \\    device const float* s1 [[buffer(7)]],
-    \\    device const float* i1 [[buffer(8)]],
-    \\    device float*       o1 [[buffer(9)]],
-    \\    device const float* cs1 [[buffer(10)]],
-    \\    device float*       dst1 [[buffer(11)]],
-    \\    device const char*  w2 [[buffer(12)]],
-    \\    device const float* s2 [[buffer(13)]],
-    \\    device const float* i2 [[buffer(14)]],
-    \\    device float*       o2 [[buffer(15)]],
-    \\    device const float* cs2 [[buffer(16)]],
-    \\    device float*       dst2 [[buffer(17)]],
-    \\    device const char*  w3 [[buffer(18)]],
-    \\    device const float* s3 [[buffer(19)]],
-    \\    device const float* i3 [[buffer(20)]],
-    \\    device float*       o3 [[buffer(21)]],
-    \\    device const float* cs3 [[buffer(22)]],
-    \\    device float*       dst3 [[buffer(23)]],
-    \\    constant QMatmulRopeStoreBatch4Params& p [[buffer(24)]],
+    \\kernel void matmul_batch4_f32(
+    \\    device const float* w0 [[buffer(0)]],
+    \\    device const float* i0 [[buffer(1)]],
+    \\    device float*       o0 [[buffer(2)]],
+    \\    device float*       side0 [[buffer(3)]],
+    \\    device const float* w1 [[buffer(4)]],
+    \\    device const float* i1 [[buffer(5)]],
+    \\    device float*       o1 [[buffer(6)]],
+    \\    device float*       side1 [[buffer(7)]],
+    \\    device const float* w2 [[buffer(8)]],
+    \\    device const float* i2 [[buffer(9)]],
+    \\    device float*       o2 [[buffer(10)]],
+    \\    device float*       side2 [[buffer(11)]],
+    \\    device const float* w3 [[buffer(12)]],
+    \\    device const float* i3 [[buffer(13)]],
+    \\    device float*       o3 [[buffer(14)]],
+    \\    device float*       side3 [[buffer(15)]],
+    \\    constant DenseMatmulBatch4Params& p [[buffer(16)]],
     \\    uint2 group_id [[threadgroup_position_in_grid]],
     \\    uint  simd_idx [[simdgroup_index_in_threadgroup]],
-    \\    uint  lane     [[thread_index_in_simdgroup]],
     \\    uint  tid      [[thread_index_in_threadgroup]]
     \\) {
     \\    uint slot = group_id.y / p.max_tiles_y;
     \\    uint row_tile = group_id.y - slot * p.max_tiles_y;
     \\    if (slot >= p.n_ops) return;
     \\
-    \\    uint M = p.M[slot], N = p.N[slot], K = p.K[slot];
-    \\    uint rope_half = p.rope_half_d[slot];
-    \\    uint rope_d = rope_half * 2;
-    \\    const uint local_col_base = group_id.x * TILE;
-    \\    if (local_col_base >= rope_d) return;
-    \\    bool lower_half_tile = local_col_base < rope_half;
-    \\    if (!lower_half_tile && p.write_primary[slot] == 0) return;
-    \\
-    \\    device const char* w = w0;
-    \\    device const float* s = s0;
+    \\    device const float* w = w0;
     \\    device const float* input = i0;
     \\    device float* output = o0;
-    \\    device const float* cos_sin = cs0;
-    \\    device float* slice_dst = dst0;
+    \\    device float* sidecar_dst = side0;
     \\    switch (slot) {
-    \\        case 1: w = w1; s = s1; input = i1; output = o1; cos_sin = cs1; slice_dst = dst1; break;
-    \\        case 2: w = w2; s = s2; input = i2; output = o2; cos_sin = cs2; slice_dst = dst2; break;
-    \\        case 3: w = w3; s = s3; input = i3; output = o3; cos_sin = cs3; slice_dst = dst3; break;
+    \\        case 1: w = w1; input = i1; output = o1; sidecar_dst = side1; break;
+    \\        case 2: w = w2; input = i2; output = o2; sidecar_dst = side2; break;
+    \\        case 3: w = w3; input = i3; output = o3; sidecar_dst = side3; break;
     \\        default: break;
     \\    }
     \\
+    \\    uint M = p.M[slot], N = p.N[slot], K = p.K[slot];
     \\    const uint gRow = row_tile * TILE;
+    \\    const uint gCol = group_id.x * TILE;
     \\    const uint sRow = (simd_idx / 2) * 16;
     \\    const uint sCol = (simd_idx % 2) * 16;
-    \\    const uint gCol = p.rope_src_col_start[slot] + local_col_base;
-    \\    const uint pairCol = gCol + rope_half;
     \\
     \\    simdgroup_float8x8 acc[4] = {
     \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
     \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
     \\    };
-    \\    simdgroup_float8x8 pair_acc[4] = {
-    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
-    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
-    \\    };
-    \\
-    \\    threadgroup float tI[TILE * 8];
-    \\    threadgroup float tW[8 * TILE];
-    \\    threadgroup float tWPair[8 * TILE];
+    \\    threadgroup float tA[TILE * 8];
+    \\    threadgroup float tB[8 * TILE];
     \\
     \\    for (uint kt = 0; kt < K; kt += 8) {
     \\        for (uint i = tid; i < TILE * 8; i += 128) {
     \\            uint r = i / 8, c = i % 8;
-    \\            uint ir = gRow + r, ic = kt + c;
-    \\            tI[i] = (ir < M && ic < K) ? input[p.input_offset[slot] + ir * p.input_row_stride[slot] + ic] : 0.0f;
+    \\            uint ar = gRow + r, ac = kt + c;
+    \\            tA[i] = (ar < M && ac < K)
+    \\                ? input[p.input_offset[slot] + ar * p.input_row_stride[slot] + ac * p.input_col_stride[slot]] : 0.0f;
     \\        }
     \\        for (uint i = tid; i < 8 * TILE; i += 128) {
     \\            uint r = i / TILE, c = i % TILE;
-    \\            uint kr = kt + r, nc = gCol + c;
-    \\            if (kr < K && nc < N) {
-    \\                uint w_idx = kr * N + nc;
-    \\                tW[i] = float(w[w_idx]) * s[w_idx / p.block_size[slot]];
-    \\            } else {
-    \\                tW[i] = 0.0f;
-    \\            }
-    \\            uint pc = pairCol + c;
-    \\            if (lower_half_tile && kr < K && pc < N) {
-    \\                uint pair_w_idx = kr * N + pc;
-    \\                tWPair[i] = float(w[pair_w_idx]) * s[pair_w_idx / p.block_size[slot]];
-    \\            } else {
-    \\                tWPair[i] = 0.0f;
-    \\            }
+    \\            uint br = kt + r, bc = gCol + c;
+    \\            tB[i] = (br < K && bc < N)
+    \\                ? w[p.weight_offset[slot] + br * p.weight_row_stride[slot] + bc * p.weight_col_stride[slot]] : 0.0f;
     \\        }
     \\        threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
     \\        simdgroup_float8x8 a0, a1, b0, b1;
-    \\        simdgroup_load(a0, tI + (sRow + 0) * 8, 8);
-    \\        simdgroup_load(a1, tI + (sRow + 8) * 8, 8);
-    \\        simdgroup_load(b0, tW + (sCol + 0), TILE);
-    \\        simdgroup_load(b1, tW + (sCol + 8), TILE);
+    \\        simdgroup_load(a0, tA + (sRow + 0) * 8, 8);
+    \\        simdgroup_load(a1, tA + (sRow + 8) * 8, 8);
+    \\        simdgroup_load(b0, tB + (sCol + 0), TILE);
+    \\        simdgroup_load(b1, tB + (sCol + 8), TILE);
     \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
     \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
     \\        simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
     \\        simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
-    \\        if (lower_half_tile) {
-    \\            simdgroup_float8x8 pb0, pb1;
-    \\            simdgroup_load(pb0, tWPair + (sCol + 0), TILE);
-    \\            simdgroup_load(pb1, tWPair + (sCol + 8), TILE);
-    \\            simdgroup_multiply_accumulate(pair_acc[0], a0, pb0, pair_acc[0]);
-    \\            simdgroup_multiply_accumulate(pair_acc[1], a0, pb1, pair_acc[1]);
-    \\            simdgroup_multiply_accumulate(pair_acc[2], a1, pb0, pair_acc[2]);
-    \\            simdgroup_multiply_accumulate(pair_acc[3], a1, pb1, pair_acc[3]);
-    \\        }
     \\        threadgroup_barrier(mem_flags::mem_threadgroup);
     \\    }
     \\
     \\    threadgroup float tC[TILE * TILE];
-    \\    threadgroup float tCPair[TILE * TILE];
     \\    simdgroup_store(acc[0], tC + (sRow + 0) * TILE + sCol + 0, TILE);
     \\    simdgroup_store(acc[1], tC + (sRow + 0) * TILE + sCol + 8, TILE);
     \\    simdgroup_store(acc[2], tC + (sRow + 8) * TILE + sCol + 0, TILE);
     \\    simdgroup_store(acc[3], tC + (sRow + 8) * TILE + sCol + 8, TILE);
-    \\    if (lower_half_tile) {
-    \\        simdgroup_store(pair_acc[0], tCPair + (sRow + 0) * TILE + sCol + 0, TILE);
-    \\        simdgroup_store(pair_acc[1], tCPair + (sRow + 0) * TILE + sCol + 8, TILE);
-    \\        simdgroup_store(pair_acc[2], tCPair + (sRow + 8) * TILE + sCol + 0, TILE);
-    \\        simdgroup_store(pair_acc[3], tCPair + (sRow + 8) * TILE + sCol + 8, TILE);
-    \\    }
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
     \\    for (uint i = tid; i < TILE * TILE; i += 128) {
     \\        uint r = i / TILE, c = i % TILE;
-    \\        uint cr = gRow + r, local_cc = local_col_base + c;
-    \\        if (cr >= M || local_cc >= rope_d) continue;
-    \\        uint cc = p.rope_src_col_start[slot] + local_cc;
-    \\        float val = tC[i];
-    \\        if (p.write_primary[slot] != 0 && cc < N) {
-    \\            output[p.dst_offset[slot] + cr * p.dst_row_stride[slot] + cc] = val;
-    \\        }
-    \\        if (lower_half_tile && local_cc < rope_half) {
-    \\            float pair = tCPair[i];
-    \\            float cos_val = cos_sin[p.rope_cs_off[slot] + cr * p.rope_cs_cs[slot] + local_cc];
-    \\            float sin_val = cos_sin[p.rope_cs_off[slot] + cr * p.rope_cs_cs[slot] + rope_half + local_cc];
-    \\            float y_lo = val * cos_val - pair * sin_val;
-    \\            float y_hi = pair * cos_val + val * sin_val;
-    \\            uint dst_col = p.slice_dst_offset[slot] + cr * p.slice_dst_col_stride[slot];
-    \\            slice_dst[dst_col + local_cc * p.slice_dst_row_stride[slot]] = y_lo;
-    \\            slice_dst[dst_col + (local_cc + rope_half) * p.slice_dst_row_stride[slot]] = y_hi;
+    \\        uint cr = gRow + r, cc = gCol + c;
+    \\        if (cr < M && cc < N) {
+    \\            float val = tC[i];
+    \\            if (p.write_primary[slot] != 0) output[p.dst_offset[slot] + cr * p.dst_row_stride[slot] + cc] = val;
+    \\            for (uint sid = 0; sid < p.sidecar_count[slot]; sid++) {
+    \\                uint si = slot * MAX_DENSE_MATMUL_BATCH_SIDECARS + sid;
+    \\                uint slice_col_start = p.slice_src_col_start[si];
+    \\                if (p.sidecar_kind[si] == 1 && cc >= slice_col_start && cc < slice_col_start + p.slice_rows[si] && cr < p.slice_cols[si]) {
+    \\                    uint slice_row = cc - slice_col_start;
+    \\                    sidecar_dst[p.slice_dst_offset[si] + slice_row * p.slice_dst_row_stride[si] + cr * p.slice_dst_col_stride[si]] = val;
+    \\                }
+    \\            }
     \\        }
     \\    }
     \\}
@@ -570,7 +755,7 @@ const shader_source =
     \\}
     \\
     \\constant uint MAX_QMATVEC_BATCH = 4;
-    \\constant uint QMATVEC_DOT_THREADS = 64;
+    \\constant uint MAX_QMATVEC_ROPE_STORES = 8;
     \\
     \\struct QMatvecBatch4Params {
     \\    uint n_ops; uint max_n;
@@ -587,15 +772,20 @@ const shader_source =
     \\    uint slice_dst_offset[MAX_QMATVEC_BATCH];
     \\    uint slice_dst_row_stride[MAX_QMATVEC_BATCH];
     \\    uint slice_dst_col_stride[MAX_QMATVEC_BATCH];
-    \\    uint rope_half_d[MAX_QMATVEC_BATCH];
-    \\    uint rope_cs_off[MAX_QMATVEC_BATCH];
+    \\    uint rope_count[MAX_QMATVEC_BATCH];
+    \\    uint rope_half_d[MAX_QMATVEC_BATCH][MAX_QMATVEC_ROPE_STORES];
+    \\    uint rope_src_col_start[MAX_QMATVEC_BATCH][MAX_QMATVEC_ROPE_STORES];
+    \\    uint rope_cs_off[MAX_QMATVEC_BATCH][MAX_QMATVEC_ROPE_STORES];
+    \\    uint rope_dst_offset[MAX_QMATVEC_BATCH][MAX_QMATVEC_ROPE_STORES];
+    \\    uint rope_dst_row_stride[MAX_QMATVEC_BATCH][MAX_QMATVEC_ROPE_STORES];
+    \\    uint rope_dst_col_stride[MAX_QMATVEC_BATCH][MAX_QMATVEC_ROPE_STORES];
     \\    uint ew_op[MAX_QMATVEC_BATCH];
     \\    uint ew_is_swapped[MAX_QMATVEC_BATCH];
     \\    uint ew_dst_offset[MAX_QMATVEC_BATCH];
     \\    uint ew_secondary_offset[MAX_QMATVEC_BATCH];
     \\};
     \\
-    \\kernel void qmatvec_batch4_f32(
+    \\kernel void qmatvec_batch4_cols4_f32(
     \\    device const char*  w0 [[buffer(0)]],
     \\    device const float* s0 [[buffer(1)]],
     \\    device const float* i0 [[buffer(2)]],
@@ -624,9 +814,9 @@ const shader_source =
     \\    uint2 group_id [[threadgroup_position_in_grid]],
     \\    uint tid [[thread_index_in_threadgroup]]
     \\) {
-    \\    uint col = group_id.x;
+    \\    uint col0 = group_id.x * 4;
     \\    uint slot = group_id.y;
-    \\    if (slot >= p.n_ops || col >= p.N[slot]) return;
+    \\    if (slot >= p.n_ops || col0 >= p.N[slot]) return;
     \\
     \\    device const char* w = w0;
     \\    device const float* s = s0;
@@ -641,156 +831,322 @@ const shader_source =
     \\        default: break;
     \\    }
     \\
-    \\    threadgroup float partial[QMATVEC_DOT_THREADS];
-    \\    threadgroup float partial_pair[QMATVEC_DOT_THREADS];
+    \\    bool active0 = col0 < p.N[slot];
+    \\    bool active1 = col0 + 1 < p.N[slot];
+    \\    bool active2 = col0 + 2 < p.N[slot];
+    \\    bool active3 = col0 + 3 < p.N[slot];
     \\    uint slice_col_start = p.slice_src_col_start[slot];
-    \\    bool rope_pair = p.sidecar_kind[slot] == 2 && col >= slice_col_start && col < slice_col_start + p.rope_half_d[slot];
-    \\    uint pair_col = col + p.rope_half_d[slot];
-    \\
-    \\    float sum = 0.0f;
-    \\    float pair_sum = 0.0f;
-    \\    for (uint k = tid; k < p.K[slot]; k += QMATVEC_DOT_THREADS) {
-    \\        uint w_idx = k * p.N[slot] + col;
-    \\        sum += input[p.input_offset[slot] + k] * float(w[w_idx]) * s[w_idx / p.block_size[slot]];
-    \\        if (rope_pair) {
-    \\            uint pair_w_idx = k * p.N[slot] + pair_col;
-    \\            pair_sum += input[p.input_offset[slot] + k] * float(w[pair_w_idx]) * s[pair_w_idx / p.block_size[slot]];
-    \\        }
+    \\    bool ew_active = p.sidecar_kind[slot] == 2;
+    \\    bool slice0 = p.sidecar_kind[slot] == 1 && active0 && col0 >= slice_col_start && col0 < slice_col_start + p.slice_rows[slot] * p.slice_cols[slot];
+    \\    bool slice1 = p.sidecar_kind[slot] == 1 && active1 && col0 + 1 >= slice_col_start && col0 + 1 < slice_col_start + p.slice_rows[slot] * p.slice_cols[slot];
+    \\    bool slice2 = p.sidecar_kind[slot] == 1 && active2 && col0 + 2 >= slice_col_start && col0 + 2 < slice_col_start + p.slice_rows[slot] * p.slice_cols[slot];
+    \\    bool slice3 = p.sidecar_kind[slot] == 1 && active3 && col0 + 3 >= slice_col_start && col0 + 3 < slice_col_start + p.slice_rows[slot] * p.slice_cols[slot];
+    \\    uint rope_sidecars[4] = { MAX_QMATVEC_ROPE_STORES, MAX_QMATVEC_ROPE_STORES, MAX_QMATVEC_ROPE_STORES, MAX_QMATVEC_ROPE_STORES };
+    \\    for (uint r = 0; r < MAX_QMATVEC_ROPE_STORES; r++) {
+    \\        if (r >= p.rope_count[slot]) break;
+    \\        uint start = p.rope_src_col_start[slot][r];
+    \\        uint half_dim = p.rope_half_d[slot][r];
+    \\        if (active0 && col0 >= start && col0 < start + half_dim) rope_sidecars[0] = r;
+    \\        if (active1 && col0 + 1 >= start && col0 + 1 < start + half_dim) rope_sidecars[1] = r;
+    \\        if (active2 && col0 + 2 >= start && col0 + 2 < start + half_dim) rope_sidecars[2] = r;
+    \\        if (active3 && col0 + 3 >= start && col0 + 3 < start + half_dim) rope_sidecars[3] = r;
     \\    }
-    \\    partial[tid] = sum;
-    \\    partial_pair[tid] = pair_sum;
+    \\    bool rope0 = p.sidecar_kind[slot] == 3 && rope_sidecars[0] < MAX_QMATVEC_ROPE_STORES;
+    \\    bool rope1 = p.sidecar_kind[slot] == 3 && rope_sidecars[1] < MAX_QMATVEC_ROPE_STORES;
+    \\    bool rope2 = p.sidecar_kind[slot] == 3 && rope_sidecars[2] < MAX_QMATVEC_ROPE_STORES;
+    \\    bool rope3 = p.sidecar_kind[slot] == 3 && rope_sidecars[3] < MAX_QMATVEC_ROPE_STORES;
+    \\    bool any_rope = rope0 || rope1 || rope2 || rope3;
+    \\    if (p.write_primary[slot] == 0 && !ew_active && !slice0 && !slice1 && !slice2 && !slice3 && !any_rope) return;
+    \\
+    \\    float sum0 = 0.0f, sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f;
+    \\    float pair0 = 0.0f, pair1 = 0.0f, pair2 = 0.0f, pair3 = 0.0f;
+    \\    uint pair_col0 = rope0 ? col0 + p.rope_half_d[slot][rope_sidecars[0]] : col0;
+    \\    uint pair_col1 = rope1 ? col0 + 1 + p.rope_half_d[slot][rope_sidecars[1]] : col0 + 1;
+    \\    uint pair_col2 = rope2 ? col0 + 2 + p.rope_half_d[slot][rope_sidecars[2]] : col0 + 2;
+    \\    uint pair_col3 = rope3 ? col0 + 3 + p.rope_half_d[slot][rope_sidecars[3]] : col0 + 3;
+    \\    for (uint k = tid; k < p.K[slot]; k += QMATVEC_DOT_THREADS) {
+    \\        float x = input[p.input_offset[slot] + k];
+    \\        uint base = k * p.N[slot] + col0;
+    \\        uint row = k * p.N[slot];
+    \\        if (active0) sum0 += x * float(w[base]) * s[base / p.block_size[slot]];
+    \\        if (active1) sum1 += x * float(w[base + 1]) * s[(base + 1) / p.block_size[slot]];
+    \\        if (active2) sum2 += x * float(w[base + 2]) * s[(base + 2) / p.block_size[slot]];
+    \\        if (active3) sum3 += x * float(w[base + 3]) * s[(base + 3) / p.block_size[slot]];
+    \\        if (rope0) pair0 += x * float(w[row + pair_col0]) * s[(row + pair_col0) / p.block_size[slot]];
+    \\        if (rope1) pair1 += x * float(w[row + pair_col1]) * s[(row + pair_col1) / p.block_size[slot]];
+    \\        if (rope2) pair2 += x * float(w[row + pair_col2]) * s[(row + pair_col2) / p.block_size[slot]];
+    \\        if (rope3) pair3 += x * float(w[row + pair_col3]) * s[(row + pair_col3) / p.block_size[slot]];
+    \\    }
+    \\    threadgroup float partial0[QMATVEC_DOT_THREADS];
+    \\    threadgroup float partial1[QMATVEC_DOT_THREADS];
+    \\    threadgroup float partial2[QMATVEC_DOT_THREADS];
+    \\    threadgroup float partial3[QMATVEC_DOT_THREADS];
+    \\    threadgroup float pair_partial0[QMATVEC_DOT_THREADS];
+    \\    threadgroup float pair_partial1[QMATVEC_DOT_THREADS];
+    \\    threadgroup float pair_partial2[QMATVEC_DOT_THREADS];
+    \\    threadgroup float pair_partial3[QMATVEC_DOT_THREADS];
+    \\    partial0[tid] = sum0;
+    \\    partial1[tid] = sum1;
+    \\    partial2[tid] = sum2;
+    \\    partial3[tid] = sum3;
+    \\    if (any_rope) {
+    \\        pair_partial0[tid] = pair0;
+    \\        pair_partial1[tid] = pair1;
+    \\        pair_partial2[tid] = pair2;
+    \\        pair_partial3[tid] = pair3;
+    \\    }
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
     \\    for (uint stride = QMATVEC_DOT_THREADS / 2; stride > 0; stride >>= 1) {
     \\        if (tid < stride) {
-    \\            partial[tid] += partial[tid + stride];
-    \\            partial_pair[tid] += partial_pair[tid + stride];
+    \\            partial0[tid] += partial0[tid + stride];
+    \\            partial1[tid] += partial1[tid + stride];
+    \\            partial2[tid] += partial2[tid + stride];
+    \\            partial3[tid] += partial3[tid + stride];
+    \\            if (any_rope) {
+    \\                pair_partial0[tid] += pair_partial0[tid + stride];
+    \\                pair_partial1[tid] += pair_partial1[tid + stride];
+    \\                pair_partial2[tid] += pair_partial2[tid + stride];
+    \\                pair_partial3[tid] += pair_partial3[tid + stride];
+    \\            }
     \\        }
     \\        threadgroup_barrier(mem_flags::mem_threadgroup);
     \\    }
     \\    if (tid != 0) return;
-    \\    sum = partial[0];
-    \\    pair_sum = partial_pair[0];
     \\
-    \\    if (p.write_primary[slot] != 0) output[p.dst_offset[slot] + col] = sum;
-    \\    if (p.sidecar_kind[slot] == 1 && col >= slice_col_start && col < slice_col_start + p.slice_rows[slot] * p.slice_cols[slot]) {
-    \\        uint local = col - slice_col_start;
-    \\        uint slice_row = local % p.slice_rows[slot];
-    \\        uint slice_col = local / p.slice_rows[slot];
-    \\        sidecar_dst[p.slice_dst_offset[slot] + slice_row * p.slice_dst_row_stride[slot] + slice_col * p.slice_dst_col_stride[slot]] = sum;
-    \\    } else if (p.sidecar_kind[slot] == 2) {
-    \\        uint rope_half = p.rope_half_d[slot];
-    \\        if (col >= slice_col_start && col < slice_col_start + rope_half) {
+    \\    float sums[4] = { partial0[0], partial1[0], partial2[0], partial3[0] };
+    \\    float pair_sums[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    \\    if (any_rope) {
+    \\        pair_sums[0] = pair_partial0[0];
+    \\        pair_sums[1] = pair_partial1[0];
+    \\        pair_sums[2] = pair_partial2[0];
+    \\        pair_sums[3] = pair_partial3[0];
+    \\    }
+    \\    bool ropes[4] = { rope0, rope1, rope2, rope3 };
+    \\    for (uint lane = 0; lane < 4; lane++) {
+    \\        uint col = col0 + lane;
+    \\        if (col >= p.N[slot]) break;
+    \\        float sum = sums[lane];
+    \\        if (p.write_primary[slot] != 0) output[p.dst_offset[slot] + col] = sum;
+    \\        if (p.sidecar_kind[slot] == 1 && col >= slice_col_start && col < slice_col_start + p.slice_rows[slot] * p.slice_cols[slot]) {
     \\            uint local = col - slice_col_start;
-    \\            float cos_val = sidecar_src[p.rope_cs_off[slot] + local];
-    \\            float sin_val = sidecar_src[p.rope_cs_off[slot] + rope_half + local];
-    \\            sidecar_dst[p.slice_dst_offset[slot] + local * p.slice_dst_row_stride[slot]] = sum * cos_val - pair_sum * sin_val;
-    \\            sidecar_dst[p.slice_dst_offset[slot] + (local + rope_half) * p.slice_dst_row_stride[slot]] = pair_sum * cos_val + sum * sin_val;
+    \\            uint slice_row = local % p.slice_rows[slot];
+    \\            uint slice_col = local / p.slice_rows[slot];
+    \\            sidecar_dst[p.slice_dst_offset[slot] + slice_row * p.slice_dst_row_stride[slot] + slice_col * p.slice_dst_col_stride[slot]] = sum;
+    \\        } else if (p.sidecar_kind[slot] == 2) {
+    \\            float other = sidecar_src[p.ew_secondary_offset[slot] + col];
+    \\            float ew = sum;
+    \\            if (p.ew_op[slot] == 7) ew = (p.ew_is_swapped[slot] != 0) ? other + sum : sum + other;
+    \\            else if (p.ew_op[slot] == 8) ew = (p.ew_is_swapped[slot] != 0) ? other * sum : sum * other;
+    \\            else ew = matmul_elementwise_unary(p.ew_op[slot], sum);
+    \\            sidecar_dst[p.ew_dst_offset[slot] + col] = ew;
+    \\        } else if (ropes[lane]) {
+    \\            uint r = rope_sidecars[lane];
+    \\            uint local = col - p.rope_src_col_start[slot][r];
+    \\            float pair = pair_sums[lane];
+    \\            uint half_dim = p.rope_half_d[slot][r];
+    \\            float cos_val = sidecar_src[p.rope_cs_off[slot][r] + local];
+    \\            float sin_val = sidecar_src[p.rope_cs_off[slot][r] + 2 * half_dim + local];
+    \\            uint dst = p.rope_dst_offset[slot][r];
+    \\            uint dst_rs = p.rope_dst_row_stride[slot][r];
+    \\            sidecar_dst[dst + local * dst_rs] = sum * cos_val - pair * sin_val;
+    \\            sidecar_dst[dst + (local + half_dim) * dst_rs] = pair * cos_val + sum * sin_val;
     \\        }
-    \\    } else if (p.sidecar_kind[slot] == 3) {
-    \\        float other = sidecar_src[p.ew_secondary_offset[slot] + col];
-    \\        float ew = sum;
-    \\        if (p.ew_op[slot] == 7) ew = (p.ew_is_swapped[slot] != 0) ? other + sum : sum + other;
-    \\        else if (p.ew_op[slot] == 8) ew = (p.ew_is_swapped[slot] != 0) ? other * sum : sum * other;
-    \\        sidecar_dst[p.ew_dst_offset[slot] + col] = ew;
     \\    }
     \\}
     \\
-    \\// ── F16 matvec: M==1, one thread per output element ────
+    \\constant uint MAX_DENSE_MATVEC_BATCH = 4;
     \\
-    \\struct MatVecParams {
-    \\    uint N; uint K;
-    \\    uint a_offset; uint dst_offset;
+    \\struct DenseMatvecBatch4Params {
+    \\    uint n_ops; uint max_n;
+    \\    uint N[MAX_DENSE_MATVEC_BATCH];
+    \\    uint K[MAX_DENSE_MATVEC_BATCH];
+    \\    uint input_offset[MAX_DENSE_MATVEC_BATCH];
+    \\    uint input_col_stride[MAX_DENSE_MATVEC_BATCH];
+    \\    uint weight_offset[MAX_DENSE_MATVEC_BATCH];
+    \\    uint weight_row_stride[MAX_DENSE_MATVEC_BATCH];
+    \\    uint weight_col_stride[MAX_DENSE_MATVEC_BATCH];
+    \\    uint dst_offset[MAX_DENSE_MATVEC_BATCH];
+    \\    uint write_primary[MAX_DENSE_MATVEC_BATCH];
+    \\    uint sidecar_kind[MAX_DENSE_MATVEC_BATCH];
+    \\    uint slice_rows[MAX_DENSE_MATVEC_BATCH];
+    \\    uint slice_cols[MAX_DENSE_MATVEC_BATCH];
+    \\    uint slice_src_col_start[MAX_DENSE_MATVEC_BATCH];
+    \\    uint slice_dst_offset[MAX_DENSE_MATVEC_BATCH];
+    \\    uint slice_dst_row_stride[MAX_DENSE_MATVEC_BATCH];
+    \\    uint slice_dst_col_stride[MAX_DENSE_MATVEC_BATCH];
+    \\    uint ew_op[MAX_DENSE_MATVEC_BATCH];
+    \\    uint ew_is_swapped[MAX_DENSE_MATVEC_BATCH];
+    \\    uint ew_dst_offset[MAX_DENSE_MATVEC_BATCH];
+    \\    uint ew_secondary_offset[MAX_DENSE_MATVEC_BATCH];
+    \\    uint rope_count[MAX_DENSE_MATVEC_BATCH];
+    \\    uint rope_half_d[MAX_DENSE_MATVEC_BATCH][MAX_QMATVEC_ROPE_STORES];
+    \\    uint rope_src_col_start[MAX_DENSE_MATVEC_BATCH][MAX_QMATVEC_ROPE_STORES];
+    \\    uint rope_cs_off[MAX_DENSE_MATVEC_BATCH][MAX_QMATVEC_ROPE_STORES];
+    \\    uint rope_dst_offset[MAX_DENSE_MATVEC_BATCH][MAX_QMATVEC_ROPE_STORES];
+    \\    uint rope_dst_row_stride[MAX_DENSE_MATVEC_BATCH][MAX_QMATVEC_ROPE_STORES];
+    \\    uint rope_dst_col_stride[MAX_DENSE_MATVEC_BATCH][MAX_QMATVEC_ROPE_STORES];
     \\};
     \\
-    \\kernel void matvec_f16(
-    \\    device const float* A  [[buffer(0)]],
-    \\    device const half*  B  [[buffer(1)]],
-    \\    device float*       C  [[buffer(2)]],
-    \\    constant MatVecParams& p [[buffer(3)]],
-    \\    uint gid [[thread_position_in_grid]]
+    \\kernel void matvec_batch4_cols4_f32(
+    \\    device const float* w0 [[buffer(0)]],
+    \\    device const float* i0 [[buffer(1)]],
+    \\    device float*       o0 [[buffer(2)]],
+    \\    device const float* aux0 [[buffer(3)]],
+    \\    device float*       d0 [[buffer(4)]],
+    \\    device const float* w1 [[buffer(5)]],
+    \\    device const float* i1 [[buffer(6)]],
+    \\    device float*       o1 [[buffer(7)]],
+    \\    device const float* aux1 [[buffer(8)]],
+    \\    device float*       d1 [[buffer(9)]],
+    \\    device const float* w2 [[buffer(10)]],
+    \\    device const float* i2 [[buffer(11)]],
+    \\    device float*       o2 [[buffer(12)]],
+    \\    device const float* aux2 [[buffer(13)]],
+    \\    device float*       d2 [[buffer(14)]],
+    \\    device const float* w3 [[buffer(15)]],
+    \\    device const float* i3 [[buffer(16)]],
+    \\    device float*       o3 [[buffer(17)]],
+    \\    device const float* aux3 [[buffer(18)]],
+    \\    device float*       d3 [[buffer(19)]],
+    \\    constant DenseMatvecBatch4Params& p [[buffer(20)]],
+    \\    uint2 group_id [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
     \\) {
-    \\    if (gid >= p.N) return;
-    \\    float sum = 0.0f;
-    \\    for (uint k = 0; k < p.K; k++) {
-    \\        sum += A[p.a_offset + k] * float(B[k * p.N + gid]);
-    \\    }
-    \\    C[p.dst_offset + gid] = sum;
-    \\}
+    \\    uint col0 = group_id.x * 4;
+    \\    uint slot = group_id.y;
+    \\    if (slot >= p.n_ops || col0 >= p.N[slot]) return;
     \\
-    \\// ── F16 tiled matmul: M>1, simdgroup with half precision ─
-    \\
-    \\struct MatMulF16Params {
-    \\    uint M; uint N; uint K;
-    \\    uint a_row_stride; uint a_col_stride;
-    \\    uint a_offset; uint dst_offset; uint dst_row_stride;
-    \\};
-    \\
-    \\kernel void matmul_f16(
-    \\    device const float* A  [[buffer(0)]],
-    \\    device const half*  B  [[buffer(1)]],
-    \\    device float*       C  [[buffer(2)]],
-    \\    constant MatMulF16Params& p [[buffer(3)]],
-    \\    uint2 group_id  [[threadgroup_position_in_grid]],
-    \\    uint  simd_idx  [[simdgroup_index_in_threadgroup]],
-    \\    uint  lane      [[thread_index_in_simdgroup]],
-    \\    uint  tid       [[thread_index_in_threadgroup]]
-    \\) {
-    \\    const uint gRow = group_id.y * TILE;
-    \\    const uint gCol = group_id.x * TILE;
-    \\    const uint sRow = (simd_idx / 2) * 16;
-    \\    const uint sCol = (simd_idx % 2) * 16;
-    \\
-    \\    simdgroup_float8x8 acc[4] = {
-    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
-    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
-    \\    };
-    \\
-    \\    threadgroup half tA[TILE * 8];
-    \\    threadgroup half tB[8 * TILE];
-    \\
-    \\    for (uint kt = 0; kt < p.K; kt += 8) {
-    \\        // Load A (f32 global) → half threadgroup
-    \\        for (uint i = tid; i < TILE * 8; i += 128) {
-    \\            uint r = i / 8, c = i % 8;
-    \\            uint ar = gRow + r, ac = kt + c;
-    \\            tA[i] = (ar < p.M && ac < p.K)
-    \\                ? half(A[p.a_offset + ar * p.a_row_stride + ac * p.a_col_stride]) : half(0);
-    \\        }
-    \\        // Load B (f16 global, packed K×N) → half threadgroup
-    \\        for (uint i = tid; i < 8 * TILE; i += 128) {
-    \\            uint r = i / TILE, c = i % TILE;
-    \\            uint br = kt + r, bc = gCol + c;
-    \\            tB[i] = (br < p.K && bc < p.N)
-    \\                ? B[br * p.N + bc] : half(0);
-    \\        }
-    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
-    \\
-    \\        simdgroup_half8x8 a0, a1, b0, b1;
-    \\        simdgroup_load(a0, tA + (sRow + 0) * 8, 8);
-    \\        simdgroup_load(a1, tA + (sRow + 8) * 8, 8);
-    \\        simdgroup_load(b0, tB + (sCol + 0), TILE);
-    \\        simdgroup_load(b1, tB + (sCol + 8), TILE);
-    \\
-    \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
-    \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
-    \\        simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
-    \\        simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
-    \\
-    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    device const float* w = w0;
+    \\    device const float* input = i0;
+    \\    device float* output = o0;
+    \\    device const float* sidecar_src = aux0;
+    \\    device float* sidecar_dst = d0;
+    \\    switch (slot) {
+    \\        case 1: w = w1; input = i1; output = o1; sidecar_src = aux1; sidecar_dst = d1; break;
+    \\        case 2: w = w2; input = i2; output = o2; sidecar_src = aux2; sidecar_dst = d2; break;
+    \\        case 3: w = w3; input = i3; output = o3; sidecar_src = aux3; sidecar_dst = d3; break;
+    \\        default: break;
     \\    }
     \\
-    \\    threadgroup float tC[TILE * TILE];
-    \\    simdgroup_store(acc[0], tC + (sRow + 0) * TILE + sCol + 0, TILE);
-    \\    simdgroup_store(acc[1], tC + (sRow + 0) * TILE + sCol + 8, TILE);
-    \\    simdgroup_store(acc[2], tC + (sRow + 8) * TILE + sCol + 0, TILE);
-    \\    simdgroup_store(acc[3], tC + (sRow + 8) * TILE + sCol + 8, TILE);
+    \\    bool active0 = col0 < p.N[slot];
+    \\    bool active1 = col0 + 1 < p.N[slot];
+    \\    bool active2 = col0 + 2 < p.N[slot];
+    \\    bool active3 = col0 + 3 < p.N[slot];
+    \\    uint slice_col_start = p.slice_src_col_start[slot];
+    \\    bool slice0 = p.sidecar_kind[slot] == 1 && active0 && col0 >= slice_col_start && col0 < slice_col_start + p.slice_rows[slot] * p.slice_cols[slot];
+    \\    bool slice1 = p.sidecar_kind[slot] == 1 && active1 && col0 + 1 >= slice_col_start && col0 + 1 < slice_col_start + p.slice_rows[slot] * p.slice_cols[slot];
+    \\    bool slice2 = p.sidecar_kind[slot] == 1 && active2 && col0 + 2 >= slice_col_start && col0 + 2 < slice_col_start + p.slice_rows[slot] * p.slice_cols[slot];
+    \\    bool slice3 = p.sidecar_kind[slot] == 1 && active3 && col0 + 3 >= slice_col_start && col0 + 3 < slice_col_start + p.slice_rows[slot] * p.slice_cols[slot];
+    \\    uint rope_sidecars[4] = { MAX_QMATVEC_ROPE_STORES, MAX_QMATVEC_ROPE_STORES, MAX_QMATVEC_ROPE_STORES, MAX_QMATVEC_ROPE_STORES };
+    \\    for (uint r = 0; r < MAX_QMATVEC_ROPE_STORES; r++) {
+    \\        if (r >= p.rope_count[slot]) break;
+    \\        uint start = p.rope_src_col_start[slot][r];
+    \\        uint half_dim = p.rope_half_d[slot][r];
+    \\        if (active0 && col0 >= start && col0 < start + half_dim) rope_sidecars[0] = r;
+    \\        if (active1 && col0 + 1 >= start && col0 + 1 < start + half_dim) rope_sidecars[1] = r;
+    \\        if (active2 && col0 + 2 >= start && col0 + 2 < start + half_dim) rope_sidecars[2] = r;
+    \\        if (active3 && col0 + 3 >= start && col0 + 3 < start + half_dim) rope_sidecars[3] = r;
+    \\    }
+    \\    bool rope0 = p.sidecar_kind[slot] == 3 && rope_sidecars[0] < MAX_QMATVEC_ROPE_STORES;
+    \\    bool rope1 = p.sidecar_kind[slot] == 3 && rope_sidecars[1] < MAX_QMATVEC_ROPE_STORES;
+    \\    bool rope2 = p.sidecar_kind[slot] == 3 && rope_sidecars[2] < MAX_QMATVEC_ROPE_STORES;
+    \\    bool rope3 = p.sidecar_kind[slot] == 3 && rope_sidecars[3] < MAX_QMATVEC_ROPE_STORES;
+    \\    bool any_rope = rope0 || rope1 || rope2 || rope3;
+    \\    bool ew_active = p.sidecar_kind[slot] == 2;
+    \\    if (p.write_primary[slot] == 0 && !slice0 && !slice1 && !slice2 && !slice3 && !any_rope && !ew_active) return;
+    \\
+    \\    float sum0 = 0.0f, sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f;
+    \\    float pair0 = 0.0f, pair1 = 0.0f, pair2 = 0.0f, pair3 = 0.0f;
+    \\    uint pair_col0 = rope0 ? col0 + p.rope_half_d[slot][rope_sidecars[0]] : col0;
+    \\    uint pair_col1 = rope1 ? col0 + 1 + p.rope_half_d[slot][rope_sidecars[1]] : col0 + 1;
+    \\    uint pair_col2 = rope2 ? col0 + 2 + p.rope_half_d[slot][rope_sidecars[2]] : col0 + 2;
+    \\    uint pair_col3 = rope3 ? col0 + 3 + p.rope_half_d[slot][rope_sidecars[3]] : col0 + 3;
+    \\    for (uint k = tid; k < p.K[slot]; k += QMATVEC_DOT_THREADS) {
+    \\        float x = input[p.input_offset[slot] + k * p.input_col_stride[slot]];
+    \\        uint base = p.weight_offset[slot] + k * p.weight_row_stride[slot] + col0 * p.weight_col_stride[slot];
+    \\        if (active0) sum0 += x * w[base];
+    \\        if (active1) sum1 += x * w[base + p.weight_col_stride[slot]];
+    \\        if (active2) sum2 += x * w[base + 2 * p.weight_col_stride[slot]];
+    \\        if (active3) sum3 += x * w[base + 3 * p.weight_col_stride[slot]];
+    \\        uint row = p.weight_offset[slot] + k * p.weight_row_stride[slot];
+    \\        if (rope0) pair0 += x * w[row + pair_col0 * p.weight_col_stride[slot]];
+    \\        if (rope1) pair1 += x * w[row + pair_col1 * p.weight_col_stride[slot]];
+    \\        if (rope2) pair2 += x * w[row + pair_col2 * p.weight_col_stride[slot]];
+    \\        if (rope3) pair3 += x * w[row + pair_col3 * p.weight_col_stride[slot]];
+    \\    }
+    \\    threadgroup float partial0[QMATVEC_DOT_THREADS];
+    \\    threadgroup float partial1[QMATVEC_DOT_THREADS];
+    \\    threadgroup float partial2[QMATVEC_DOT_THREADS];
+    \\    threadgroup float partial3[QMATVEC_DOT_THREADS];
+    \\    threadgroup float pair_partial0[QMATVEC_DOT_THREADS];
+    \\    threadgroup float pair_partial1[QMATVEC_DOT_THREADS];
+    \\    threadgroup float pair_partial2[QMATVEC_DOT_THREADS];
+    \\    threadgroup float pair_partial3[QMATVEC_DOT_THREADS];
+    \\    partial0[tid] = sum0;
+    \\    partial1[tid] = sum1;
+    \\    partial2[tid] = sum2;
+    \\    partial3[tid] = sum3;
+    \\    if (any_rope) {
+    \\        pair_partial0[tid] = pair0;
+    \\        pair_partial1[tid] = pair1;
+    \\        pair_partial2[tid] = pair2;
+    \\        pair_partial3[tid] = pair3;
+    \\    }
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = QMATVEC_DOT_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) {
+    \\            partial0[tid] += partial0[tid + stride];
+    \\            partial1[tid] += partial1[tid + stride];
+    \\            partial2[tid] += partial2[tid + stride];
+    \\            partial3[tid] += partial3[tid + stride];
+    \\            if (any_rope) {
+    \\                pair_partial0[tid] += pair_partial0[tid + stride];
+    \\                pair_partial1[tid] += pair_partial1[tid + stride];
+    \\                pair_partial2[tid] += pair_partial2[tid + stride];
+    \\                pair_partial3[tid] += pair_partial3[tid + stride];
+    \\            }
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    if (tid != 0) return;
     \\
-    \\    for (uint i = tid; i < TILE * TILE; i += 128) {
-    \\        uint r = i / TILE, c = i % TILE;
-    \\        uint cr = gRow + r, cc = gCol + c;
-    \\        if (cr < p.M && cc < p.N)
-    \\            C[p.dst_offset + cr * p.dst_row_stride + cc] = tC[i];
+    \\    float sums[4] = { partial0[0], partial1[0], partial2[0], partial3[0] };
+    \\    float pair_sums[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    \\    if (any_rope) {
+    \\        pair_sums[0] = pair_partial0[0];
+    \\        pair_sums[1] = pair_partial1[0];
+    \\        pair_sums[2] = pair_partial2[0];
+    \\        pair_sums[3] = pair_partial3[0];
+    \\    }
+    \\    bool ropes[4] = { rope0, rope1, rope2, rope3 };
+    \\    for (uint lane = 0; lane < 4; lane++) {
+    \\        uint col = col0 + lane;
+    \\        if (col >= p.N[slot]) break;
+    \\        float sum = sums[lane];
+    \\        if (p.write_primary[slot] != 0) output[p.dst_offset[slot] + col] = sum;
+    \\        if (p.sidecar_kind[slot] == 1 && col >= slice_col_start && col < slice_col_start + p.slice_rows[slot] * p.slice_cols[slot]) {
+    \\            uint local = col - slice_col_start;
+    \\            uint slice_row = local % p.slice_rows[slot];
+    \\            uint slice_col = local / p.slice_rows[slot];
+    \\            sidecar_dst[p.slice_dst_offset[slot] + slice_row * p.slice_dst_row_stride[slot] + slice_col * p.slice_dst_col_stride[slot]] = sum;
+    \\        } else if (ropes[lane]) {
+    \\            uint r = rope_sidecars[lane];
+    \\            uint local = col - p.rope_src_col_start[slot][r];
+    \\            float pair = pair_sums[lane];
+    \\            uint half_dim = p.rope_half_d[slot][r];
+    \\            float cos_val = sidecar_src[p.rope_cs_off[slot][r] + local];
+    \\            float sin_val = sidecar_src[p.rope_cs_off[slot][r] + 2 * half_dim + local];
+    \\            uint dst = p.rope_dst_offset[slot][r];
+    \\            uint dst_rs = p.rope_dst_row_stride[slot][r];
+    \\            sidecar_dst[dst + local * dst_rs] = sum * cos_val - pair * sin_val;
+    \\            sidecar_dst[dst + (local + half_dim) * dst_rs] = pair * cos_val + sum * sin_val;
+    \\        } else if (p.sidecar_kind[slot] == 2) {
+    \\            float other = sidecar_src[p.ew_secondary_offset[slot] + col];
+    \\            float ew = sum;
+    \\            if (p.ew_op[slot] == 7) ew = (p.ew_is_swapped[slot] != 0) ? other + sum : sum + other;
+    \\            else if (p.ew_op[slot] == 8) ew = (p.ew_is_swapped[slot] != 0) ? other * sum : sum * other;
+    \\            sidecar_dst[p.ew_dst_offset[slot] + col] = ew;
+    \\        }
     \\    }
     \\}
     \\
@@ -815,7 +1171,7 @@ const shader_source =
     \\    uint d   = p.half_d * 2;
     \\
     \\    float cos_val = cos_sin[p.cs_off + col * p.cs_cs + i];
-    \\    float sin_val = cos_sin[p.cs_off + col * p.cs_cs + p.half_d + i];
+    \\    float sin_val = cos_sin[p.cs_off + col * p.cs_cs + 2 * p.half_d + i];
     \\    float x_lo = src[p.src_off + col * p.src_cs + i * p.src_rs];
     \\    float x_hi = src[p.src_off + col * p.src_cs + (i + p.half_d) * p.src_rs];
     \\
@@ -854,7 +1210,7 @@ const shader_source =
     \\    uint d   = p.half_d[slot] * 2;
     \\
     \\    float cos_val = cos_sin[p.cs_off[slot] + col * p.cs_cs[slot] + i];
-    \\    float sin_val = cos_sin[p.cs_off[slot] + col * p.cs_cs[slot] + p.half_d[slot] + i];
+    \\    float sin_val = cos_sin[p.cs_off[slot] + col * p.cs_cs[slot] + 2 * p.half_d[slot] + i];
     \\    float x_lo = src[p.src_off[slot] + col * p.src_cs[slot] + i * p.src_rs[slot]];
     \\    float x_hi = src[p.src_off[slot] + col * p.src_cs[slot] + (i + p.half_d[slot]) * p.src_rs[slot]];
     \\
@@ -884,7 +1240,7 @@ const shader_source =
     \\    uint i   = gid % p.half_d;
     \\
     \\    float cos_val = cos_sin[p.cs_off + col * p.cs_cs + i];
-    \\    float sin_val = cos_sin[p.cs_off + col * p.cs_cs + p.half_d + i];
+    \\    float sin_val = cos_sin[p.cs_off + col * p.cs_cs + 2 * p.half_d + i];
     \\    float x_lo = src[p.src_off + col * p.src_cs + i * p.src_rs];
     \\    float x_hi = src[p.src_off + col * p.src_cs + (i + p.half_d) * p.src_rs];
     \\    float y_lo = x_lo * cos_val - x_hi * sin_val;
@@ -957,7 +1313,7 @@ const shader_source =
     \\    }
     \\
     \\    float cos_val = cos_sin[p.cs_off[slot] + col * p.cs_cs[slot] + i];
-    \\    float sin_val = cos_sin[p.cs_off[slot] + col * p.cs_cs[slot] + p.half_d[slot] + i];
+    \\    float sin_val = cos_sin[p.cs_off[slot] + col * p.cs_cs[slot] + 2 * p.half_d[slot] + i];
     \\    float x_lo = src[p.src_off[slot] + col * p.src_cs[slot] + i * p.src_rs[slot]];
     \\    float x_hi = src[p.src_off[slot] + col * p.src_cs[slot] + (i + p.half_d[slot]) * p.src_rs[slot]];
     \\    float y_lo = x_lo * cos_val - x_hi * sin_val;
@@ -1142,18 +1498,1044 @@ const shader_source =
     \\    simdgroup_store(acc[3], tC + (sRow + 8) * TILE + sCol + 8, TILE);
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
-    \\    for (uint i = tid; i < TILE * TILE; i += 128) {
-    \\        uint r = i / TILE, c = i % TILE;
-    \\        uint cr = gRow + r, cc = gCol + c;
-    \\        if (cr < p.M && cc < p.N) {
-    \\            float val = tC[i];
-    \\            uint linear = cr * p.N + cc;
-    \\            float other = secondary[p.ew_secondary_offset + linear];
-    \\            float ew = val;
-    \\            if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
-    \\            else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
-    \\            if (p.write_primary != 0) output[p.dst_offset + cr * p.dst_row_stride + cc] = val;
-    \\            ew_output[p.ew_dst_offset + linear] = ew;
+    \\    if (p.write_primary != 0) {
+    \\        for (uint i = tid; i < TILE * TILE; i += 128) {
+    \\            uint r = i / TILE, c = i % TILE;
+    \\            uint cr = gRow + r, cc = gCol + c;
+    \\            if (cr < p.M && cc < p.N) {
+    \\                float val = tC[i];
+    \\                uint linear = cr * p.N + cc;
+    \\                float other = secondary[p.ew_secondary_offset + linear];
+    \\                float ew = val;
+    \\                if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
+    \\                else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
+    \\                output[p.dst_offset + cr * p.dst_row_stride + cc] = val;
+    \\                ew_output[p.ew_dst_offset + linear] = ew;
+    \\            }
+    \\        }
+    \\    } else {
+    \\        for (uint i = tid; i < TILE * TILE; i += 128) {
+    \\            uint r = i / TILE, c = i % TILE;
+    \\            uint cr = gRow + r, cc = gCol + c;
+    \\            if (cr < p.M && cc < p.N) {
+    \\                float val = tC[i];
+    \\                uint linear = cr * p.N + cc;
+    \\                float other = secondary[p.ew_secondary_offset + linear];
+    \\                float ew = val;
+    \\                if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
+    \\                else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
+    \\                ew_output[p.ew_dst_offset + linear] = ew;
+    \\            }
+    \\        }
+    \\    }
+    \\}
+    \\
+    \\struct QMatmulRowChainParams {
+    \\    uint M; uint N; uint K;
+    \\    uint block_size;
+    \\    uint input_offset;
+    \\    uint input_row_stride;
+    \\    uint ew_op;
+    \\    uint ew_is_swapped;
+    \\    uint ew_secondary_offset;
+    \\    uint ew_dst_offset;
+    \\    uint write_ew_output;
+    \\    float rms_eps;
+    \\    uint scale_src_offset;
+    \\    uint scaled_dst_offset;
+    \\    uint partial_dst_offset;
+    \\    uint partial_cols;
+    \\};
+    \\
+    \\struct QMatmulSemanticFfnParams {
+    \\    uint M; uint H; uint K; uint O;
+    \\    uint gate_block_size;
+    \\    uint up_block_size;
+    \\    uint down_block_size;
+    \\    uint input_offset;
+    \\    uint input_row_stride;
+    \\    uint first_op;
+    \\    uint residual_secondary_offset;
+    \\    float rms_eps;
+    \\    uint scale_src_offset;
+    \\    uint scaled_dst_offset;
+    \\};
+    \\
+    \\float fused_unary(uint op, float v);
+    \\
+    \\kernel void qmatmul_semantic_ffn_sublayer_f32(
+    \\    device const char*  gate_weight_data   [[buffer(0)]],
+    \\    device const float* gate_weight_scales [[buffer(1)]],
+    \\    device const char*  up_weight_data     [[buffer(2)]],
+    \\    device const float* up_weight_scales   [[buffer(3)]],
+    \\    device const char*  down_weight_data   [[buffer(4)]],
+    \\    device const float* down_weight_scales [[buffer(5)]],
+    \\    device const float* input              [[buffer(6)]],
+    \\    device const float* residual_secondary [[buffer(7)]],
+    \\    device const float* scale_src          [[buffer(8)]],
+    \\    device float*       scaled_dst         [[buffer(9)]],
+    \\    constant QMatmulSemanticFfnParams& p   [[buffer(10)]],
+    \\    uint row [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    if (row >= p.M) return;
+    \\    threadgroup float partial[SEMANTIC_FFN_THREADS];
+    \\    threadgroup float input_values[SEMANTIC_FFN_MAX_DIM];
+    \\    threadgroup float product_values[SEMANTIC_FFN_MAX_DIM];
+    \\    threadgroup float residual_values[SEMANTIC_FFN_MAX_DIM];
+    \\
+    \\    for (uint k = tid; k < p.K; k += SEMANTIC_FFN_THREADS) {
+    \\        input_values[k] = input[p.input_offset + row * p.input_row_stride + k];
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint h = tid; h < p.H; h += SEMANTIC_FFN_THREADS) {
+    \\        float gate_sum = 0.0f;
+    \\        float up_sum = 0.0f;
+    \\        uint k = 0;
+    \\        for (; k + 3 < p.K; k += 4) {
+    \\            uint w_idx0 = k * p.H + h;
+    \\            uint w_idx1 = w_idx0 + p.H;
+    \\            uint w_idx2 = w_idx1 + p.H;
+    \\            uint w_idx3 = w_idx2 + p.H;
+    \\            float x0 = input_values[k];
+    \\            float x1 = input_values[k + 1];
+    \\            float x2 = input_values[k + 2];
+    \\            float x3 = input_values[k + 3];
+    \\            gate_sum += x0 * float(gate_weight_data[w_idx0]) * gate_weight_scales[w_idx0 >> 5];
+    \\            gate_sum += x1 * float(gate_weight_data[w_idx1]) * gate_weight_scales[w_idx1 >> 5];
+    \\            gate_sum += x2 * float(gate_weight_data[w_idx2]) * gate_weight_scales[w_idx2 >> 5];
+    \\            gate_sum += x3 * float(gate_weight_data[w_idx3]) * gate_weight_scales[w_idx3 >> 5];
+    \\            up_sum += x0 * float(up_weight_data[w_idx0]) * up_weight_scales[w_idx0 >> 5];
+    \\            up_sum += x1 * float(up_weight_data[w_idx1]) * up_weight_scales[w_idx1 >> 5];
+    \\            up_sum += x2 * float(up_weight_data[w_idx2]) * up_weight_scales[w_idx2 >> 5];
+    \\            up_sum += x3 * float(up_weight_data[w_idx3]) * up_weight_scales[w_idx3 >> 5];
+    \\        }
+    \\        for (; k < p.K; k++) {
+    \\            uint w_idx = k * p.H + h;
+    \\            float x = input_values[k];
+    \\            gate_sum += x * float(gate_weight_data[w_idx]) * gate_weight_scales[w_idx >> 5];
+    \\            up_sum += x * float(up_weight_data[w_idx]) * up_weight_scales[w_idx >> 5];
+    \\        }
+    \\        product_values[h] = fused_unary(p.first_op, gate_sum) * up_sum;
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    float ss = 0.0f;
+    \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_THREADS) {
+    \\        float sum = 0.0f;
+    \\        uint h = 0;
+    \\        for (; h + 7 < p.H; h += 8) {
+    \\            uint w_idx0 = h * p.O + col;
+    \\            uint w_idx1 = w_idx0 + p.O;
+    \\            uint w_idx2 = w_idx1 + p.O;
+    \\            uint w_idx3 = w_idx2 + p.O;
+    \\            uint w_idx4 = w_idx3 + p.O;
+    \\            uint w_idx5 = w_idx4 + p.O;
+    \\            uint w_idx6 = w_idx5 + p.O;
+    \\            uint w_idx7 = w_idx6 + p.O;
+    \\            sum += product_values[h] * float(down_weight_data[w_idx0]) * down_weight_scales[w_idx0 >> 5];
+    \\            sum += product_values[h + 1] * float(down_weight_data[w_idx1]) * down_weight_scales[w_idx1 >> 5];
+    \\            sum += product_values[h + 2] * float(down_weight_data[w_idx2]) * down_weight_scales[w_idx2 >> 5];
+    \\            sum += product_values[h + 3] * float(down_weight_data[w_idx3]) * down_weight_scales[w_idx3 >> 5];
+    \\            sum += product_values[h + 4] * float(down_weight_data[w_idx4]) * down_weight_scales[w_idx4 >> 5];
+    \\            sum += product_values[h + 5] * float(down_weight_data[w_idx5]) * down_weight_scales[w_idx5 >> 5];
+    \\            sum += product_values[h + 6] * float(down_weight_data[w_idx6]) * down_weight_scales[w_idx6 >> 5];
+    \\            sum += product_values[h + 7] * float(down_weight_data[w_idx7]) * down_weight_scales[w_idx7 >> 5];
+    \\        }
+    \\        for (; h < p.H; h++) {
+    \\            uint w_idx = h * p.O + col;
+    \\            sum += product_values[h] * float(down_weight_data[w_idx]) * down_weight_scales[w_idx >> 5];
+    \\        }
+    \\        uint linear = row * p.O + col;
+    \\        float residual = sum + residual_secondary[p.residual_secondary_offset + linear];
+    \\        residual_values[col] = residual;
+    \\        ss += residual * residual;
+    \\    }
+    \\
+    \\    partial[tid] = ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = SEMANTIC_FFN_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float inv_rms = 1.0f / sqrt(partial[0] / float(p.O) + p.rms_eps);
+    \\
+    \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_THREADS) {
+    \\        uint linear = row * p.O + col;
+    \\        scaled_dst[p.scaled_dst_offset + linear] = residual_values[col] * inv_rms * scale_src[p.scale_src_offset + col];
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_semantic_ffn_input_bridge_f32(
+    \\    device const char*  input_weight_data   [[buffer(0)]],
+    \\    device const float* input_weight_scales [[buffer(1)]],
+    \\    device const char*  gate_weight_data    [[buffer(2)]],
+    \\    device const float* gate_weight_scales  [[buffer(3)]],
+    \\    device const char*  up_weight_data      [[buffer(4)]],
+    \\    device const float* up_weight_scales    [[buffer(5)]],
+    \\    device const char*  down_weight_data    [[buffer(6)]],
+    \\    device const float* down_weight_scales  [[buffer(7)]],
+    \\    device const float* source_input        [[buffer(8)]],
+    \\    device const float* input_residual_secondary [[buffer(9)]],
+    \\    device const float* input_scale_src     [[buffer(10)]],
+    \\    device const float* output_scale_src    [[buffer(11)]],
+    \\    device float*       output_dst          [[buffer(12)]],
+    \\    constant QMatmulSemanticFfnInputBridgeParams& p [[buffer(13)]],
+    \\    uint row [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    if (row >= p.M) return;
+    \\    threadgroup float partial[SEMANTIC_FFN_INPUT_BRIDGE_THREADS];
+    \\    threadgroup float input_values[SEMANTIC_FFN_MAX_DIM];
+    \\    threadgroup float product_values[SEMANTIC_FFN_MAX_HIDDEN];
+    \\    threadgroup float residual_values[SEMANTIC_FFN_MAX_DIM];
+    \\
+    \\    float input_ss = 0.0f;
+    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        float sum = 0.0f;
+    \\        uint k = 0;
+    \\        for (; k + 3 < p.input_projection_K; k += 4) {
+    \\            uint w_idx0 = k * p.K + col;
+    \\            uint w_idx1 = w_idx0 + p.K;
+    \\            uint w_idx2 = w_idx1 + p.K;
+    \\            uint w_idx3 = w_idx2 + p.K;
+    \\            uint input_base = p.source_input_offset + row * p.source_input_row_stride + k;
+    \\            sum += source_input[input_base] * float(input_weight_data[w_idx0]) * input_weight_scales[w_idx0 >> 5];
+    \\            sum += source_input[input_base + 1] * float(input_weight_data[w_idx1]) * input_weight_scales[w_idx1 >> 5];
+    \\            sum += source_input[input_base + 2] * float(input_weight_data[w_idx2]) * input_weight_scales[w_idx2 >> 5];
+    \\            sum += source_input[input_base + 3] * float(input_weight_data[w_idx3]) * input_weight_scales[w_idx3 >> 5];
+    \\        }
+    \\        for (; k < p.input_projection_K; k++) {
+    \\            uint w_idx = k * p.K + col;
+    \\            sum += source_input[p.source_input_offset + row * p.source_input_row_stride + k] * float(input_weight_data[w_idx]) * input_weight_scales[w_idx >> 5];
+    \\        }
+    \\        uint linear = row * p.K + col;
+    \\        float residual = sum + input_residual_secondary[p.input_residual_secondary_offset + linear];
+    \\        residual_values[col] = residual;
+    \\        input_ss += residual * residual;
+    \\    }
+    \\    partial[tid] = input_ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = SEMANTIC_FFN_INPUT_BRIDGE_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float input_inv_rms = 1.0f / sqrt(partial[0] / float(p.K) + p.input_rms_eps);
+    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        input_values[col] = residual_values[col] * input_inv_rms * input_scale_src[p.input_scale_src_offset + col];
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint h = tid; h < p.H; h += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        float gate_sum = 0.0f;
+    \\        float up_sum = 0.0f;
+    \\        uint k = 0;
+    \\        for (; k + 3 < p.K; k += 4) {
+    \\            uint w_idx0 = k * p.H + h;
+    \\            uint w_idx1 = w_idx0 + p.H;
+    \\            uint w_idx2 = w_idx1 + p.H;
+    \\            uint w_idx3 = w_idx2 + p.H;
+    \\            float x0 = input_values[k];
+    \\            float x1 = input_values[k + 1];
+    \\            float x2 = input_values[k + 2];
+    \\            float x3 = input_values[k + 3];
+    \\            gate_sum += x0 * float(gate_weight_data[w_idx0]) * gate_weight_scales[w_idx0 >> 5];
+    \\            gate_sum += x1 * float(gate_weight_data[w_idx1]) * gate_weight_scales[w_idx1 >> 5];
+    \\            gate_sum += x2 * float(gate_weight_data[w_idx2]) * gate_weight_scales[w_idx2 >> 5];
+    \\            gate_sum += x3 * float(gate_weight_data[w_idx3]) * gate_weight_scales[w_idx3 >> 5];
+    \\            up_sum += x0 * float(up_weight_data[w_idx0]) * up_weight_scales[w_idx0 >> 5];
+    \\            up_sum += x1 * float(up_weight_data[w_idx1]) * up_weight_scales[w_idx1 >> 5];
+    \\            up_sum += x2 * float(up_weight_data[w_idx2]) * up_weight_scales[w_idx2 >> 5];
+    \\            up_sum += x3 * float(up_weight_data[w_idx3]) * up_weight_scales[w_idx3 >> 5];
+    \\        }
+    \\        for (; k < p.K; k++) {
+    \\            uint w_idx = k * p.H + h;
+    \\            float x = input_values[k];
+    \\            gate_sum += x * float(gate_weight_data[w_idx]) * gate_weight_scales[w_idx >> 5];
+    \\            up_sum += x * float(up_weight_data[w_idx]) * up_weight_scales[w_idx >> 5];
+    \\        }
+    \\        product_values[h] = fused_unary(p.first_op, gate_sum) * up_sum;
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    float output_ss = 0.0f;
+    \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        float sum = 0.0f;
+    \\        uint h = 0;
+    \\        for (; h + 7 < p.H; h += 8) {
+    \\            uint w_idx0 = h * p.O + col;
+    \\            uint w_idx1 = w_idx0 + p.O;
+    \\            uint w_idx2 = w_idx1 + p.O;
+    \\            uint w_idx3 = w_idx2 + p.O;
+    \\            uint w_idx4 = w_idx3 + p.O;
+    \\            uint w_idx5 = w_idx4 + p.O;
+    \\            uint w_idx6 = w_idx5 + p.O;
+    \\            uint w_idx7 = w_idx6 + p.O;
+    \\            sum += product_values[h] * float(down_weight_data[w_idx0]) * down_weight_scales[w_idx0 >> 5];
+    \\            sum += product_values[h + 1] * float(down_weight_data[w_idx1]) * down_weight_scales[w_idx1 >> 5];
+    \\            sum += product_values[h + 2] * float(down_weight_data[w_idx2]) * down_weight_scales[w_idx2 >> 5];
+    \\            sum += product_values[h + 3] * float(down_weight_data[w_idx3]) * down_weight_scales[w_idx3 >> 5];
+    \\            sum += product_values[h + 4] * float(down_weight_data[w_idx4]) * down_weight_scales[w_idx4 >> 5];
+    \\            sum += product_values[h + 5] * float(down_weight_data[w_idx5]) * down_weight_scales[w_idx5 >> 5];
+    \\            sum += product_values[h + 6] * float(down_weight_data[w_idx6]) * down_weight_scales[w_idx6 >> 5];
+    \\            sum += product_values[h + 7] * float(down_weight_data[w_idx7]) * down_weight_scales[w_idx7 >> 5];
+    \\        }
+    \\        for (; h < p.H; h++) {
+    \\            uint w_idx = h * p.O + col;
+    \\            sum += product_values[h] * float(down_weight_data[w_idx]) * down_weight_scales[w_idx >> 5];
+    \\        }
+    \\        float residual = sum + residual_values[col];
+    \\        residual_values[col] = residual;
+    \\        output_ss += residual * residual;
+    \\    }
+    \\    partial[tid] = output_ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = SEMANTIC_FFN_INPUT_BRIDGE_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float output_inv_rms = 1.0f / sqrt(partial[0] / float(p.O) + p.output_rms_eps);
+    \\    for (uint col = tid; col < p.O; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        uint linear = row * p.O + col;
+    \\        output_dst[p.output_dst_offset + linear] = residual_values[col] * output_inv_rms * output_scale_src[p.output_scale_src_offset + col];
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_semantic_ffn_input_bridge_product_f32(
+    \\    device const char*  input_weight_data   [[buffer(0)]],
+    \\    device const float* input_weight_scales [[buffer(1)]],
+    \\    device const char*  gate_weight_data    [[buffer(2)]],
+    \\    device const float* gate_weight_scales  [[buffer(3)]],
+    \\    device const char*  up_weight_data      [[buffer(4)]],
+    \\    device const float* up_weight_scales    [[buffer(5)]],
+    \\    device const float* source_input        [[buffer(6)]],
+    \\    device const float* input_residual_secondary [[buffer(7)]],
+    \\    device const float* input_scale_src     [[buffer(8)]],
+    \\    device float*       scratch             [[buffer(9)]],
+    \\    constant QMatmulSemanticFfnInputBridgeParams& p [[buffer(10)]],
+    \\    uint row [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    if (row >= p.M) return;
+    \\    threadgroup float partial[SEMANTIC_FFN_INPUT_BRIDGE_THREADS];
+    \\    threadgroup float input_values[SEMANTIC_FFN_MAX_DIM];
+    \\    threadgroup float residual_values[SEMANTIC_FFN_MAX_DIM];
+    \\
+    \\    float input_ss = 0.0f;
+    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        float sum = 0.0f;
+    \\        uint k = 0;
+    \\        for (; k + 3 < p.input_projection_K; k += 4) {
+    \\            uint w_idx0 = k * p.K + col;
+    \\            uint w_idx1 = w_idx0 + p.K;
+    \\            uint w_idx2 = w_idx1 + p.K;
+    \\            uint w_idx3 = w_idx2 + p.K;
+    \\            uint input_base = p.source_input_offset + row * p.source_input_row_stride + k;
+    \\            sum += source_input[input_base] * float(input_weight_data[w_idx0]) * input_weight_scales[w_idx0 >> 5];
+    \\            sum += source_input[input_base + 1] * float(input_weight_data[w_idx1]) * input_weight_scales[w_idx1 >> 5];
+    \\            sum += source_input[input_base + 2] * float(input_weight_data[w_idx2]) * input_weight_scales[w_idx2 >> 5];
+    \\            sum += source_input[input_base + 3] * float(input_weight_data[w_idx3]) * input_weight_scales[w_idx3 >> 5];
+    \\        }
+    \\        for (; k < p.input_projection_K; k++) {
+    \\            uint w_idx = k * p.K + col;
+    \\            sum += source_input[p.source_input_offset + row * p.source_input_row_stride + k] * float(input_weight_data[w_idx]) * input_weight_scales[w_idx >> 5];
+    \\        }
+    \\        uint linear = row * p.K + col;
+    \\        float residual = sum + input_residual_secondary[p.input_residual_secondary_offset + linear];
+    \\        residual_values[col] = residual;
+    \\        scratch[p.output_scratch_offset + row * p.O + col] = residual;
+    \\        input_ss += residual * residual;
+    \\    }
+    \\    partial[tid] = input_ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = SEMANTIC_FFN_INPUT_BRIDGE_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float input_inv_rms = 1.0f / sqrt(partial[0] / float(p.K) + p.input_rms_eps);
+    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        input_values[col] = residual_values[col] * input_inv_rms * input_scale_src[p.input_scale_src_offset + col];
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint h = tid; h < p.H; h += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        float gate_sum = 0.0f;
+    \\        float up_sum = 0.0f;
+    \\        uint k = 0;
+    \\        for (; k + 3 < p.K; k += 4) {
+    \\            uint w_idx0 = k * p.H + h;
+    \\            uint w_idx1 = w_idx0 + p.H;
+    \\            uint w_idx2 = w_idx1 + p.H;
+    \\            uint w_idx3 = w_idx2 + p.H;
+    \\            float x0 = input_values[k];
+    \\            float x1 = input_values[k + 1];
+    \\            float x2 = input_values[k + 2];
+    \\            float x3 = input_values[k + 3];
+    \\            gate_sum += x0 * float(gate_weight_data[w_idx0]) * gate_weight_scales[w_idx0 >> 5];
+    \\            gate_sum += x1 * float(gate_weight_data[w_idx1]) * gate_weight_scales[w_idx1 >> 5];
+    \\            gate_sum += x2 * float(gate_weight_data[w_idx2]) * gate_weight_scales[w_idx2 >> 5];
+    \\            gate_sum += x3 * float(gate_weight_data[w_idx3]) * gate_weight_scales[w_idx3 >> 5];
+    \\            up_sum += x0 * float(up_weight_data[w_idx0]) * up_weight_scales[w_idx0 >> 5];
+    \\            up_sum += x1 * float(up_weight_data[w_idx1]) * up_weight_scales[w_idx1 >> 5];
+    \\            up_sum += x2 * float(up_weight_data[w_idx2]) * up_weight_scales[w_idx2 >> 5];
+    \\            up_sum += x3 * float(up_weight_data[w_idx3]) * up_weight_scales[w_idx3 >> 5];
+    \\        }
+    \\        for (; k < p.K; k++) {
+    \\            uint w_idx = k * p.H + h;
+    \\            float x = input_values[k];
+    \\            gate_sum += x * float(gate_weight_data[w_idx]) * gate_weight_scales[w_idx >> 5];
+    \\            up_sum += x * float(up_weight_data[w_idx]) * up_weight_scales[w_idx >> 5];
+    \\        }
+    \\        scratch[p.product_scratch_offset + row * p.H + h] = fused_unary(p.first_op, gate_sum) * up_sum;
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_semantic_ffn_input_bridge_stage_input_f32(
+    \\    device const char*  input_weight_data   [[buffer(0)]],
+    \\    device const float* input_weight_scales [[buffer(1)]],
+    \\    device const float* source_input        [[buffer(2)]],
+    \\    device const float* input_residual_secondary [[buffer(3)]],
+    \\    device const float* input_scale_src     [[buffer(4)]],
+    \\    device float*       scratch             [[buffer(5)]],
+    \\    constant QMatmulSemanticFfnInputBridgeParams& p [[buffer(6)]],
+    \\    uint row [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    if (row >= p.M) return;
+    \\    threadgroup float partial[SEMANTIC_FFN_INPUT_BRIDGE_THREADS];
+    \\    threadgroup float residual_values[SEMANTIC_FFN_MAX_DIM];
+    \\
+    \\    float input_ss = 0.0f;
+    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        float sum = 0.0f;
+    \\        uint k = 0;
+    \\        for (; k + 3 < p.input_projection_K; k += 4) {
+    \\            uint w_idx0 = k * p.K + col;
+    \\            uint w_idx1 = w_idx0 + p.K;
+    \\            uint w_idx2 = w_idx1 + p.K;
+    \\            uint w_idx3 = w_idx2 + p.K;
+    \\            uint input_base = p.source_input_offset + row * p.source_input_row_stride + k;
+    \\            sum += source_input[input_base] * float(input_weight_data[w_idx0]) * input_weight_scales[w_idx0 >> 5];
+    \\            sum += source_input[input_base + 1] * float(input_weight_data[w_idx1]) * input_weight_scales[w_idx1 >> 5];
+    \\            sum += source_input[input_base + 2] * float(input_weight_data[w_idx2]) * input_weight_scales[w_idx2 >> 5];
+    \\            sum += source_input[input_base + 3] * float(input_weight_data[w_idx3]) * input_weight_scales[w_idx3 >> 5];
+    \\        }
+    \\        for (; k < p.input_projection_K; k++) {
+    \\            uint w_idx = k * p.K + col;
+    \\            sum += source_input[p.source_input_offset + row * p.source_input_row_stride + k] * float(input_weight_data[w_idx]) * input_weight_scales[w_idx >> 5];
+    \\        }
+    \\        uint linear = row * p.K + col;
+    \\        float residual = sum + input_residual_secondary[p.input_residual_secondary_offset + linear];
+    \\        residual_values[col] = residual;
+    \\        scratch[p.output_scratch_offset + row * p.O + col] = residual;
+    \\        input_ss += residual * residual;
+    \\    }
+    \\    partial[tid] = input_ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = SEMANTIC_FFN_INPUT_BRIDGE_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float input_inv_rms = 1.0f / sqrt(partial[0] / float(p.K) + p.input_rms_eps);
+    \\    for (uint col = tid; col < p.K; col += SEMANTIC_FFN_INPUT_BRIDGE_THREADS) {
+    \\        scratch[p.input_scratch_offset + row * p.K + col] =
+    \\            residual_values[col] * input_inv_rms * input_scale_src[p.input_scale_src_offset + col];
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_semantic_ffn_input_bridge_width_partials_f32(
+    \\    device const char*  down_weight_data    [[buffer(0)]],
+    \\    device const float* down_weight_scales  [[buffer(1)]],
+    \\    device float*       output_scratch      [[buffer(2)]],
+    \\    device float*       partial_dst         [[buffer(3)]],
+    \\    constant QMatmulSemanticFfnInputBridgeParams& p [[buffer(4)]],
+    \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint simd_idx [[simdgroup_index_in_threadgroup]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = group.x * ROW_CHAIN_TILE;
+    \\    const uint gCol = group.y * ROW_CHAIN_TILE;
+    \\    const uint width_lane = simd_idx / NSUB;
+    \\    const uint quad = simd_idx - width_lane * NSUB;
+    \\    const uint lane_tid = tid - width_lane * 128;
+    \\    const uint sRow = (quad / 2) * 16;
+    \\    const uint sCol = (quad % 2) * 16;
+    \\
+    \\    threadgroup float tI[ROW_CHAIN_WIDTH_LANES * ROW_CHAIN_TILE * 8];
+    \\    threadgroup float tW[ROW_CHAIN_WIDTH_LANES * 8 * ROW_CHAIN_TILE];
+    \\    threadgroup float tC[ROW_CHAIN_WIDTH_LANES * ROW_CHAIN_TILE * ROW_CHAIN_TILE];
+    \\
+    \\    simdgroup_float8x8 acc[4] = {
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\    };
+    \\
+    \\    for (uint kt_base = 0; kt_base < p.H; kt_base += 8 * ROW_CHAIN_WIDTH_LANES) {
+    \\        const uint kt = kt_base + width_lane * 8;
+    \\        const uint input_base = width_lane * ROW_CHAIN_TILE * 8;
+    \\        const uint weight_base = width_lane * 8 * ROW_CHAIN_TILE;
+    \\        for (uint i = lane_tid; i < ROW_CHAIN_TILE * 8; i += 128) {
+    \\            uint r = i / 8, c = i % 8;
+    \\            uint ir = gRow + r, ic = kt + c;
+    \\            tI[input_base + i] = (ir < p.M && ic < p.H) ? output_scratch[p.product_scratch_offset + ir * p.H + ic] : 0.0f;
+    \\        }
+    \\        for (uint i = lane_tid; i < 8 * ROW_CHAIN_TILE; i += 128) {
+    \\            uint r = i / ROW_CHAIN_TILE, c = i % ROW_CHAIN_TILE;
+    \\            uint kr = kt + r, nc = gCol + c;
+    \\            if (kr < p.H && nc < p.O) {
+    \\                uint w_idx = kr * p.O + nc;
+    \\                tW[weight_base + i] = float(down_weight_data[w_idx]) * down_weight_scales[w_idx >> 5];
+    \\            } else {
+    \\                tW[weight_base + i] = 0.0f;
+    \\            }
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        simdgroup_float8x8 a0, a1, b0, b1;
+    \\        simdgroup_load(a0, tI + input_base + (sRow + 0) * 8, 8);
+    \\        simdgroup_load(a1, tI + input_base + (sRow + 8) * 8, 8);
+    \\        simdgroup_load(b0, tW + weight_base + (sCol + 0), ROW_CHAIN_TILE);
+    \\        simdgroup_load(b1, tW + weight_base + (sCol + 8), ROW_CHAIN_TILE);
+    \\
+    \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
+    \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
+    \\        simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
+    \\        simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\
+    \\    const uint c_base = width_lane * ROW_CHAIN_TILE * ROW_CHAIN_TILE;
+    \\    simdgroup_store(acc[0], tC + c_base + (sRow + 0) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[1], tC + c_base + (sRow + 0) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[2], tC + c_base + (sRow + 8) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[3], tC + c_base + (sRow + 8) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    if (tid < ROW_CHAIN_TILE) {
+    \\        uint r = tid;
+    \\        uint cr = gRow + r;
+    \\        if (cr < p.M) {
+    \\            float ss = 0.0f;
+    \\            for (uint c = 0; c < ROW_CHAIN_TILE; c += 1) {
+    \\                uint cc = gCol + c;
+    \\                if (cc < p.O) {
+    \\                    float val = 0.0f;
+    \\                    for (uint wl = 0; wl < ROW_CHAIN_WIDTH_LANES; wl += 1) {
+    \\                        val += tC[wl * ROW_CHAIN_TILE * ROW_CHAIN_TILE + r * ROW_CHAIN_TILE + c];
+    \\                    }
+    \\                    uint linear = cr * p.O + cc;
+    \\                    float residual = val + output_scratch[p.output_scratch_offset + linear];
+    \\                    output_scratch[p.output_scratch_offset + linear] = residual;
+    \\                    ss += residual * residual;
+    \\                }
+    \\            }
+    \\            partial_dst[p.partial_dst_offset + cr * p.partial_cols + group.y] = ss;
+    \\        }
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_semantic_ffn_input_bridge_finalize_tiles_f32(
+    \\    device const float* output_scratch [[buffer(0)]],
+    \\    device const float* partial_src    [[buffer(1)]],
+    \\    device const float* output_scale   [[buffer(2)]],
+    \\    device float*       output_dst     [[buffer(3)]],
+    \\    constant QMatmulSemanticFfnInputBridgeParams& p [[buffer(4)]],
+    \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint row = group.x;
+    \\    const uint gCol = group.y * ROW_CHAIN_TILE;
+    \\    if (row >= p.M) return;
+    \\    float ss = 0.0f;
+    \\    for (uint t = tid; t < p.partial_cols; t += SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS) {
+    \\        ss += partial_src[p.partial_dst_offset + row * p.partial_cols + t];
+    \\    }
+    \\    threadgroup float partial[SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS];
+    \\    partial[tid] = ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    const float inv_rms = 1.0f / sqrt(partial[0] / float(p.O) + p.output_rms_eps);
+    \\    for (uint col = gCol + tid; col < min(gCol + ROW_CHAIN_TILE, p.O); col += SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS) {
+    \\        uint linear = row * p.O + col;
+    \\        output_dst[p.output_dst_offset + linear] =
+    \\            output_scratch[p.output_scratch_offset + linear] * inv_rms * output_scale[p.output_scale_src_offset + col];
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_semantic_ffn_input_bridge_finalize_row_tiles_f32(
+    \\    device const float* output_scratch [[buffer(0)]],
+    \\    device const float* partial_src    [[buffer(1)]],
+    \\    device const float* output_scale   [[buffer(2)]],
+    \\    device float*       output_dst     [[buffer(3)]],
+    \\    constant QMatmulSemanticFfnInputBridgeParams& p [[buffer(4)]],
+    \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = group.x * ROW_CHAIN_TILE;
+    \\    const uint gCol = group.y * ROW_CHAIN_TILE;
+    \\    threadgroup float inv_rms[ROW_CHAIN_TILE];
+    \\    if (tid < ROW_CHAIN_TILE) {
+    \\        uint cr = gRow + tid;
+    \\        if (cr < p.M) {
+    \\            float ss = 0.0f;
+    \\            for (uint t = 0; t < p.partial_cols; t += 1) {
+    \\                ss += partial_src[p.partial_dst_offset + cr * p.partial_cols + t];
+    \\            }
+    \\            inv_rms[tid] = 1.0f / sqrt(ss / float(p.O) + p.output_rms_eps);
+    \\        } else {
+    \\            inv_rms[tid] = 0.0f;
+    \\        }
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint i = tid; i < ROW_CHAIN_TILE * ROW_CHAIN_TILE; i += SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS) {
+    \\        uint r = i / ROW_CHAIN_TILE;
+    \\        uint c = i - r * ROW_CHAIN_TILE;
+    \\        uint cr = gRow + r;
+    \\        uint col = gCol + c;
+    \\        if (cr < p.M && col < p.O) {
+    \\            uint linear = cr * p.O + col;
+    \\            output_dst[p.output_dst_offset + linear] =
+    \\                output_scratch[p.output_scratch_offset + linear] * inv_rms[r] * output_scale[p.output_scale_src_offset + col];
+    \\        }
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_row_chain_f32(
+    \\    device const char*  weight_data   [[buffer(0)]],
+    \\    device const float* weight_scales [[buffer(1)]],
+    \\    device const float* input         [[buffer(2)]],
+    \\    device const float* secondary     [[buffer(3)]],
+    \\    device const float* scale_src     [[buffer(4)]],
+    \\    device float*       scaled_dst    [[buffer(5)]],
+    \\    device float*       ew_output     [[buffer(6)]],
+    \\    constant QMatmulRowChainParams& p [[buffer(7)]],
+    \\    uint row [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    if (row >= p.M) return;
+    \\    threadgroup float partial[QMATMUL_ROW_CHAIN_THREADS];
+    \\    threadgroup float row_values[MAX_ROW_CHAIN_COLS];
+    \\    threadgroup float input_values[MAX_ROW_CHAIN_K];
+    \\    float ss = 0.0f;
+    \\
+    \\    for (uint k = tid; k < p.K; k += QMATMUL_ROW_CHAIN_THREADS) {
+    \\        input_values[k] = input[p.input_offset + row * p.input_row_stride + k];
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint col = tid; col < p.N; col += QMATMUL_ROW_CHAIN_THREADS) {
+    \\        float sum = 0.0f;
+    \\        for (uint k = 0; k < p.K; k++) {
+    \\            uint w_idx = k * p.N + col;
+    \\            sum += input_values[k] * float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
+    \\        }
+    \\        uint linear = row * p.N + col;
+    \\        float other = secondary[p.ew_secondary_offset + linear];
+    \\        float ew = sum;
+    \\        if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + sum : sum + other;
+    \\        else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * sum : sum * other;
+    \\        row_values[col] = ew;
+    \\        ss += ew * ew;
+    \\    }
+    \\
+    \\    partial[tid] = ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = QMATMUL_ROW_CHAIN_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float inv_rms = 1.0f / sqrt(partial[0] / float(p.N) + p.rms_eps);
+    \\
+    \\    for (uint col = tid; col < p.N; col += QMATMUL_ROW_CHAIN_THREADS) {
+    \\        uint linear = row * p.N + col;
+    \\        float ew = row_values[col];
+    \\        if (p.write_ew_output != 0) ew_output[p.ew_dst_offset + linear] = ew;
+    \\        scaled_dst[p.scaled_dst_offset + linear] = ew * inv_rms * scale_src[p.scale_src_offset + col];
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_row_chain_tiled_f32(
+    \\    device const char*  weight_data   [[buffer(0)]],
+    \\    device const float* weight_scales [[buffer(1)]],
+    \\    device const float* input         [[buffer(2)]],
+    \\    device const float* secondary     [[buffer(3)]],
+    \\    device const float* scale_src     [[buffer(4)]],
+    \\    device float*       scaled_dst    [[buffer(5)]],
+    \\    device float*       ew_output     [[buffer(6)]],
+    \\    constant QMatmulRowChainParams& p [[buffer(7)]],
+    \\    uint row_tile [[threadgroup_position_in_grid]],
+    \\    uint simd_idx [[simdgroup_index_in_threadgroup]],
+    \\    uint lane     [[thread_index_in_simdgroup]],
+    \\    uint tid      [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = row_tile * ROW_CHAIN_TILE;
+    \\    const uint sRow = (simd_idx / 2) * 16;
+    \\    const uint sCol = (simd_idx % 2) * 16;
+    \\
+    \\    threadgroup float row_sums[ROW_CHAIN_TILE];
+    \\    threadgroup float inv_rms[ROW_CHAIN_TILE];
+    \\    if (tid < ROW_CHAIN_TILE) {
+    \\        row_sums[tid] = 0.0f;
+    \\        inv_rms[tid] = 0.0f;
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    threadgroup float tI[ROW_CHAIN_TILE * 8];
+    \\    threadgroup float tW[8 * ROW_CHAIN_TILE];
+    \\    threadgroup float tC[ROW_CHAIN_TILE * ROW_CHAIN_TILE];
+    \\
+    \\    for (uint gCol = 0; gCol < p.N; gCol += ROW_CHAIN_TILE) {
+    \\        simdgroup_float8x8 acc[4] = {
+    \\            simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\            simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\        };
+    \\
+    \\        for (uint kt = 0; kt < p.K; kt += 8) {
+    \\            for (uint i = tid; i < ROW_CHAIN_TILE * 8; i += 128) {
+    \\                uint r = i / 8, c = i % 8;
+    \\                uint ir = gRow + r, ic = kt + c;
+    \\                tI[i] = (ir < p.M && ic < p.K) ? input[p.input_offset + ir * p.input_row_stride + ic] : 0.0f;
+    \\            }
+    \\            for (uint i = tid; i < 8 * ROW_CHAIN_TILE; i += 128) {
+    \\                uint r = i / ROW_CHAIN_TILE, c = i % ROW_CHAIN_TILE;
+    \\                uint kr = kt + r, nc = gCol + c;
+    \\                if (kr < p.K && nc < p.N) {
+    \\                    uint w_idx = kr * p.N + nc;
+    \\                    tW[i] = float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
+    \\                } else {
+    \\                    tW[i] = 0.0f;
+    \\                }
+    \\            }
+    \\            threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\            simdgroup_float8x8 a0, a1, b0, b1;
+    \\            simdgroup_load(a0, tI + (sRow + 0) * 8, 8);
+    \\            simdgroup_load(a1, tI + (sRow + 8) * 8, 8);
+    \\            simdgroup_load(b0, tW + (sCol + 0), ROW_CHAIN_TILE);
+    \\            simdgroup_load(b1, tW + (sCol + 8), ROW_CHAIN_TILE);
+    \\
+    \\            simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
+    \\            simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
+    \\            simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
+    \\            simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
+    \\
+    \\            threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\        }
+    \\
+    \\        simdgroup_store(acc[0], tC + (sRow + 0) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\        simdgroup_store(acc[1], tC + (sRow + 0) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
+    \\        simdgroup_store(acc[2], tC + (sRow + 8) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\        simdgroup_store(acc[3], tC + (sRow + 8) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        if (tid < ROW_CHAIN_TILE) {
+    \\            uint r = tid;
+    \\            uint cr = gRow + r;
+    \\            if (cr < p.M) {
+    \\                float ss = row_sums[r];
+    \\                for (uint c = 0; c < ROW_CHAIN_TILE; c += 1) {
+    \\                    uint cc = gCol + c;
+    \\                    if (cc < p.N) {
+    \\                        float val = tC[r * ROW_CHAIN_TILE + c];
+    \\                        uint linear = cr * p.N + cc;
+    \\                        float other = secondary[p.ew_secondary_offset + linear];
+    \\                        float ew = val;
+    \\                        if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
+    \\                        else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
+    \\                        if (p.write_ew_output != 0) ew_output[p.ew_dst_offset + linear] = ew;
+    \\                        else scaled_dst[p.scaled_dst_offset + linear] = ew;
+    \\                        ss += ew * ew;
+    \\                    }
+    \\                }
+    \\                row_sums[r] = ss;
+    \\            }
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\
+    \\    if (tid < ROW_CHAIN_TILE) {
+    \\        uint cr = gRow + tid;
+    \\        if (cr < p.M) inv_rms[tid] = 1.0f / sqrt(row_sums[tid] / float(p.N) + p.rms_eps);
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint i = tid; i < ROW_CHAIN_TILE * p.N; i += 128) {
+    \\        uint r = i / p.N;
+    \\        uint col = i - r * p.N;
+    \\        uint cr = gRow + r;
+    \\        if (cr < p.M) {
+    \\            uint linear = cr * p.N + col;
+    \\            float ew = (p.write_ew_output != 0) ? ew_output[p.ew_dst_offset + linear] : scaled_dst[p.scaled_dst_offset + linear];
+    \\            scaled_dst[p.scaled_dst_offset + linear] = ew * inv_rms[r] * scale_src[p.scale_src_offset + col];
+    \\        }
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_row_chain_tiled_partials_f32(
+    \\    device const char*  weight_data   [[buffer(0)]],
+    \\    device const float* weight_scales [[buffer(1)]],
+    \\    device const float* input         [[buffer(2)]],
+    \\    device const float* secondary     [[buffer(3)]],
+    \\    device float*       scaled_dst    [[buffer(4)]],
+    \\    device float*       ew_output     [[buffer(5)]],
+    \\    device float*       partial_dst   [[buffer(6)]],
+    \\    constant QMatmulRowChainParams& p [[buffer(7)]],
+    \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint simd_idx [[simdgroup_index_in_threadgroup]],
+    \\    uint lane     [[thread_index_in_simdgroup]],
+    \\    uint tid      [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = group.x * ROW_CHAIN_TILE;
+    \\    const uint gCol = group.y * ROW_CHAIN_TILE;
+    \\    const uint sRow = (simd_idx / 2) * 16;
+    \\    const uint sCol = (simd_idx % 2) * 16;
+    \\
+    \\    threadgroup float tI[ROW_CHAIN_TILE * 8];
+    \\    threadgroup float tW[8 * ROW_CHAIN_TILE];
+    \\    threadgroup float tC[ROW_CHAIN_TILE * ROW_CHAIN_TILE];
+    \\
+    \\    simdgroup_float8x8 acc[4] = {
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\    };
+    \\
+    \\    for (uint kt = 0; kt < p.K; kt += 8) {
+    \\        for (uint i = tid; i < ROW_CHAIN_TILE * 8; i += 128) {
+    \\            uint r = i / 8, c = i % 8;
+    \\            uint ir = gRow + r, ic = kt + c;
+    \\            tI[i] = (ir < p.M && ic < p.K) ? input[p.input_offset + ir * p.input_row_stride + ic] : 0.0f;
+    \\        }
+    \\        for (uint i = tid; i < 8 * ROW_CHAIN_TILE; i += 128) {
+    \\            uint r = i / ROW_CHAIN_TILE, c = i % ROW_CHAIN_TILE;
+    \\            uint kr = kt + r, nc = gCol + c;
+    \\            if (kr < p.K && nc < p.N) {
+    \\                uint w_idx = kr * p.N + nc;
+    \\                tW[i] = float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
+    \\            } else {
+    \\                tW[i] = 0.0f;
+    \\            }
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        simdgroup_float8x8 a0, a1, b0, b1;
+    \\        simdgroup_load(a0, tI + (sRow + 0) * 8, 8);
+    \\        simdgroup_load(a1, tI + (sRow + 8) * 8, 8);
+    \\        simdgroup_load(b0, tW + (sCol + 0), ROW_CHAIN_TILE);
+    \\        simdgroup_load(b1, tW + (sCol + 8), ROW_CHAIN_TILE);
+    \\
+    \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
+    \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
+    \\        simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
+    \\        simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\
+    \\    simdgroup_store(acc[0], tC + (sRow + 0) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[1], tC + (sRow + 0) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[2], tC + (sRow + 8) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[3], tC + (sRow + 8) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    if (tid < ROW_CHAIN_TILE) {
+    \\        uint r = tid;
+    \\        uint cr = gRow + r;
+    \\        if (cr < p.M) {
+    \\            float ss = 0.0f;
+    \\            for (uint c = 0; c < ROW_CHAIN_TILE; c += 1) {
+    \\                uint cc = gCol + c;
+    \\                if (cc < p.N) {
+    \\                    float val = tC[r * ROW_CHAIN_TILE + c];
+    \\                    uint linear = cr * p.N + cc;
+    \\                    float other = secondary[p.ew_secondary_offset + linear];
+    \\                    float ew = val;
+    \\                    if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
+    \\                    else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
+    \\                    if (p.write_ew_output != 0) ew_output[p.ew_dst_offset + linear] = ew;
+    \\                    else scaled_dst[p.scaled_dst_offset + linear] = ew;
+    \\                    ss += ew * ew;
+    \\                }
+    \\            }
+    \\            partial_dst[p.partial_dst_offset + cr * p.partial_cols + group.y] = ss;
+    \\        }
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_row_chain_tiled_finalize_f32(
+    \\    device const float* ew_src        [[buffer(0)]],
+    \\    device const float* partial_src   [[buffer(1)]],
+    \\    device const float* scale_src     [[buffer(2)]],
+    \\    device float*       scaled_dst    [[buffer(3)]],
+    \\    constant QMatmulRowChainParams& p [[buffer(4)]],
+    \\    uint row_tile [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = row_tile * ROW_CHAIN_TILE;
+    \\    threadgroup float inv_rms[ROW_CHAIN_TILE];
+    \\    if (tid < ROW_CHAIN_TILE) {
+    \\        uint cr = gRow + tid;
+    \\        if (cr < p.M) {
+    \\            float ss = 0.0f;
+    \\            for (uint t = 0; t < p.partial_cols; t += 1) {
+    \\                ss += partial_src[p.partial_dst_offset + cr * p.partial_cols + t];
+    \\            }
+    \\            inv_rms[tid] = 1.0f / sqrt(ss / float(p.N) + p.rms_eps);
+    \\        } else {
+    \\            inv_rms[tid] = 0.0f;
+    \\        }
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint i = tid; i < ROW_CHAIN_TILE * p.N; i += 128) {
+    \\        uint r = i / p.N;
+    \\        uint col = i - r * p.N;
+    \\        uint cr = gRow + r;
+    \\        if (cr < p.M) {
+    \\            uint linear = cr * p.N + col;
+    \\            float ew = ew_src[(p.write_ew_output != 0 ? p.ew_dst_offset : p.scaled_dst_offset) + linear];
+    \\            scaled_dst[p.scaled_dst_offset + linear] = ew * inv_rms[r] * scale_src[p.scale_src_offset + col];
+    \\        }
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_row_chain_tiled_finalize_tiles_f32(
+    \\    device const float* ew_src        [[buffer(0)]],
+    \\    device const float* partial_src   [[buffer(1)]],
+    \\    device const float* scale_src     [[buffer(2)]],
+    \\    device float*       scaled_dst    [[buffer(3)]],
+    \\    constant QMatmulRowChainParams& p [[buffer(4)]],
+    \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = group.x * ROW_CHAIN_TILE;
+    \\    const uint gCol = group.y * ROW_CHAIN_TILE;
+    \\    threadgroup float inv_rms[ROW_CHAIN_TILE];
+    \\    if (tid < ROW_CHAIN_TILE) {
+    \\        uint cr = gRow + tid;
+    \\        if (cr < p.M) {
+    \\            float ss = 0.0f;
+    \\            for (uint t = 0; t < p.partial_cols; t += 1) {
+    \\                ss += partial_src[p.partial_dst_offset + cr * p.partial_cols + t];
+    \\            }
+    \\            inv_rms[tid] = 1.0f / sqrt(ss / float(p.N) + p.rms_eps);
+    \\        } else {
+    \\            inv_rms[tid] = 0.0f;
+    \\        }
+    \\    }
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint i = tid; i < ROW_CHAIN_TILE * ROW_CHAIN_TILE; i += 128) {
+    \\        uint r = i / ROW_CHAIN_TILE;
+    \\        uint c = i - r * ROW_CHAIN_TILE;
+    \\        uint cr = gRow + r;
+    \\        uint col = gCol + c;
+    \\        if (cr < p.M && col < p.N) {
+    \\            uint linear = cr * p.N + col;
+    \\            float ew = ew_src[(p.write_ew_output != 0 ? p.ew_dst_offset : p.scaled_dst_offset) + linear];
+    \\            scaled_dst[p.scaled_dst_offset + linear] = ew * inv_rms[r] * scale_src[p.scale_src_offset + col];
+    \\        }
+    \\    }
+    \\}
+    \\
+    \\kernel void qmatmul_row_chain_width_partials_f32(
+    \\    device const char*  weight_data   [[buffer(0)]],
+    \\    device const float* weight_scales [[buffer(1)]],
+    \\    device const float* input         [[buffer(2)]],
+    \\    device const float* secondary     [[buffer(3)]],
+    \\    device float*       scaled_dst    [[buffer(4)]],
+    \\    device float*       ew_output     [[buffer(5)]],
+    \\    device float*       partial_dst   [[buffer(6)]],
+    \\    constant QMatmulRowChainParams& p [[buffer(7)]],
+    \\    uint2 group [[threadgroup_position_in_grid]],
+    \\    uint simd_idx [[simdgroup_index_in_threadgroup]],
+    \\    uint lane     [[thread_index_in_simdgroup]],
+    \\    uint tid      [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = group.x * ROW_CHAIN_TILE;
+    \\    const uint gCol = group.y * ROW_CHAIN_TILE;
+    \\    const uint width_lane = simd_idx / NSUB;
+    \\    const uint quad = simd_idx - width_lane * NSUB;
+    \\    const uint lane_tid = tid - width_lane * 128;
+    \\    const uint sRow = (quad / 2) * 16;
+    \\    const uint sCol = (quad % 2) * 16;
+    \\
+    \\    threadgroup float tI[ROW_CHAIN_WIDTH_LANES * ROW_CHAIN_TILE * 8];
+    \\    threadgroup float tW[ROW_CHAIN_WIDTH_LANES * 8 * ROW_CHAIN_TILE];
+    \\    threadgroup float tC[ROW_CHAIN_WIDTH_LANES * ROW_CHAIN_TILE * ROW_CHAIN_TILE];
+    \\
+    \\    simdgroup_float8x8 acc[4] = {
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\    };
+    \\
+    \\    for (uint kt_base = 0; kt_base < p.K; kt_base += 8 * ROW_CHAIN_WIDTH_LANES) {
+    \\        const uint kt = kt_base + width_lane * 8;
+    \\        const uint input_base = width_lane * ROW_CHAIN_TILE * 8;
+    \\        const uint weight_base = width_lane * 8 * ROW_CHAIN_TILE;
+    \\        for (uint i = lane_tid; i < ROW_CHAIN_TILE * 8; i += 128) {
+    \\            uint r = i / 8, c = i % 8;
+    \\            uint ir = gRow + r, ic = kt + c;
+    \\            tI[input_base + i] = (ir < p.M && ic < p.K) ? input[p.input_offset + ir * p.input_row_stride + ic] : 0.0f;
+    \\        }
+    \\        for (uint i = lane_tid; i < 8 * ROW_CHAIN_TILE; i += 128) {
+    \\            uint r = i / ROW_CHAIN_TILE, c = i % ROW_CHAIN_TILE;
+    \\            uint kr = kt + r, nc = gCol + c;
+    \\            if (kr < p.K && nc < p.N) {
+    \\                uint w_idx = kr * p.N + nc;
+    \\                tW[weight_base + i] = float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
+    \\            } else {
+    \\                tW[weight_base + i] = 0.0f;
+    \\            }
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        simdgroup_float8x8 a0, a1, b0, b1;
+    \\        simdgroup_load(a0, tI + input_base + (sRow + 0) * 8, 8);
+    \\        simdgroup_load(a1, tI + input_base + (sRow + 8) * 8, 8);
+    \\        simdgroup_load(b0, tW + weight_base + (sCol + 0), ROW_CHAIN_TILE);
+    \\        simdgroup_load(b1, tW + weight_base + (sCol + 8), ROW_CHAIN_TILE);
+    \\
+    \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
+    \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
+    \\        simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
+    \\        simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\
+    \\    const uint c_base = width_lane * ROW_CHAIN_TILE * ROW_CHAIN_TILE;
+    \\    simdgroup_store(acc[0], tC + c_base + (sRow + 0) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[1], tC + c_base + (sRow + 0) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[2], tC + c_base + (sRow + 8) * ROW_CHAIN_TILE + sCol + 0, ROW_CHAIN_TILE);
+    \\    simdgroup_store(acc[3], tC + c_base + (sRow + 8) * ROW_CHAIN_TILE + sCol + 8, ROW_CHAIN_TILE);
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    if (tid < ROW_CHAIN_TILE) {
+    \\        uint r = tid;
+    \\        uint cr = gRow + r;
+    \\        if (cr < p.M) {
+    \\            float ss = 0.0f;
+    \\            for (uint c = 0; c < ROW_CHAIN_TILE; c += 1) {
+    \\                uint cc = gCol + c;
+    \\                if (cc < p.N) {
+    \\                    float val = 0.0f;
+    \\                    for (uint wl = 0; wl < ROW_CHAIN_WIDTH_LANES; wl += 1) {
+    \\                        val += tC[wl * ROW_CHAIN_TILE * ROW_CHAIN_TILE + r * ROW_CHAIN_TILE + c];
+    \\                    }
+    \\                    uint linear = cr * p.N + cc;
+    \\                    float other = secondary[p.ew_secondary_offset + linear];
+    \\                    float ew = val;
+    \\                    if (p.ew_op == 7) ew = (p.ew_is_swapped != 0) ? other + val : val + other;
+    \\                    else if (p.ew_op == 8) ew = (p.ew_is_swapped != 0) ? other * val : val * other;
+    \\                    if (p.write_ew_output != 0) ew_output[p.ew_dst_offset + linear] = ew;
+    \\                    else scaled_dst[p.scaled_dst_offset + linear] = ew;
+    \\                    ss += ew * ew;
+    \\                }
+    \\            }
+    \\            partial_dst[p.partial_dst_offset + cr * p.partial_cols + group.y] = ss;
     \\        }
     \\    }
     \\}
@@ -1231,7 +2613,8 @@ const shader_source =
     \\    device float* scale_repeat_dst [[buffer(3)]],
     \\    device float* scaled_dst [[buffer(4)]],
     \\    constant RmsNormScaleParams& p [[buffer(5)]],
-    \\    uint row [[thread_position_in_grid]]
+    \\    uint row [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
     \\) {
     \\    if (row >= p.rows) return;
     \\    uint src_base = p.src_offset + row * p.cols;
@@ -1239,18 +2622,55 @@ const shader_source =
     \\    uint repeat_base = p.scale_repeat_dst_offset + row * p.cols;
     \\    uint scaled_base = p.scaled_dst_offset + row * p.cols;
     \\
+    \\    threadgroup float partial[QMATVEC_DOT_THREADS];
     \\    float ss = 0.0f;
-    \\    for (uint col = 0; col < p.cols; col++) {
+    \\    for (uint col = tid; col < p.cols; col += QMATVEC_DOT_THREADS) {
     \\        float v = src[src_base + col];
     \\        ss += v * v;
     \\    }
-    \\    float inv_rms = 1.0f / sqrt(ss / float(p.cols) + p.eps);
-    \\    for (uint col = 0; col < p.cols; col++) {
+    \\    partial[tid] = ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = QMATVEC_DOT_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float inv_rms = 1.0f / sqrt(partial[0] / float(p.cols) + p.eps);
+    \\    for (uint col = tid; col < p.cols; col += QMATVEC_DOT_THREADS) {
     \\        float norm = src[src_base + col] * inv_rms;
     \\        float scale = scale_src[p.scale_src_offset + col];
     \\        norm_dst[norm_base + col] = norm;
     \\        scale_repeat_dst[repeat_base + col] = scale;
     \\        scaled_dst[scaled_base + col] = norm * scale;
+    \\    }
+    \\}
+    \\
+    \\kernel void rmsnorm_scale_leaf_f32(
+    \\    device const float* src [[buffer(0)]],
+    \\    device const float* scale_src [[buffer(1)]],
+    \\    device float* scaled_dst [[buffer(2)]],
+    \\    constant RmsNormScaleParams& p [[buffer(3)]],
+    \\    uint row [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    if (row >= p.rows) return;
+    \\    uint src_base = p.src_offset + row * p.cols;
+    \\    uint scaled_base = p.scaled_dst_offset + row * p.cols;
+    \\
+    \\    threadgroup float partial[QMATVEC_DOT_THREADS];
+    \\    float ss = 0.0f;
+    \\    for (uint col = tid; col < p.cols; col += QMATVEC_DOT_THREADS) {
+    \\        float v = src[src_base + col];
+    \\        ss += v * v;
+    \\    }
+    \\    partial[tid] = ss;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = QMATVEC_DOT_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) partial[tid] += partial[tid + stride];
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    float inv_rms = 1.0f / sqrt(partial[0] / float(p.cols) + p.eps);
+    \\    for (uint col = tid; col < p.cols; col += QMATVEC_DOT_THREADS) {
+    \\        scaled_dst[scaled_base + col] = src[src_base + col] * inv_rms * scale_src[p.scale_src_offset + col];
     \\    }
     \\}
     \\
@@ -1265,6 +2685,7 @@ const shader_source =
     \\};
     \\
     \\constant uint MAX_SEQ = 4096;
+    \\constant uint MAX_D_HEAD = 512;
     \\constant uint MAX_ATTENTION_BATCH_HEADS = 16;
     \\constant uint MAX_ATTENTION_STORE_BATCH_HEADS = 4;
     \\constant uint MAX_ATTENTION_ROPE_STORE_SHARED_BATCH_HEADS = 16;
@@ -1527,7 +2948,7 @@ const shader_source =
     \\        high = true;
     \\    }
     \\    float cos_val = cos_sin[p.rope_cs_off + q_col * p.rope_cs_cs + i];
-    \\    float sin_val = cos_sin[p.rope_cs_off + q_col * p.rope_cs_cs + p.rope_half_d + i];
+    \\    float sin_val = cos_sin[p.rope_cs_off + q_col * p.rope_cs_cs + 2 * p.rope_half_d + i];
     \\    float x_lo = q_src[p.rope_src_off + q_col * p.rope_src_cs + i * p.rope_src_rs];
     \\    float x_hi = q_src[p.rope_src_off + q_col * p.rope_src_cs + (i + p.rope_half_d) * p.rope_src_rs];
     \\    return high ? (x_hi * cos_val + x_lo * sin_val) : (x_lo * cos_val - x_hi * sin_val);
@@ -1633,7 +3054,7 @@ const shader_source =
     \\        high = true;
     \\    }
     \\    float cos_val = cos_sin[p.rope_cs_off[head] + q_col * p.rope_cs_cs + i];
-    \\    float sin_val = cos_sin[p.rope_cs_off[head] + q_col * p.rope_cs_cs + p.rope_half_d + i];
+    \\    float sin_val = cos_sin[p.rope_cs_off[head] + q_col * p.rope_cs_cs + 2 * p.rope_half_d + i];
     \\    float x_lo = q_src[p.rope_src_off[head] + q_col * p.rope_src_cs + i * p.rope_src_rs];
     \\    float x_hi = q_src[p.rope_src_off[head] + q_col * p.rope_src_cs + (i + p.rope_half_d) * p.rope_src_rs];
     \\    return high ? (x_hi * cos_val + x_lo * sin_val) : (x_lo * cos_val - x_hi * sin_val);
@@ -1782,7 +3203,7 @@ const shader_source =
     \\        high = true;
     \\    }
     \\    float cos_val = cos_sin[p.rope_cs_off[head] + q_col * p.rope_cs_cs + i];
-    \\    float sin_val = cos_sin[p.rope_cs_off[head] + q_col * p.rope_cs_cs + p.rope_half_d + i];
+    \\    float sin_val = cos_sin[p.rope_cs_off[head] + q_col * p.rope_cs_cs + 2 * p.rope_half_d + i];
     \\    float x_lo = q_src[p.rope_src_off[head] + q_col * p.rope_src_cs + i * p.rope_src_rs];
     \\    float x_hi = q_src[p.rope_src_off[head] + q_col * p.rope_src_cs + (i + p.rope_half_d) * p.rope_src_rs];
     \\    return high ? (x_hi * cos_val + x_lo * sin_val) : (x_lo * cos_val - x_hi * sin_val);
@@ -1807,18 +3228,23 @@ const shader_source =
     \\
     \\    threadgroup float scores[MAX_SEQ];
     \\    threadgroup float scratch[256];
+    \\    threadgroup float q_values[MAX_D_HEAD];
     \\
     \\    uint k_off = p.k_off[head];
     \\    uint v_off = p.v_off[head];
     \\    uint mask_off = p.mask_off[head];
     \\    uint slice_dst_off = p.slice_dst_offset[head];
     \\
+    \\    for (uint r = tid; r < p.d_head; r += tg_size)
+    \\        q_values[r] = rope_shared_batch_q_value(q_src, cos_sin, p, head, r, q_col);
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
     \\    for (uint s = tid; s < p.seq_kv; s += tg_size) {
     \\        float mv = mask[mask_off + s * p.mask_rs + q_col * p.mask_cs];
     \\        if (!isfinite(mv)) { scores[s] = -INFINITY; continue; }
     \\        float dot = 0.0f;
     \\        for (uint r = 0; r < p.d_head; r++)
-    \\            dot += rope_shared_batch_q_value(q_src, cos_sin, p, head, r, q_col) * K[k_off + r * p.k_rs + s * p.k_cs];
+    \\            dot += q_values[r] * K[k_off + r * p.k_rs + s * p.k_cs];
     \\        scores[s] = dot * p.scale + mv;
     \\    }
     \\    threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -2083,10 +3509,10 @@ const shader_source =
     \\
     \\// Op codes — elementwise match op.zig values directly:
     \\//   add=7 mul=8 neg=9 abs=10 sgn=11 step=12 relu=13
-    \\//   sqrt=14 recip=15 exp=16 log=17 gelu=18
-    \\//   sum=19 max=20 repeat=21 slice_assign=27
+    \\//   sqrt=14 recip=15 exp=16 log=17 gelu=18 sqr=34
+    \\//   sum=19 max=20 repeat=21 slice_assign=27 min=35
     \\// Fused ops use codes 100+:
-    \\//   fused_softmax=100 fused_layernorm=101 fused_rmsnorm=102
+    \\//   fused_softmax=100 fused_layernorm=101 fused_rmsnorm=102 fused_logsoftmax=103
     \\
     \\kernel void compute_f32(
     \\    device const float* src0 [[buffer(0)]],
@@ -2115,16 +3541,41 @@ const shader_source =
     \\            dst[p.dst_offset + gid] = 0.5f * a * (1.0f + precise::tanh(c));
     \\            break;
     \\        }
-    \\        // ── Reduce: sum(19) or max(20), one thread per output ──
-    \\        case 19: case 20: {
+    \\        case 34: {
+    \\            float a = src0[p.src0_offset + gid];
+    \\            dst[p.dst_offset + gid] = a * a;
+    \\            break;
+    \\        }
+    \\        case 39: {
+    \\            float a = src0[p.src0_offset + gid];
+    \\            dst[p.dst_offset + gid] = 1.0f / (1.0f + exp(-a));
+    \\            break;
+    \\        }
+    \\        case 40: {
+    \\            float a = src0[p.src0_offset + gid];
+    \\            dst[p.dst_offset + gid] = a / (1.0f + exp(-a));
+    \\            break;
+    \\        }
+    \\        case 41: {
+    \\            float a = src0[p.src0_offset + gid];
+    \\            dst[p.dst_offset + gid] = precise::tanh(a);
+    \\            break;
+    \\        }
+    \\        // ── Reduce: sum(19), max(20), min(35), argmax(36), argmin(37), or prod(38), one thread per output ──
+    \\        case 19: case 20: case 35: case 36: case 37: case 38: {
     \\            uint reduce_size = p.src0_ne[0];
     \\            uint src_base = p.src0_offset + gid * reduce_size;
-    \\            float val = (p.op == 20) ? -INFINITY : 0.0f;
+    \\            float val = (p.op == 38) ? 1.0f : ((p.op == 20 || p.op == 36) ? -INFINITY : ((p.op == 35 || p.op == 37) ? INFINITY : 0.0f));
+    \\            uint best_idx = 0;
     \\            for (uint k = 0; k < reduce_size; k++) {
     \\                float v = src0[src_base + k];
-    \\                if (p.op == 19) val += v; else val = max(val, v);
+    \\                if (p.op == 19) val += v;
+    \\                else if (p.op == 38) val *= v;
+    \\                else if (p.op == 20) val = max(val, v);
+    \\                else if (p.op == 35) val = min(val, v);
+    \\                else if ((p.op == 36 && v > val) || (p.op == 37 && v < val)) { val = v; best_idx = k; }
     \\            }
-    \\            dst[p.dst_offset + gid] = val;
+    \\            dst[p.dst_offset + gid] = (p.op == 36 || p.op == 37) ? float(best_idx) : val;
     \\            break;
     \\        }
     \\        // ── Repeat: broadcast via modular indexing ──
@@ -2164,6 +3615,20 @@ const shader_source =
     \\            }
     \\            float inv = 1.0f / s;
     \\            for (uint j = 0; j < cols; j++) dst[dst_base + j] *= inv;
+    \\            break;
+    \\        }
+    \\        // ── Fused log-softmax: one thread per row ──
+    \\        // n_elements = rows, src0_ne[0] = cols
+    \\        case 103: {
+    \\            uint cols = p.src0_ne[0];
+    \\            uint src_base = p.src0_offset + gid * cols;
+    \\            uint dst_base = p.dst_offset + gid * cols;
+    \\            float m = -INFINITY;
+    \\            for (uint j = 0; j < cols; j++) m = max(m, src0[src_base + j]);
+    \\            float s = 0.0f;
+    \\            for (uint j = 0; j < cols; j++) s += exp(src0[src_base + j] - m);
+    \\            float log_denom = m + log(s);
+    \\            for (uint j = 0; j < cols; j++) dst[dst_base + j] = src0[src_base + j] - log_denom;
     \\            break;
     \\        }
     \\        // ── Fused layer norm: one thread per row ──
@@ -2263,8 +3728,82 @@ const shader_source =
     \\            float c = 0.7978845608f * (v + 0.044715f * v * v * v);
     \\            return 0.5f * v * (1.0f + precise::tanh(c));
     \\        }
+    \\        case 34: return v * v;
+    \\        case 39: return 1.0f / (1.0f + exp(-v));
+    \\        case 40: return v / (1.0f + exp(-v));
+    \\        case 41: return precise::tanh(v);
     \\        default: return v;
     \\    }
+    \\}
+    \\
+    \\struct QMatvecFusedEwParams {
+    \\    uint N; uint K;
+    \\    uint block_size;
+    \\    uint input_offset;
+    \\    uint dst_offset;
+    \\    uint write_primary;
+    \\    uint n_steps;
+    \\    uint ew_dst_offset;
+    \\    uint op[MAX_FUSED_EW_STEPS];
+    \\    uint is_swapped[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_slot[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_offset[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_is_primary[MAX_FUSED_EW_STEPS];
+    \\};
+    \\
+    \\kernel void qmatvec_fused_elementwise_f32(
+    \\    device const char*  weight_data   [[buffer(0)]],
+    \\    device const float* weight_scales [[buffer(1)]],
+    \\    device const float* input         [[buffer(2)]],
+    \\    device float*       output        [[buffer(3)]],
+    \\    device float*       ew_output     [[buffer(4)]],
+    \\    device const float* s0 [[buffer(5)]],
+    \\    device const float* s1 [[buffer(6)]],
+    \\    device const float* s2 [[buffer(7)]],
+    \\    device const float* s3 [[buffer(8)]],
+    \\    device const float* s4 [[buffer(9)]],
+    \\    device const float* s5 [[buffer(10)]],
+    \\    device const float* s6 [[buffer(11)]],
+    \\    device const float* s7 [[buffer(12)]],
+    \\    constant QMatvecFusedEwParams& p [[buffer(13)]],
+    \\    uint2 group_id [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    uint col = group_id.x;
+    \\    if (col >= p.N) return;
+    \\
+    \\    threadgroup float partial[QMATVEC_DOT_THREADS];
+    \\    float sum = 0.0f;
+    \\    for (uint k = tid; k < p.K; k += QMATVEC_DOT_THREADS) {
+    \\        uint w_idx = k * p.N + col;
+    \\        sum += input[p.input_offset + k] * float(weight_data[w_idx]) * weight_scales[w_idx / p.block_size];
+    \\    }
+    \\    partial[tid] = sum;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = QMATVEC_DOT_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) {
+    \\            partial[tid] += partial[tid + stride];
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    if (tid != 0) return;
+    \\    sum = partial[0];
+    \\
+    \\    if (p.write_primary != 0) output[p.dst_offset + col] = sum;
+    \\    float v = sum;
+    \\    for (uint step = 0; step < p.n_steps; step++) {
+    \\        uint op = p.op[step];
+    \\        if (op == 7 || op == 8) {
+    \\            float other = (p.secondary_is_primary[step] != 0)
+    \\                ? sum
+    \\                : fused_secondary(p.secondary_slot[step], p.secondary_offset[step] + col, s0, s1, s2, s3, s4, s5, s6, s7);
+    \\            if (op == 7) v = (p.is_swapped[step] != 0) ? other + v : v + other;
+    \\            else v = (p.is_swapped[step] != 0) ? other * v : v * other;
+    \\        } else {
+    \\            v = fused_unary(op, v);
+    \\        }
+    \\    }
+    \\    ew_output[p.ew_dst_offset + col] = v;
     \\}
     \\
     \\float apply_elementwise(uint op, float a, float b) {
@@ -2521,6 +4060,112 @@ const shader_source =
     \\    }
     \\}
     \\
+    \\struct MatmulFusedEwParams {
+    \\    uint M; uint N; uint K;
+    \\    uint a_row_stride; uint a_col_stride;
+    \\    uint b_row_stride; uint b_col_stride;
+    \\    uint a_offset; uint b_offset;
+    \\    uint dst_offset; uint dst_row_stride;
+    \\    uint write_primary;
+    \\    uint n_steps;
+    \\    uint ew_dst_offset;
+    \\    uint op[MAX_FUSED_EW_STEPS];
+    \\    uint is_swapped[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_slot[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_offset[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_is_primary[MAX_FUSED_EW_STEPS];
+    \\};
+    \\
+    \\kernel void matmul_fused_elementwise_f32(
+    \\    device const float* A [[buffer(0)]],
+    \\    device const float* B [[buffer(1)]],
+    \\    device float* C       [[buffer(2)]],
+    \\    device float* ew_output [[buffer(3)]],
+    \\    device const float* s0 [[buffer(4)]],
+    \\    device const float* s1 [[buffer(5)]],
+    \\    device const float* s2 [[buffer(6)]],
+    \\    device const float* s3 [[buffer(7)]],
+    \\    device const float* s4 [[buffer(8)]],
+    \\    device const float* s5 [[buffer(9)]],
+    \\    device const float* s6 [[buffer(10)]],
+    \\    device const float* s7 [[buffer(11)]],
+    \\    constant MatmulFusedEwParams& p [[buffer(12)]],
+    \\    uint2 group_id  [[threadgroup_position_in_grid]],
+    \\    uint  simd_idx  [[simdgroup_index_in_threadgroup]],
+    \\    uint  lane      [[thread_index_in_simdgroup]],
+    \\    uint  tid       [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = group_id.y * TILE;
+    \\    const uint gCol = group_id.x * TILE;
+    \\    const uint sRow = (simd_idx / 2) * 16;
+    \\    const uint sCol = (simd_idx % 2) * 16;
+    \\
+    \\    simdgroup_float8x8 acc[4] = {
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\    };
+    \\    threadgroup float tA[TILE * 8];
+    \\    threadgroup float tB[8 * TILE];
+    \\
+    \\    for (uint kt = 0; kt < p.K; kt += 8) {
+    \\        for (uint i = tid; i < TILE * 8; i += 128) {
+    \\            uint r = i / 8, c = i % 8;
+    \\            uint ar = gRow + r, ac = kt + c;
+    \\            tA[i] = (ar < p.M && ac < p.K)
+    \\                ? A[p.a_offset + ar * p.a_row_stride + ac * p.a_col_stride] : 0.0f;
+    \\        }
+    \\        for (uint i = tid; i < 8 * TILE; i += 128) {
+    \\            uint r = i / TILE, c = i % TILE;
+    \\            uint br = kt + r, bc = gCol + c;
+    \\            tB[i] = (br < p.K && bc < p.N)
+    \\                ? B[p.b_offset + br * p.b_row_stride + bc * p.b_col_stride] : 0.0f;
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        simdgroup_float8x8 a0, a1, b0, b1;
+    \\        simdgroup_load(a0, tA + (sRow + 0) * 8, 8);
+    \\        simdgroup_load(a1, tA + (sRow + 8) * 8, 8);
+    \\        simdgroup_load(b0, tB + (sCol + 0), TILE);
+    \\        simdgroup_load(b1, tB + (sCol + 8), TILE);
+    \\        simdgroup_multiply_accumulate(acc[0], a0, b0, acc[0]);
+    \\        simdgroup_multiply_accumulate(acc[1], a0, b1, acc[1]);
+    \\        simdgroup_multiply_accumulate(acc[2], a1, b0, acc[2]);
+    \\        simdgroup_multiply_accumulate(acc[3], a1, b1, acc[3]);
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\
+    \\    threadgroup float tC[TILE * TILE];
+    \\    simdgroup_store(acc[0], tC + (sRow + 0) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(acc[1], tC + (sRow + 0) * TILE + sCol + 8, TILE);
+    \\    simdgroup_store(acc[2], tC + (sRow + 8) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(acc[3], tC + (sRow + 8) * TILE + sCol + 8, TILE);
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint i = tid; i < TILE * TILE; i += 128) {
+    \\        uint r = i / TILE, c = i % TILE;
+    \\        uint cr = gRow + r, cc = gCol + c;
+    \\        if (cr < p.M && cc < p.N) {
+    \\            float base = tC[i];
+    \\            uint linear = cr * p.N + cc;
+    \\            float v = base;
+    \\            for (uint step = 0; step < p.n_steps; step++) {
+    \\                uint op = p.op[step];
+    \\                if (op == 7 || op == 8) {
+    \\                    float other = (p.secondary_is_primary[step] != 0)
+    \\                        ? base
+    \\                        : fused_secondary(p.secondary_slot[step], p.secondary_offset[step] + linear, s0, s1, s2, s3, s4, s5, s6, s7);
+    \\                    if (op == 7) v = (p.is_swapped[step] != 0) ? other + v : v + other;
+    \\                    else v = (p.is_swapped[step] != 0) ? other * v : v * other;
+    \\                } else {
+    \\                    v = fused_unary(op, v);
+    \\                }
+    \\            }
+    \\            if (p.write_primary != 0) C[p.dst_offset + cr * p.dst_row_stride + cc] = base;
+    \\            ew_output[p.ew_dst_offset + linear] = v;
+    \\        }
+    \\    }
+    \\}
+    \\
     \\struct QMatmulPairFusedEwParams {
     \\    uint M; uint N; uint K;
     \\    uint left_block_size;
@@ -2528,6 +4173,7 @@ const shader_source =
     \\    uint input_offset;
     \\    uint input_row_stride;
     \\    uint dst_offset;
+    \\    uint final_op;
     \\    uint n_steps;
     \\    uint op[MAX_FUSED_EW_STEPS];
     \\    uint is_swapped[MAX_FUSED_EW_STEPS];
@@ -2670,10 +4316,306 @@ const shader_source =
     \\                    v = fused_unary(op, v);
     \\                }
     \\            }
-    \\            output[p.dst_offset + linear] = v * right_base;
+    \\            if (p.final_op == 7) output[p.dst_offset + linear] = v + right_base;
+    \\            else output[p.dst_offset + linear] = v * right_base;
     \\        }
     \\    }
     \\}
+    \\
+    \\kernel void qmatvec_pair_fused_elementwise_f32(
+    \\    device const char*  left_weight_data    [[buffer(0)]],
+    \\    device const float* left_weight_scales  [[buffer(1)]],
+    \\    device const char*  right_weight_data   [[buffer(2)]],
+    \\    device const float* right_weight_scales [[buffer(3)]],
+    \\    device const float* input               [[buffer(4)]],
+    \\    device float*       output              [[buffer(5)]],
+    \\    device const float* s0 [[buffer(6)]],
+    \\    device const float* s1 [[buffer(7)]],
+    \\    device const float* s2 [[buffer(8)]],
+    \\    device const float* s3 [[buffer(9)]],
+    \\    device const float* s4 [[buffer(10)]],
+    \\    device const float* s5 [[buffer(11)]],
+    \\    device const float* s6 [[buffer(12)]],
+    \\    device const float* s7 [[buffer(13)]],
+    \\    constant QMatmulPairFusedEwParams& p [[buffer(14)]],
+    \\    uint2 group_id [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    uint col = group_id.x;
+    \\    if (col >= p.N) return;
+    \\
+    \\    threadgroup float left_partial[QMATVEC_DOT_THREADS];
+    \\    threadgroup float right_partial[QMATVEC_DOT_THREADS];
+    \\    float left_sum = 0.0f;
+    \\    float right_sum = 0.0f;
+    \\    for (uint k = tid; k < p.K; k += QMATVEC_DOT_THREADS) {
+    \\        uint w_idx = k * p.N + col;
+    \\        float x = input[p.input_offset + k];
+    \\        left_sum += x * float(left_weight_data[w_idx]) * left_weight_scales[w_idx / p.left_block_size];
+    \\        right_sum += x * float(right_weight_data[w_idx]) * right_weight_scales[w_idx / p.right_block_size];
+    \\    }
+    \\    left_partial[tid] = left_sum;
+    \\    right_partial[tid] = right_sum;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = QMATVEC_DOT_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) {
+    \\            left_partial[tid] += left_partial[tid + stride];
+    \\            right_partial[tid] += right_partial[tid + stride];
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    if (tid != 0) return;
+    \\
+    \\    float left_base = left_partial[0];
+    \\    float right_base = right_partial[0];
+    \\    float v = left_base;
+    \\    for (uint step = 0; step < p.n_steps; step++) {
+    \\        uint op = p.op[step];
+    \\        if (op == 7 || op == 8) {
+    \\            float other;
+    \\            if (p.secondary_is_primary[step] != 0) {
+    \\                other = left_base;
+    \\            } else {
+    \\                uint sec_idx = (p.secondary_is_repeat[step] != 0)
+    \\                    ? qmatmul_pair_repeat_secondary_index(step, col, p)
+    \\                    : p.secondary_offset[step] + col;
+    \\                other = fused_secondary(p.secondary_slot[step], sec_idx, s0, s1, s2, s3, s4, s5, s6, s7);
+    \\            }
+    \\            if (op == 7) v = (p.is_swapped[step] != 0) ? other + v : v + other;
+    \\            else v = (p.is_swapped[step] != 0) ? other * v : v * other;
+    \\        } else {
+    \\            v = fused_unary(op, v);
+    \\        }
+    \\    }
+    \\    if (p.final_op == 7) output[p.dst_offset + col] = v + right_base;
+    \\    else output[p.dst_offset + col] = v * right_base;
+    \\}
+    \\
+    \\struct MatmulPairFusedEwParams {
+    \\    uint M; uint N; uint K;
+    \\    uint input_offset;
+    \\    uint input_row_stride;
+    \\    uint input_col_stride;
+    \\    uint left_b_offset;
+    \\    uint left_b_row_stride;
+    \\    uint left_b_col_stride;
+    \\    uint right_b_offset;
+    \\    uint right_b_row_stride;
+    \\    uint right_b_col_stride;
+    \\    uint dst_offset;
+    \\    uint final_op;
+    \\    uint n_steps;
+    \\    uint op[MAX_FUSED_EW_STEPS];
+    \\    uint is_swapped[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_slot[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_offset[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_is_repeat[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_is_primary[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_repeat_dst_offset[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_repeat_src_offset[MAX_FUSED_EW_STEPS];
+    \\    uint secondary_repeat_src_ne[MAX_FUSED_EW_STEPS][4];
+    \\    uint secondary_repeat_src_strides[MAX_FUSED_EW_STEPS][4];
+    \\    uint secondary_repeat_dst_strides[MAX_FUSED_EW_STEPS][4];
+    \\};
+    \\
+    \\uint matmul_pair_repeat_secondary_index(uint step, uint linear, constant MatmulPairFusedEwParams& p) {
+    \\    uint idx = p.secondary_repeat_dst_offset[step] + linear;
+    \\    uint src_idx = p.secondary_repeat_src_offset[step];
+    \\    for (int d = 3; d >= 0; d--) {
+    \\        uint ud = uint(d);
+    \\        uint stride = p.secondary_repeat_dst_strides[step][ud];
+    \\        uint coord = (stride == 0) ? 0 : idx / stride;
+    \\        if (stride != 0) idx %= stride;
+    \\        uint extent = p.secondary_repeat_src_ne[step][ud];
+    \\        src_idx += ((extent == 0) ? 0 : coord % extent) * p.secondary_repeat_src_strides[step][ud];
+    \\    }
+    \\    return src_idx;
+    \\}
+    \\
+    \\kernel void matmul_pair_fused_elementwise_f32(
+    \\    device const float* left_weight  [[buffer(0)]],
+    \\    device const float* right_weight [[buffer(1)]],
+    \\    device const float* input        [[buffer(2)]],
+    \\    device float*       output       [[buffer(3)]],
+    \\    device const float* s0 [[buffer(4)]],
+    \\    device const float* s1 [[buffer(5)]],
+    \\    device const float* s2 [[buffer(6)]],
+    \\    device const float* s3 [[buffer(7)]],
+    \\    device const float* s4 [[buffer(8)]],
+    \\    device const float* s5 [[buffer(9)]],
+    \\    device const float* s6 [[buffer(10)]],
+    \\    device const float* s7 [[buffer(11)]],
+    \\    constant MatmulPairFusedEwParams& p [[buffer(12)]],
+    \\    uint2 group_id  [[threadgroup_position_in_grid]],
+    \\    uint  simd_idx  [[simdgroup_index_in_threadgroup]],
+    \\    uint  tid       [[thread_index_in_threadgroup]]
+    \\) {
+    \\    const uint gRow = group_id.y * TILE;
+    \\    const uint gCol = group_id.x * TILE;
+    \\    const uint sRow = (simd_idx / 2) * 16;
+    \\    const uint sCol = (simd_idx % 2) * 16;
+    \\
+    \\    simdgroup_float8x8 left_acc[4] = {
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\    };
+    \\    simdgroup_float8x8 right_acc[4] = {
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0),
+    \\        simdgroup_float8x8(0), simdgroup_float8x8(0)
+    \\    };
+    \\
+    \\    threadgroup float tA[TILE * 8];
+    \\    threadgroup float tWL[8 * TILE];
+    \\    threadgroup float tWR[8 * TILE];
+    \\
+    \\    for (uint kt = 0; kt < p.K; kt += 8) {
+    \\        for (uint i = tid; i < TILE * 8; i += 128) {
+    \\            uint r = i / 8, c = i % 8;
+    \\            uint ar = gRow + r, ac = kt + c;
+    \\            tA[i] = (ar < p.M && ac < p.K)
+    \\                ? input[p.input_offset + ar * p.input_row_stride + ac * p.input_col_stride] : 0.0f;
+    \\        }
+    \\        for (uint i = tid; i < 8 * TILE; i += 128) {
+    \\            uint r = i / TILE, c = i % TILE;
+    \\            uint kr = kt + r, nc = gCol + c;
+    \\            if (kr < p.K && nc < p.N) {
+    \\                tWL[i] = left_weight[p.left_b_offset + kr * p.left_b_row_stride + nc * p.left_b_col_stride];
+    \\                tWR[i] = right_weight[p.right_b_offset + kr * p.right_b_row_stride + nc * p.right_b_col_stride];
+    \\            } else {
+    \\                tWL[i] = 0.0f;
+    \\                tWR[i] = 0.0f;
+    \\            }
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\        simdgroup_float8x8 a0, a1, lb0, lb1, rb0, rb1;
+    \\        simdgroup_load(a0, tA + (sRow + 0) * 8, 8);
+    \\        simdgroup_load(a1, tA + (sRow + 8) * 8, 8);
+    \\        simdgroup_load(lb0, tWL + (sCol + 0), TILE);
+    \\        simdgroup_load(lb1, tWL + (sCol + 8), TILE);
+    \\        simdgroup_load(rb0, tWR + (sCol + 0), TILE);
+    \\        simdgroup_load(rb1, tWR + (sCol + 8), TILE);
+    \\        simdgroup_multiply_accumulate(left_acc[0], a0, lb0, left_acc[0]);
+    \\        simdgroup_multiply_accumulate(left_acc[1], a0, lb1, left_acc[1]);
+    \\        simdgroup_multiply_accumulate(left_acc[2], a1, lb0, left_acc[2]);
+    \\        simdgroup_multiply_accumulate(left_acc[3], a1, lb1, left_acc[3]);
+    \\        simdgroup_multiply_accumulate(right_acc[0], a0, rb0, right_acc[0]);
+    \\        simdgroup_multiply_accumulate(right_acc[1], a0, rb1, right_acc[1]);
+    \\        simdgroup_multiply_accumulate(right_acc[2], a1, rb0, right_acc[2]);
+    \\        simdgroup_multiply_accumulate(right_acc[3], a1, rb1, right_acc[3]);
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\
+    \\    threadgroup float tL[TILE * TILE];
+    \\    threadgroup float tR[TILE * TILE];
+    \\    simdgroup_store(left_acc[0], tL + (sRow + 0) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(left_acc[1], tL + (sRow + 0) * TILE + sCol + 8, TILE);
+    \\    simdgroup_store(left_acc[2], tL + (sRow + 8) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(left_acc[3], tL + (sRow + 8) * TILE + sCol + 8, TILE);
+    \\    simdgroup_store(right_acc[0], tR + (sRow + 0) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(right_acc[1], tR + (sRow + 0) * TILE + sCol + 8, TILE);
+    \\    simdgroup_store(right_acc[2], tR + (sRow + 8) * TILE + sCol + 0, TILE);
+    \\    simdgroup_store(right_acc[3], tR + (sRow + 8) * TILE + sCol + 8, TILE);
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\
+    \\    for (uint i = tid; i < TILE * TILE; i += 128) {
+    \\        uint r = i / TILE, c = i % TILE;
+    \\        uint cr = gRow + r, cc = gCol + c;
+    \\        if (cr < p.M && cc < p.N) {
+    \\            float left_base = tL[i];
+    \\            float right_base = tR[i];
+    \\            uint linear = cr * p.N + cc;
+    \\            float v = left_base;
+    \\            for (uint step = 0; step < p.n_steps; step++) {
+    \\                uint op = p.op[step];
+    \\                if (op == 7 || op == 8) {
+    \\                    float other;
+    \\                    if (p.secondary_is_primary[step] != 0) {
+    \\                        other = left_base;
+    \\                    } else {
+    \\                        uint sec_idx = (p.secondary_is_repeat[step] != 0)
+    \\                            ? matmul_pair_repeat_secondary_index(step, linear, p)
+    \\                            : p.secondary_offset[step] + linear;
+    \\                        other = fused_secondary(p.secondary_slot[step], sec_idx, s0, s1, s2, s3, s4, s5, s6, s7);
+    \\                    }
+    \\                    if (op == 7) v = (p.is_swapped[step] != 0) ? other + v : v + other;
+    \\                    else v = (p.is_swapped[step] != 0) ? other * v : v * other;
+    \\                } else {
+    \\                    v = fused_unary(op, v);
+    \\                }
+    \\            }
+    \\            if (p.final_op == 7) output[p.dst_offset + linear] = v + right_base;
+    \\            else output[p.dst_offset + linear] = v * right_base;
+    \\        }
+    \\    }
+    \\}
+    \\
+    \\kernel void matvec_pair_fused_elementwise_f32(
+    \\    device const float* left_weight  [[buffer(0)]],
+    \\    device const float* right_weight [[buffer(1)]],
+    \\    device const float* input        [[buffer(2)]],
+    \\    device float*       output       [[buffer(3)]],
+    \\    device const float* s0 [[buffer(4)]],
+    \\    device const float* s1 [[buffer(5)]],
+    \\    device const float* s2 [[buffer(6)]],
+    \\    device const float* s3 [[buffer(7)]],
+    \\    device const float* s4 [[buffer(8)]],
+    \\    device const float* s5 [[buffer(9)]],
+    \\    device const float* s6 [[buffer(10)]],
+    \\    device const float* s7 [[buffer(11)]],
+    \\    constant MatmulPairFusedEwParams& p [[buffer(12)]],
+    \\    uint2 group_id [[threadgroup_position_in_grid]],
+    \\    uint tid [[thread_index_in_threadgroup]]
+    \\) {
+    \\    uint col = group_id.x;
+    \\    if (col >= p.N) return;
+    \\
+    \\    threadgroup float left_partial[QMATVEC_DOT_THREADS];
+    \\    threadgroup float right_partial[QMATVEC_DOT_THREADS];
+    \\    float left_sum = 0.0f;
+    \\    float right_sum = 0.0f;
+    \\    for (uint k = tid; k < p.K; k += QMATVEC_DOT_THREADS) {
+    \\        float x = input[p.input_offset + k * p.input_col_stride];
+    \\        left_sum += x * left_weight[p.left_b_offset + k * p.left_b_row_stride + col * p.left_b_col_stride];
+    \\        right_sum += x * right_weight[p.right_b_offset + k * p.right_b_row_stride + col * p.right_b_col_stride];
+    \\    }
+    \\    left_partial[tid] = left_sum;
+    \\    right_partial[tid] = right_sum;
+    \\    threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    for (uint stride = QMATVEC_DOT_THREADS / 2; stride > 0; stride >>= 1) {
+    \\        if (tid < stride) {
+    \\            left_partial[tid] += left_partial[tid + stride];
+    \\            right_partial[tid] += right_partial[tid + stride];
+    \\        }
+    \\        threadgroup_barrier(mem_flags::mem_threadgroup);
+    \\    }
+    \\    if (tid != 0) return;
+    \\
+    \\    float left_base = left_partial[0];
+    \\    float right_base = right_partial[0];
+    \\    float v = left_base;
+    \\    for (uint step = 0; step < p.n_steps; step++) {
+    \\        uint op = p.op[step];
+    \\        if (op == 7 || op == 8) {
+    \\            float other;
+    \\            if (p.secondary_is_primary[step] != 0) {
+    \\                other = left_base;
+    \\            } else {
+    \\                uint sec_idx = (p.secondary_is_repeat[step] != 0)
+    \\                    ? matmul_pair_repeat_secondary_index(step, col, p)
+    \\                    : p.secondary_offset[step] + col;
+    \\                other = fused_secondary(p.secondary_slot[step], sec_idx, s0, s1, s2, s3, s4, s5, s6, s7);
+    \\            }
+    \\            if (op == 7) v = (p.is_swapped[step] != 0) ? other + v : v + other;
+    \\            else v = (p.is_swapped[step] != 0) ? other * v : v * other;
+    \\        } else {
+    \\            v = fused_unary(op, v);
+    \\        }
+    \\    }
+    \\    if (p.final_op == 7) output[p.dst_offset + col] = v + right_base;
+    \\    else output[p.dst_offset + col] = v * right_base;
+    \\}
+    \\
 ;
 
 // ── Kernel param structs (must match MSL layout) ──────────────────
@@ -2690,6 +4632,67 @@ const MatMulParams = extern struct {
     b_offset: u32,
     dst_offset: u32,
     dst_row_stride: u32,
+};
+
+const MatmulElementwiseParams = extern struct {
+    M: u32,
+    N: u32,
+    K: u32,
+    a_row_stride: u32,
+    a_col_stride: u32,
+    b_row_stride: u32,
+    b_col_stride: u32,
+    a_offset: u32,
+    b_offset: u32,
+    dst_offset: u32,
+    dst_row_stride: u32,
+    write_primary: u32,
+    ew_op: u32,
+    ew_is_swapped: u32,
+    ew_dst_offset: u32,
+    ew_secondary_offset: u32,
+};
+
+const MatmulRowChainParams = extern struct {
+    M: u32,
+    N: u32,
+    K: u32,
+    a_row_stride: u32,
+    a_col_stride: u32,
+    b_row_stride: u32,
+    b_col_stride: u32,
+    a_offset: u32,
+    b_offset: u32,
+    ew_op: u32,
+    ew_is_swapped: u32,
+    ew_secondary_offset: u32,
+    ew_dst_offset: u32,
+    write_ew_output: u32,
+    rms_eps: f32,
+    scale_src_offset: u32,
+    scaled_dst_offset: u32,
+};
+
+const MatmulFusedEwParams = extern struct {
+    M: u32,
+    N: u32,
+    K: u32,
+    a_row_stride: u32,
+    a_col_stride: u32,
+    b_row_stride: u32,
+    b_col_stride: u32,
+    a_offset: u32,
+    b_offset: u32,
+    dst_offset: u32,
+    dst_row_stride: u32,
+    write_primary: u32,
+    n_steps: u32,
+    ew_dst_offset: u32,
+    op: [MAX_FUSED_EW_STEPS]u32,
+    is_swapped: [MAX_FUSED_EW_STEPS]u32,
+    secondary_slot: [MAX_FUSED_EW_STEPS]u32,
+    secondary_offset: [MAX_FUSED_EW_STEPS]u32,
+    secondary_is_primary: [MAX_FUSED_EW_STEPS]u32,
 };
 
 const QMatMulParams = extern struct {
@@ -2744,6 +4747,7 @@ fn SlottedLayout(comptime max_slots: usize, comptime per_slot: usize) type {
 }
 
 fn requireShaderUintConst(comptime name: []const u8, comptime value: comptime_int) void {
+    @setEvalBranchQuota(500_000);
     const needle = std.fmt.comptimePrint("constant uint {s} = {d};", .{ name, value });
     if (std.mem.indexOf(u8, shader_source, needle) == null) {
         @compileError("Metal shader constant drifted from Zig: " ++ name);
@@ -2765,6 +4769,7 @@ const QMatmulBatchSidecarCode = enum(u32) {
     none = 0,
     slice = 1,
     elementwise = 2,
+    rope_store = 3,
 };
 
 const QMatmulBatchSidecarLayout = SlottedLayout(MAX_QMATMUL_BATCH, MAX_QMATMUL_BATCH_SIDECARS);
@@ -2796,40 +4801,6 @@ const QMatmulBatch4Params = extern struct {
     ew_secondary_offset: [QMATMUL_BATCH_SIDECAR_SLOTS]u32,
 };
 
-const MAX_QMATMUL_ROPE_STORE_BATCH: usize = 4;
-
-const QMatmulRopeStoreBuffer = enum(u8) {
-    weight_data,
-    weight_scales,
-    input,
-    output,
-    cos_sin,
-    slice_dst,
-};
-
-const QMatmulRopeStoreKernel = BatchKernelLayout(QMatmulRopeStoreBuffer, MAX_QMATMUL_ROPE_STORE_BATCH);
-
-const QMatmulRopeStoreBatch4Params = extern struct {
-    n_ops: u32,
-    max_tiles_y: u32,
-    M: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    N: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    K: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    block_size: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    input_offset: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    input_row_stride: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    dst_offset: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    dst_row_stride: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    write_primary: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    rope_half_d: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    rope_src_col_start: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    rope_cs_off: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    rope_cs_cs: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    slice_dst_offset: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    slice_dst_row_stride: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-    slice_dst_col_stride: [MAX_QMATMUL_ROPE_STORE_BATCH]u32,
-};
-
 fn requireKernelBuffers(comptime Kernel: type, comptime expected: usize, comptime name: []const u8) void {
     if (Kernel.buffer_count != expected) @compileError(name ++ " MSL buffer layout changed; update Zig encoder and shader together");
     if (Kernel.buffer_count > max_encode_buffers) @compileError(name ++ " uses more buffers than the Metal encoder wrapper can pass");
@@ -2840,12 +4811,56 @@ const max_encode_buffers = 32;
 comptime {
     requireShaderUintConst("MAX_QMATMUL_BATCH", MAX_QMATMUL_BATCH);
     requireShaderUintConst("MAX_QMATMUL_BATCH_SIDECARS", MAX_QMATMUL_BATCH_SIDECARS);
-    requireShaderUintConst("MAX_QMATMUL_ROPE_STORE_BATCH", MAX_QMATMUL_ROPE_STORE_BATCH);
     requireKernelBuffers(QMatmulBatchKernel, 24, "qmatmul_batch4_f32");
-    requireKernelBuffers(QMatmulRopeStoreKernel, 24, "qmatmul_rope_store_batch4_f32");
+}
+
+const MAX_DENSE_MATMUL_BATCH: usize = 4;
+const MAX_DENSE_MATMUL_BATCH_SIDECARS: usize = 8;
+
+const DenseMatmulBatchBuffer = enum(u8) {
+    weight,
+    input,
+    output,
+    sidecar_dst,
+};
+
+const DenseMatmulBatchKernel = BatchKernelLayout(DenseMatmulBatchBuffer, MAX_DENSE_MATMUL_BATCH);
+const DenseMatmulBatchSidecarLayout = SlottedLayout(MAX_DENSE_MATMUL_BATCH, MAX_DENSE_MATMUL_BATCH_SIDECARS);
+const DENSE_MATMUL_BATCH_SIDECAR_SLOTS: usize = DenseMatmulBatchSidecarLayout.slots;
+
+const DenseMatmulBatch4Params = extern struct {
+    n_ops: u32,
+    max_tiles_y: u32,
+    M: [MAX_DENSE_MATMUL_BATCH]u32,
+    N: [MAX_DENSE_MATMUL_BATCH]u32,
+    K: [MAX_DENSE_MATMUL_BATCH]u32,
+    input_offset: [MAX_DENSE_MATMUL_BATCH]u32,
+    input_row_stride: [MAX_DENSE_MATMUL_BATCH]u32,
+    input_col_stride: [MAX_DENSE_MATMUL_BATCH]u32,
+    weight_offset: [MAX_DENSE_MATMUL_BATCH]u32,
+    weight_row_stride: [MAX_DENSE_MATMUL_BATCH]u32,
+    weight_col_stride: [MAX_DENSE_MATMUL_BATCH]u32,
+    dst_offset: [MAX_DENSE_MATMUL_BATCH]u32,
+    dst_row_stride: [MAX_DENSE_MATMUL_BATCH]u32,
+    write_primary: [MAX_DENSE_MATMUL_BATCH]u32,
+    sidecar_count: [MAX_DENSE_MATMUL_BATCH]u32,
+    sidecar_kind: [DENSE_MATMUL_BATCH_SIDECAR_SLOTS]u32,
+    slice_rows: [DENSE_MATMUL_BATCH_SIDECAR_SLOTS]u32,
+    slice_cols: [DENSE_MATMUL_BATCH_SIDECAR_SLOTS]u32,
+    slice_src_col_start: [DENSE_MATMUL_BATCH_SIDECAR_SLOTS]u32,
+    slice_dst_offset: [DENSE_MATMUL_BATCH_SIDECAR_SLOTS]u32,
+    slice_dst_row_stride: [DENSE_MATMUL_BATCH_SIDECAR_SLOTS]u32,
+    slice_dst_col_stride: [DENSE_MATMUL_BATCH_SIDECAR_SLOTS]u32,
+};
+
+comptime {
+    requireShaderUintConst("MAX_DENSE_MATMUL_BATCH", MAX_DENSE_MATMUL_BATCH);
+    requireShaderUintConst("MAX_DENSE_MATMUL_BATCH_SIDECARS", MAX_DENSE_MATMUL_BATCH_SIDECARS);
+    requireKernelBuffers(DenseMatmulBatchKernel, 16, "matmul_batch4_f32");
 }
 
 const MAX_QMATVEC_BATCH: usize = 4;
+const MAX_QMATVEC_ROPE_STORES: usize = 8;
 const QMATVEC_DOT_THREADS: u32 = 64;
 
 const QMatvecBatchBuffer = enum(u8) {
@@ -2861,8 +4876,36 @@ const QMatvecBatchKernel = BatchKernelLayout(QMatvecBatchBuffer, MAX_QMATVEC_BAT
 
 comptime {
     requireShaderUintConst("MAX_QMATVEC_BATCH", MAX_QMATVEC_BATCH);
+    requireShaderUintConst("MAX_QMATVEC_ROPE_STORES", MAX_QMATVEC_ROPE_STORES);
     requireShaderUintConst("QMATVEC_DOT_THREADS", QMATVEC_DOT_THREADS);
-    requireKernelBuffers(QMatvecBatchKernel, 24, "qmatvec_batch4_f32");
+    requireShaderUintConst("ROW_CHAIN_TILE", ROW_CHAIN_TILE);
+    requireShaderUintConst("QMATMUL_ROW_CHAIN_THREADS", QMATMUL_ROW_CHAIN_THREADS);
+    requireShaderUintConst("SEMANTIC_FFN_THREADS", SEMANTIC_FFN_THREADS);
+    requireShaderUintConst("SEMANTIC_FFN_INPUT_BRIDGE_THREADS", SEMANTIC_FFN_INPUT_BRIDGE_THREADS);
+    requireShaderUintConst("SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS", SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS);
+    requireShaderUintConst("ROW_CHAIN_WIDTH_LANES", ROW_CHAIN_WIDTH_LANES);
+    requireShaderUintConst("MAX_ROW_CHAIN_COLS", MAX_ROW_CHAIN_COLS);
+    requireShaderUintConst("MAX_ROW_CHAIN_K", MAX_ROW_CHAIN_K);
+    requireShaderUintConst("SEMANTIC_FFN_MAX_DIM", SEMANTIC_FFN_MAX_DIM);
+    requireShaderUintConst("SEMANTIC_FFN_MAX_HIDDEN", SEMANTIC_FFN_MAX_HIDDEN);
+    requireKernelBuffers(QMatvecBatchKernel, 24, "qmatvec_batch4_cols4_f32");
+}
+
+const MAX_DENSE_MATVEC_BATCH: usize = 4;
+
+const DenseMatvecBatchBuffer = enum(u8) {
+    weight,
+    input,
+    output,
+    sidecar_src,
+    sidecar_dst,
+};
+
+const DenseMatvecBatchKernel = BatchKernelLayout(DenseMatvecBatchBuffer, MAX_DENSE_MATVEC_BATCH);
+
+comptime {
+    requireShaderUintConst("MAX_DENSE_MATVEC_BATCH", MAX_DENSE_MATVEC_BATCH);
+    requireKernelBuffers(DenseMatvecBatchKernel, 20, "matvec_batch4_cols4_f32");
 }
 
 const QMatvecBatch4Params = extern struct {
@@ -2881,12 +4924,49 @@ const QMatvecBatch4Params = extern struct {
     slice_dst_offset: [MAX_QMATVEC_BATCH]u32,
     slice_dst_row_stride: [MAX_QMATVEC_BATCH]u32,
     slice_dst_col_stride: [MAX_QMATVEC_BATCH]u32,
-    rope_half_d: [MAX_QMATVEC_BATCH]u32,
-    rope_cs_off: [MAX_QMATVEC_BATCH]u32,
+    rope_count: [MAX_QMATVEC_BATCH]u32,
+    rope_half_d: [MAX_QMATVEC_BATCH][MAX_QMATVEC_ROPE_STORES]u32,
+    rope_src_col_start: [MAX_QMATVEC_BATCH][MAX_QMATVEC_ROPE_STORES]u32,
+    rope_cs_off: [MAX_QMATVEC_BATCH][MAX_QMATVEC_ROPE_STORES]u32,
+    rope_dst_offset: [MAX_QMATVEC_BATCH][MAX_QMATVEC_ROPE_STORES]u32,
+    rope_dst_row_stride: [MAX_QMATVEC_BATCH][MAX_QMATVEC_ROPE_STORES]u32,
+    rope_dst_col_stride: [MAX_QMATVEC_BATCH][MAX_QMATVEC_ROPE_STORES]u32,
     ew_op: [MAX_QMATVEC_BATCH]u32,
     ew_is_swapped: [MAX_QMATVEC_BATCH]u32,
     ew_dst_offset: [MAX_QMATVEC_BATCH]u32,
     ew_secondary_offset: [MAX_QMATVEC_BATCH]u32,
+};
+
+const DenseMatvecBatch4Params = extern struct {
+    n_ops: u32,
+    max_n: u32,
+    N: [MAX_DENSE_MATVEC_BATCH]u32,
+    K: [MAX_DENSE_MATVEC_BATCH]u32,
+    input_offset: [MAX_DENSE_MATVEC_BATCH]u32,
+    input_col_stride: [MAX_DENSE_MATVEC_BATCH]u32,
+    weight_offset: [MAX_DENSE_MATVEC_BATCH]u32,
+    weight_row_stride: [MAX_DENSE_MATVEC_BATCH]u32,
+    weight_col_stride: [MAX_DENSE_MATVEC_BATCH]u32,
+    dst_offset: [MAX_DENSE_MATVEC_BATCH]u32,
+    write_primary: [MAX_DENSE_MATVEC_BATCH]u32,
+    sidecar_kind: [MAX_DENSE_MATVEC_BATCH]u32,
+    slice_rows: [MAX_DENSE_MATVEC_BATCH]u32,
+    slice_cols: [MAX_DENSE_MATVEC_BATCH]u32,
+    slice_src_col_start: [MAX_DENSE_MATVEC_BATCH]u32,
+    slice_dst_offset: [MAX_DENSE_MATVEC_BATCH]u32,
+    slice_dst_row_stride: [MAX_DENSE_MATVEC_BATCH]u32,
+    slice_dst_col_stride: [MAX_DENSE_MATVEC_BATCH]u32,
+    ew_op: [MAX_DENSE_MATVEC_BATCH]u32,
+    ew_is_swapped: [MAX_DENSE_MATVEC_BATCH]u32,
+    ew_dst_offset: [MAX_DENSE_MATVEC_BATCH]u32,
+    ew_secondary_offset: [MAX_DENSE_MATVEC_BATCH]u32,
+    rope_count: [MAX_DENSE_MATVEC_BATCH]u32,
+    rope_half_d: [MAX_DENSE_MATVEC_BATCH][MAX_QMATVEC_ROPE_STORES]u32,
+    rope_src_col_start: [MAX_DENSE_MATVEC_BATCH][MAX_QMATVEC_ROPE_STORES]u32,
+    rope_cs_off: [MAX_DENSE_MATVEC_BATCH][MAX_QMATVEC_ROPE_STORES]u32,
+    rope_dst_offset: [MAX_DENSE_MATVEC_BATCH][MAX_QMATVEC_ROPE_STORES]u32,
+    rope_dst_row_stride: [MAX_DENSE_MATVEC_BATCH][MAX_QMATVEC_ROPE_STORES]u32,
+    rope_dst_col_stride: [MAX_DENSE_MATVEC_BATCH][MAX_QMATVEC_ROPE_STORES]u32,
 };
 
 const MatVecParams = extern struct {
@@ -2994,6 +5074,239 @@ const QMatmulElementwiseParams = extern struct {
     ew_dst_offset: u32,
     ew_secondary_offset: u32,
 };
+
+const QMatmulRowChainParams = extern struct {
+    M: u32,
+    N: u32,
+    K: u32,
+    block_size: u32,
+    input_offset: u32,
+    input_row_stride: u32,
+    ew_op: u32,
+    ew_is_swapped: u32,
+    ew_secondary_offset: u32,
+    ew_dst_offset: u32,
+    write_ew_output: u32,
+    rms_eps: f32,
+    scale_src_offset: u32,
+    scaled_dst_offset: u32,
+    partial_dst_offset: u32,
+    partial_cols: u32,
+};
+
+const QMatmulSemanticFfnParams = extern struct {
+    M: u32,
+    H: u32,
+    K: u32,
+    O: u32,
+    gate_block_size: u32,
+    up_block_size: u32,
+    down_block_size: u32,
+    input_offset: u32,
+    input_row_stride: u32,
+    first_op: u32,
+    residual_secondary_offset: u32,
+    rms_eps: f32,
+    scale_src_offset: u32,
+    scaled_dst_offset: u32,
+};
+
+const QMatmulSemanticFfnInputBridgeParams = extern struct {
+    M: u32,
+    H: u32,
+    K: u32,
+    O: u32,
+    input_projection_K: u32,
+    input_block_size: u32,
+    gate_block_size: u32,
+    up_block_size: u32,
+    down_block_size: u32,
+    source_input_offset: u32,
+    source_input_row_stride: u32,
+    input_residual_secondary_offset: u32,
+    input_rms_eps: f32,
+    input_scale_src_offset: u32,
+    first_op: u32,
+    output_rms_eps: f32,
+    output_scale_src_offset: u32,
+    output_dst_offset: u32,
+    input_scratch_offset: u32,
+    product_scratch_offset: u32,
+    output_scratch_offset: u32,
+    partial_dst_offset: u32,
+    partial_cols: u32,
+};
+
+const SemanticFfnInputBridgeCompatibility = struct {
+    rows: u32,
+    input_projection: u32,
+    input_width: u32,
+    hidden: u32,
+    output_width: u32,
+    input_secondary_buf: u16,
+    input_secondary_offset: u32,
+    output_secondary_buf: u16,
+    output_secondary_offset: u32,
+    row_tile_groups: u64,
+    output_tiles: u64,
+    direct_width_parallel_lanes: u32,
+    direct_width_parallel_partial_slots: u64,
+
+    fn scratchRequirement(self: SemanticFfnInputBridgeCompatibility) ?SemanticWidthScratchRequirement {
+        return semanticInputBridgeStagedScratchRequirementForShape(self.rows, self.hidden, self.input_width, self.output_width);
+    }
+};
+
+const SemanticFfnInputBridgeScratchLayout = struct {
+    input_element_offset: u32,
+    input_elements: u32,
+    product_element_offset: u32,
+    product_elements: u32,
+    output_element_offset: u32,
+    output_elements: u32,
+    down_partial_element_offset: u32,
+    down_partial_elements: u32,
+    total_bytes: usize,
+
+    fn fromRequirement(requirement: SemanticWidthScratchRequirement) ?SemanticFfnInputBridgeScratchLayout {
+        const total_bytes = requirement.scratchBytes();
+        const input_elements = std.math.mul(u64, @as(u64, requirement.rows), @as(u64, requirement.input)) catch return null;
+        const product_elements = f32ElementsFromBytes(requirement.product_bytes) orelse return null;
+        const output_elements = f32ElementsFromBytes(requirement.output_bytes) orelse return null;
+        const total_elements = f32ElementsFromBytes(total_bytes) orelse return null;
+        const product_element_offset = input_elements;
+        const output_element_offset = product_element_offset + product_elements;
+        if (output_element_offset + output_elements > total_elements) return null;
+        return .{
+            .input_element_offset = 0,
+            .input_elements = std.math.cast(u32, input_elements) orelse return null,
+            .product_element_offset = std.math.cast(u32, product_element_offset) orelse return null,
+            .product_elements = std.math.cast(u32, product_elements) orelse return null,
+            .output_element_offset = std.math.cast(u32, output_element_offset) orelse return null,
+            .output_elements = std.math.cast(u32, output_elements) orelse return null,
+            .down_partial_element_offset = 0,
+            .down_partial_elements = std.math.cast(u32, total_elements) orelse return null,
+            .total_bytes = total_bytes,
+        };
+    }
+};
+
+const SemanticFfnInputBridgeEncodePlan = struct {
+    bridge: SemanticFfnInputBridgeCompatibility,
+    input_params: QMatMulParams,
+    gate_params: QMatMulParams,
+    up_params: QMatMulParams,
+    down_params: QMatMulParams,
+    scratch: SemanticWidthScratchRequirement,
+    scratch_layout: SemanticFfnInputBridgeScratchLayout,
+    scratch_bytes: usize,
+};
+
+fn semanticFfnInputBridgeCompatibility(input_q: anytype, input_residual: anytype, input_rn: anytype, input_rp: anytype, input_out: anytype, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, output_residual: anytype, output_rn: anytype, output_rp: anytype, output_out: anytype) ?SemanticFfnInputBridgeCompatibility {
+    if (input_q.M != gate.M or input_q.N != gate.K) return null;
+    if (gate.input != input_out.dst or gate.input_offset != input_out.dst_offset) return null;
+    if (!program_mod.isRmsnormScaleChain(.{ .rmsnorm = input_rn }, .{ .repeat = input_rp }, .{ .elementwise = input_out })) return null;
+    if (!program_mod.projectionPairSingleElementwiseChainCompatible(gate, first, up, product)) return null;
+    if (down.M != gate.M or down.K != gate.N or down.N != input_q.N) return null;
+    if (down.input != product.dst or down.input_offset != product.dst_offset) return null;
+    if (input_residual.op != .add or input_residual.n != input_q.M * input_q.N) return null;
+    if (input_rn.src != input_residual.dst or input_rn.src_offset != input_residual.dst_offset) return null;
+    if (input_rn.rows != input_q.M or input_rn.cols != input_q.N) return null;
+    if (output_residual.op != .add or output_residual.n != down.M * down.N) return null;
+    if (output_rn.src != output_residual.dst or output_rn.src_offset != output_residual.dst_offset) return null;
+    if (output_rn.rows != down.M or output_rn.cols != down.N) return null;
+    if (!program_mod.isRmsnormScaleChain(.{ .rmsnorm = output_rn }, .{ .repeat = output_rp }, .{ .elementwise = output_out })) return null;
+
+    const input_down_is_src0 = input_residual.src0 == input_q.dst and input_residual.src0_offset == input_q.dst_offset;
+    const input_down_is_src1 = input_residual.src1 == input_q.dst and input_residual.src1_offset == input_q.dst_offset;
+    if (!input_down_is_src0 and !input_down_is_src1) return null;
+    const input_secondary_buf = if (input_down_is_src0) input_residual.src1 else input_residual.src0;
+    const input_secondary_offset = if (input_down_is_src0) input_residual.src1_offset else input_residual.src0_offset;
+
+    const output_down_is_src0 = output_residual.src0 == down.dst and output_residual.src0_offset == down.dst_offset;
+    const output_down_is_src1 = output_residual.src1 == down.dst and output_residual.src1_offset == down.dst_offset;
+    if (!output_down_is_src0 and !output_down_is_src1) return null;
+    const output_secondary_buf = if (output_down_is_src0) output_residual.src1 else output_residual.src0;
+    const output_secondary_offset = if (output_down_is_src0) output_residual.src1_offset else output_residual.src0_offset;
+    if (output_secondary_buf != input_residual.dst or output_secondary_offset != input_residual.dst_offset) return null;
+
+    if (input_q.N > SEMANTIC_FFN_MAX_DIM or input_q.K > SEMANTIC_FFN_MAX_DIM or gate.N > SEMANTIC_FFN_MAX_HIDDEN or down.N > SEMANTIC_FFN_MAX_DIM) return null;
+
+    const output_tiles = divCeilU64(down.N, ROW_CHAIN_TILE);
+    return .{
+        .rows = gate.M,
+        .input_projection = input_q.K,
+        .input_width = gate.K,
+        .hidden = gate.N,
+        .output_width = down.N,
+        .input_secondary_buf = input_secondary_buf,
+        .input_secondary_offset = input_secondary_offset,
+        .output_secondary_buf = output_secondary_buf,
+        .output_secondary_offset = output_secondary_offset,
+        .row_tile_groups = divCeilU64(gate.M, ROW_CHAIN_TILE),
+        .output_tiles = output_tiles,
+        .direct_width_parallel_lanes = ROW_CHAIN_WIDTH_LANES,
+        .direct_width_parallel_partial_slots = @as(u64, gate.M) * output_tiles,
+    };
+}
+
+fn semanticFfnInputBridgeIntermediatesExternallyObserved(view: RuntimeView, input_q: anytype, input_residual: anytype, input_rn: anytype, input_rp: anytype, input_out: anytype, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, output_residual: anytype, output_rn: anytype, output_rp: anytype) bool {
+    return view.outputReadsDenseSpan(input_q.dst, input_q.dst_offset, input_q.M, input_q.N, input_q.dst_row_stride) or
+        view.outputReadsSpan(input_residual.dst, input_residual.dst_offset, input_residual.n) or
+        view.outputReadsSpan(input_rn.dst, input_rn.dst_offset, @as(u64, input_rn.rows) * input_rn.cols) or
+        view.outputReadsSpan(input_rp.dst, input_rp.dst_offset, input_rp.n) or
+        view.outputReadsSpan(input_out.dst, input_out.dst_offset, input_out.n) or
+        view.outputReadsDenseSpan(gate.dst, gate.dst_offset, gate.M, gate.N, gate.dst_row_stride) or
+        view.outputReadsSpan(first.dst, first.dst_offset, first.n) or
+        view.outputReadsDenseSpan(up.dst, up.dst_offset, up.M, up.N, up.dst_row_stride) or
+        view.outputReadsSpan(product.dst, product.dst_offset, product.n) or
+        view.outputReadsDenseSpan(down.dst, down.dst_offset, down.M, down.N, down.dst_row_stride) or
+        view.outputReadsSpan(output_residual.dst, output_residual.dst_offset, output_residual.n) or
+        view.outputReadsSpan(output_rn.dst, output_rn.dst_offset, @as(u64, output_rn.rows) * output_rn.cols) or
+        view.outputReadsSpan(output_rp.dst, output_rp.dst_offset, output_rp.n);
+}
+
+fn semanticFfnInputBridgeEncodePlan(view: RuntimeView, input_q: anytype, input_residual: anytype, input_rn: anytype, input_rp: anytype, input_out: anytype, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, output_residual: anytype, output_rn: anytype, output_rp: anytype, output_out: anytype) ?SemanticFfnInputBridgeEncodePlan {
+    const bridge = semanticFfnInputBridgeCompatibility(input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out) orelse return null;
+    if (@as(usize, input_q.weight_idx) >= view.qweight_views.len or
+        @as(usize, gate.weight_idx) >= view.qweight_views.len or
+        @as(usize, up.weight_idx) >= view.qweight_views.len or
+        @as(usize, down.weight_idx) >= view.qweight_views.len)
+    {
+        return null;
+    }
+    if (semanticFfnInputBridgeIntermediatesExternallyObserved(view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp)) return null;
+
+    const input_w = view.qweight_views[input_q.weight_idx];
+    const gate_w = view.qweight_views[gate.weight_idx];
+    const up_w = view.qweight_views[up.weight_idx];
+    const down_w = view.qweight_views[down.weight_idx];
+    const input_params = qmatmulParams(input_q, input_w.block_size);
+    const gate_params = qmatmulParams(gate, gate_w.block_size);
+    const up_params = qmatmulParams(up, up_w.block_size);
+    const down_params = qmatmulParams(down, down_w.block_size);
+    if (input_params.block_size != 32 or gate_params.block_size != 32 or up_params.block_size != 32 or down_params.block_size != 32) return null;
+    if (input_params.M != gate_params.M or input_params.N != gate_params.K) return null;
+    if (gate_params.M != up_params.M or gate_params.N != up_params.N or gate_params.K != up_params.K) return null;
+    if (gate_params.input_offset != input_out.dst_offset or up_params.input_offset != input_out.dst_offset or gate_params.input_row_stride != input_q.N or up_params.input_row_stride != input_q.N) return null;
+    if (down_params.M != gate_params.M or down_params.K != gate_params.N or down_params.N != input_params.N) return null;
+
+    const scratch = bridge.scratchRequirement() orelse return null;
+    const scratch_layout = SemanticFfnInputBridgeScratchLayout.fromRequirement(scratch) orelse return null;
+    const scratch_buffer = view.semantic_width_scratch orelse return null;
+    const scratch_bytes = scratch_layout.total_bytes;
+    if (scratch_buffer.size < scratch_bytes) return null;
+    return .{
+        .bridge = bridge,
+        .input_params = input_params,
+        .gate_params = gate_params,
+        .up_params = up_params,
+        .down_params = down_params,
+        .scratch = scratch,
+        .scratch_layout = scratch_layout,
+        .scratch_bytes = scratch_bytes,
+    };
+}
 
 const MAX_SLICE_ASSIGN_BATCH: usize = 16;
 
@@ -3129,8 +5442,10 @@ const AttentionRopeStoreParams = extern struct {
 const MAX_ATTENTION_BATCH_HEADS: usize = 16;
 const MAX_ATTENTION_STORE_BATCH_HEADS: usize = 4;
 const MAX_ATTENTION_ROPE_STORE_SHARED_BATCH_HEADS: usize = 16;
+const MAX_D_HEAD: u32 = 512;
 
 comptime {
+    requireShaderUintConst("MAX_D_HEAD", MAX_D_HEAD);
     requireShaderUintConst("MAX_ATTENTION_BATCH_HEADS", MAX_ATTENTION_BATCH_HEADS);
     requireShaderUintConst("MAX_ATTENTION_STORE_BATCH_HEADS", MAX_ATTENTION_STORE_BATCH_HEADS);
     requireShaderUintConst("MAX_ATTENTION_ROPE_STORE_SHARED_BATCH_HEADS", MAX_ATTENTION_ROPE_STORE_SHARED_BATCH_HEADS);
@@ -3274,6 +5589,22 @@ const FusedEwParams = extern struct {
     secondary_repeat_dst_strides: [MAX_FUSED_EW_STEPS][4]u32,
 };
 
+const QMatvecFusedEwParams = extern struct {
+    N: u32,
+    K: u32,
+    block_size: u32,
+    input_offset: u32,
+    dst_offset: u32,
+    write_primary: u32,
+    n_steps: u32,
+    ew_dst_offset: u32,
+    op: [MAX_FUSED_EW_STEPS]u32,
+    is_swapped: [MAX_FUSED_EW_STEPS]u32,
+    secondary_slot: [MAX_FUSED_EW_STEPS]u32,
+    secondary_offset: [MAX_FUSED_EW_STEPS]u32,
+    secondary_is_primary: [MAX_FUSED_EW_STEPS]u32,
+};
+
 const MAX_ELEMENTWISE_BATCH: usize = 8;
 
 const ElementwiseBatchParams = extern struct {
@@ -3320,6 +5651,36 @@ const QMatmulPairFusedEwParams = extern struct {
     input_offset: u32,
     input_row_stride: u32,
     dst_offset: u32,
+    final_op: u32,
+    n_steps: u32,
+    op: [MAX_FUSED_EW_STEPS]u32,
+    is_swapped: [MAX_FUSED_EW_STEPS]u32,
+    secondary_slot: [MAX_FUSED_EW_STEPS]u32,
+    secondary_offset: [MAX_FUSED_EW_STEPS]u32,
+    secondary_is_repeat: [MAX_FUSED_EW_STEPS]u32,
+    secondary_is_primary: [MAX_FUSED_EW_STEPS]u32,
+    secondary_repeat_dst_offset: [MAX_FUSED_EW_STEPS]u32,
+    secondary_repeat_src_offset: [MAX_FUSED_EW_STEPS]u32,
+    secondary_repeat_src_ne: [MAX_FUSED_EW_STEPS][4]u32,
+    secondary_repeat_src_strides: [MAX_FUSED_EW_STEPS][4]u32,
+    secondary_repeat_dst_strides: [MAX_FUSED_EW_STEPS][4]u32,
+};
+
+const MatmulPairFusedEwParams = extern struct {
+    M: u32,
+    N: u32,
+    K: u32,
+    input_offset: u32,
+    input_row_stride: u32,
+    input_col_stride: u32,
+    left_b_offset: u32,
+    left_b_row_stride: u32,
+    left_b_col_stride: u32,
+    right_b_offset: u32,
+    right_b_row_stride: u32,
+    right_b_col_stride: u32,
+    dst_offset: u32,
+    final_op: u32,
     n_steps: u32,
     op: [MAX_FUSED_EW_STEPS]u32,
     is_swapped: [MAX_FUSED_EW_STEPS]u32,
@@ -3451,7 +5812,7 @@ fn sliceAssignComputeParams(sa: anytype) ComputeParams {
 
 fn isSupportedElementwiseOp(op: backend_mod.Op) bool {
     return switch (op) {
-        .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu => true,
+        .add, .mul, .neg, .abs, .sgn, .step, .relu, .sqrt, .recip, .exp, .log, .gelu, .sqr, .sigmoid, .silu, .tanh => true,
         else => false,
     };
 }
@@ -3468,29 +5829,42 @@ fn computeDispatchSpec(op: backend_mod.DeviceOp) ?ComputeDispatchSpec {
                 .grid = .{ .gx = linearGrid(e.n) },
             };
         },
-        .softmax => |s| return .{
-            .params = rowComputeParams(program_mod.compute_op_softmax, s.rows, s.cols, s.src_offset, s.dst_offset),
-            .src0 = s.src,
-            .src1 = s.src,
-            .dst = s.dst,
-            .grid = .{ .gx = linearGrid(s.rows) },
+        .softmax => |s| {
+            if (s.inner != 1) return null;
+            return .{
+                .params = rowComputeParams(compute_op_softmax, s.rows, s.cols, s.src_offset, s.dst_offset),
+                .src0 = s.src,
+                .src1 = s.src,
+                .dst = s.dst,
+                .grid = .{ .gx = linearGrid(s.rows) },
+            };
+        },
+        .logsoftmax => |s| {
+            if (s.inner != 1) return null;
+            return .{
+                .params = rowComputeParams(compute_op_logsoftmax, s.rows, s.cols, s.src_offset, s.dst_offset),
+                .src0 = s.src,
+                .src1 = s.src,
+                .dst = s.dst,
+                .grid = .{ .gx = linearGrid(s.rows) },
+            };
         },
         .layernorm => |l| return .{
-            .params = epsilonRowComputeParams(program_mod.compute_op_layernorm, l.rows, l.cols, l.eps, l.src_offset, l.dst_offset),
+            .params = epsilonRowComputeParams(compute_op_layernorm, l.rows, l.cols, l.eps, l.src_offset, l.dst_offset),
             .src0 = l.src,
             .src1 = l.src,
             .dst = l.dst,
             .grid = .{ .gx = linearGrid(l.rows) },
         },
         .rmsnorm => |r| return .{
-            .params = epsilonRowComputeParams(program_mod.compute_op_rmsnorm, r.rows, r.cols, r.eps, r.src_offset, r.dst_offset),
+            .params = epsilonRowComputeParams(compute_op_rmsnorm, r.rows, r.cols, r.eps, r.src_offset, r.dst_offset),
             .src0 = r.src,
             .src1 = r.src,
             .dst = r.dst,
             .grid = .{ .gx = linearGrid(r.rows) },
         },
         .reduce => |r| {
-            if (r.op != .sum and r.op != .max) return null;
+            if (r.op != .sum and r.op != .max and r.op != .min) return null;
             return .{
                 .params = reduceComputeParams(r),
                 .src0 = r.src,
@@ -3518,6 +5892,24 @@ fn computeDispatchSpec(op: backend_mod.DeviceOp) ?ComputeDispatchSpec {
         },
         else => return null,
     }
+}
+
+test "metal compute dispatch supports native logsoftmax row op" {
+    const spec = computeDispatchSpec(.{ .logsoftmax = .{
+        .dst = 1,
+        .src = 0,
+        .rows = 2,
+        .cols = 4,
+        .src_offset = 3,
+        .dst_offset = 5,
+    } }) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(compute_op_logsoftmax, spec.params.op);
+    try std.testing.expectEqual(@as(u32, 2), spec.params.n_elements);
+    try std.testing.expectEqual(@as(u32, 4), spec.params.src0_ne[0]);
+    try std.testing.expectEqual(@as(u32, 3), spec.params.src0_offset);
+    try std.testing.expectEqual(@as(u32, 5), spec.params.dst_offset);
+    try std.testing.expectEqual(@as(u16, 0), spec.src0);
+    try std.testing.expectEqual(@as(u16, 1), spec.dst);
 }
 
 fn attentionParams(att: anytype) AttentionParams {
@@ -3636,7 +6028,7 @@ fn attentionRopeStoreParams(rr: anytype, att: anytype, sa: anytype) AttentionRop
 fn canEncodeAttention(att: anytype) bool {
     return att.seq_q >= 1 and
         att.seq_kv <= 4096 and
-        att.d_head <= 512 and
+        att.d_head <= MAX_D_HEAD and
         att.has_mask and
         att.q_rs == 1 and
         att.mask_rs == 1 and
@@ -3647,24 +6039,44 @@ fn canEncodeAttention(att: anytype) bool {
 
 const MetalKernel = enum(u8) {
     matmul_f32,
+    matmul_elementwise_f32,
+    matmul_row_chain_f32,
+    matmul_fused_elementwise_f32,
+    matmul_batch4_f32,
+    matmul_pair_fused_elementwise_f32,
+    matvec_pair_fused_elementwise_f32,
     qmatmul_f32,
     qmatmul_batch4_f32,
-    qmatmul_rope_store_batch4_f32,
     qmatvec_f32,
-    qmatvec_batch4_f32,
-    matvec_f16,
-    matmul_f16,
+    qmatvec_batch4_cols4_f32,
+    matvec_batch4_cols4_f32,
     rope_f32,
     rope_batch_f32,
     rope_slice_assign_f32,
     rope_slice_assign_batch_f32,
     qmatmul_slice_assign_f32,
     qmatmul_elementwise_f32,
+    qmatmul_semantic_ffn_sublayer_f32,
+    qmatmul_semantic_ffn_input_bridge_f32,
+    qmatmul_semantic_ffn_input_bridge_product_f32,
+    qmatmul_semantic_ffn_input_bridge_stage_input_f32,
+    qmatmul_semantic_ffn_input_bridge_width_partials_f32,
+    qmatmul_semantic_ffn_input_bridge_finalize_tiles_f32,
+    qmatmul_semantic_ffn_input_bridge_finalize_row_tiles_f32,
+    qmatmul_row_chain_f32,
+    qmatmul_row_chain_tiled_f32,
+    qmatmul_row_chain_tiled_partials_f32,
+    qmatmul_row_chain_tiled_finalize_f32,
+    qmatmul_row_chain_tiled_finalize_tiles_f32,
+    qmatmul_row_chain_width_partials_f32,
     qmatmul_fused_elementwise_f32,
     qmatmul_pair_fused_elementwise_f32,
+    qmatvec_pair_fused_elementwise_f32,
     qmatvec_slice_assign_f32,
+    qmatvec_fused_elementwise_f32,
     slice_assign_batch_f32,
     rmsnorm_scale_f32,
+    rmsnorm_scale_leaf_f32,
     attention_f32,
     attention_slice_assign_f32,
     attention_store_f32,
@@ -3713,13 +6125,16 @@ pub const MetalBackend = struct {
     queue: *anyopaque,
     pipelines: [metal_kernel_count]?*anyopaque,
     library: *anyopaque,
-    active_commands: ?*anyopaque = null,
+    alloc: std.mem.Allocator = std.heap.page_allocator,
     fine_grained_program_dispatch: bool = false,
     region_program_dispatch: bool = false,
-    projection_rope_cache_sidecars: bool = false,
-    runtime_timing: bool = false,
+    command_policy: program_mod.CommandStreamPolicy = program_mod.CommandStreamPolicy.default(),
 
     pub fn init() !MetalBackend {
+        return initWithAllocator(std.heap.page_allocator);
+    }
+
+    pub fn initWithAllocator(alloc: std.mem.Allocator) !MetalBackend {
         const device = c.mtl_create_device() orelse return error.MetalNotAvailable;
         errdefer c.mtl_release(device);
 
@@ -3741,11 +6156,11 @@ pub const MetalBackend = struct {
             .queue = queue,
             .pipelines = pipelines,
             .library = library,
+            .alloc = alloc,
         };
     }
 
     pub fn deinit(self: *MetalBackend) void {
-        self.flushCommands();
         releaseMetalPipelines(&self.pipelines);
         c.mtl_release(self.library);
         c.mtl_release(self.queue);
@@ -3770,48 +6185,28 @@ pub const MetalBackend = struct {
         self.region_program_dispatch = enabled;
     }
 
-    /// Enable the experimental projection -> RoPE -> KV-store lowering. This
-    /// remains opt-in until benchmarks prove it wins on the target Apple GPU.
-    pub fn setProjectionRopeCacheSidecars(self: *MetalBackend, enabled: bool) void {
-        self.projection_rope_cache_sidecars = enabled;
+    pub fn setCommandStreamPolicy(self: *MetalBackend, command_policy: program_mod.CommandStreamPolicy) void {
+        self.command_policy = command_policy;
     }
 
-    pub fn setQMatmulRopeCacheSidecars(self: *MetalBackend, enabled: bool) void {
-        self.setProjectionRopeCacheSidecars(enabled);
+    pub fn compileProgramWithCommandPolicy(self: *MetalBackend, program: backend_mod.DeviceProgram, command_policy: program_mod.CommandStreamPolicy) ?backend_mod.Backend.CompiledHandle {
+        const compiled = compileProgramInner(self, program, program_mod.Kernelizer.init(command_policy)) catch return null;
+        return @ptrCast(compiled);
     }
 
-    /// Enable expensive per-op/per-command wall-clock timing. Cheap placement,
-    /// dispatch, command, fallback, and sync counts are always collected.
-    pub fn setRuntimeTiming(self: *MetalBackend, enabled: bool) void {
-        self.runtime_timing = enabled;
-    }
-
-    pub fn commandStreamPolicy(self: *const MetalBackend) program_mod.CommandStreamPolicy {
-        var policy = program_mod.CommandStreamPolicy.fromCapabilities(backend_mod.Capabilities.metal);
-        policy.projection_rope_cache_sidecars = self.projection_rope_cache_sidecars;
-        return policy;
+    fn schedulePolicy(self: *const MetalBackend) program_mod.SchedulePolicy {
+        return metalSchedulePolicy(self.fine_grained_program_dispatch);
     }
 
     pub fn capabilities(self: *const MetalBackend) backend_mod.Capabilities {
-        var caps = backend_mod.Capabilities.metal;
-        caps.command_stream.projection_rope_cache_sidecars = self.projection_rope_cache_sidecars;
-        return caps;
+        _ = self;
+        return backend_mod.Capabilities.metal;
     }
 
-    /// Ensure a command session is active, creating one if needed.
-    fn ensureCommands(self: *MetalBackend) *anyopaque {
-        if (self.active_commands == null) {
-            self.active_commands = c.mtl_begin_commands(self.queue);
-        }
-        return self.active_commands.?;
-    }
-
-    /// Commit and wait on any active command session.
-    fn flushCommands(self: *MetalBackend) void {
-        if (self.active_commands) |cmds| {
-            c.mtl_commit_and_wait(cmds);
-            self.active_commands = null;
-        }
+    /// Back-compat shim for tests/callers that used to flush shared backend
+    /// command state. Command buffers are now owned by per-execution encoders.
+    fn flushCommands(_: *MetalBackend) void {
+        return;
     }
 
     pub fn backend(self: *MetalBackend) backend_mod.Backend {
@@ -3822,6 +6217,84 @@ pub const MetalBackend = struct {
             .device_type = .metal,
             .capabilities = self.capabilities(),
         };
+    }
+};
+
+const MetalExecutionContext = struct {
+    backend: *MetalBackend,
+    commands: ?*anyopaque = null,
+    profile: profile_mod.RuntimeProfile = .{},
+    active_program_command_kind: ?program_mod.ProgramCommandKind = null,
+
+    fn init(backend: *MetalBackend) MetalExecutionContext {
+        return .{ .backend = backend };
+    }
+
+    fn deinit(self: *MetalExecutionContext) void {
+        self.flushCommands();
+    }
+
+    fn ensureCommands(self: *MetalExecutionContext) *anyopaque {
+        if (self.commands == null) {
+            self.commands = c.mtl_begin_commands(self.backend.queue);
+        }
+        return self.commands.?;
+    }
+
+    fn flushCommands(self: *MetalExecutionContext) void {
+        if (self.commands) |cmds| {
+            c.mtl_commit_and_wait(cmds);
+            self.commands = null;
+        }
+    }
+
+    fn flushCommandsProfiled(self: *MetalExecutionContext) void {
+        if (self.commands == null) return;
+        self.flushCommands();
+        self.profile.sync_count +%= 1;
+    }
+
+    fn encode(
+        self: *MetalExecutionContext,
+        pipeline: *anyopaque,
+        buffers: []const DeviceBuffer,
+        params: *const anyopaque,
+        params_size: usize,
+        params_index: u32,
+        grid: DispatchGrid,
+        threads_x: u32,
+    ) void {
+        var raw_buffers: [max_encode_buffers]?*anyopaque = undefined;
+        std.debug.assert(buffers.len <= raw_buffers.len);
+        for (buffers, 0..) |buf, i| raw_buffers[i] = buf.ptr;
+        c.mtl_encode_dispatch(
+            self.ensureCommands(),
+            pipeline,
+            @ptrCast(&raw_buffers),
+            @intCast(buffers.len),
+            params,
+            params_size,
+            params_index,
+            grid.gx,
+            grid.gy,
+            threads_x,
+            1,
+        );
+        self.profile.backend_dispatch_count +%= 1;
+        if (self.active_program_command_kind) |kind| self.profile.recordProgramCommandDispatch(kind);
+    }
+
+    fn encodeKernel(
+        self: *MetalExecutionContext,
+        kernel: MetalKernel,
+        buffers: []const DeviceBuffer,
+        params: anytype,
+        params_index: u32,
+        grid: DispatchGrid,
+        threads_x: u32,
+    ) void {
+        const Params = @TypeOf(params);
+        self.encode(self.backend.pipeline(kernel), buffers, &params, @sizeOf(Params), params_index, grid, threads_x);
     }
 };
 
@@ -3854,8 +6327,119 @@ const DeviceQWeight = struct {
     block_size: usize,
 };
 
+const QWeightShape = struct {
+    rows: usize,
+    cols: usize,
+    block_size: usize,
+};
+
+const SemanticWidthScratchRequirement = struct {
+    candidates: u64 = 0,
+    rows: u32 = 0,
+    hidden: u32 = 0,
+    input: u32 = 0,
+    output: u32 = 0,
+    hidden_tiles: u64 = 0,
+    scratch_bytes: usize = 0,
+    input_bytes: usize = 0,
+    product_bytes: usize = 0,
+    down_partial_bytes: usize = 0,
+    output_bytes: usize = 0,
+    runtime_capacity_bytes: usize = 0,
+
+    fn scratchBytes(self: SemanticWidthScratchRequirement) usize {
+        return if (self.scratch_bytes != 0) self.scratch_bytes else self.down_partial_bytes;
+    }
+
+    fn runtimeScratchBytes(self: SemanticWidthScratchRequirement) usize {
+        return self.runtime_capacity_bytes;
+    }
+
+    fn merge(self: *SemanticWidthScratchRequirement, other: SemanticWidthScratchRequirement) void {
+        self.candidates +%= other.candidates;
+        self.runtime_capacity_bytes = @max(self.runtime_capacity_bytes, other.runtime_capacity_bytes);
+        if (other.scratchBytes() <= self.scratchBytes()) return;
+        const candidates = self.candidates;
+        const runtime_capacity_bytes = self.runtime_capacity_bytes;
+        self.* = other;
+        self.candidates = candidates;
+        self.runtime_capacity_bytes = runtime_capacity_bytes;
+    }
+};
+
+const PreparedQWeights = struct {
+    views: []DeviceQWeight,
+    refs: []reference.QWeight,
+};
+
+const RuntimeView = struct {
+    device_bufs: []DeviceBuffer,
+    ref_buffers: []reference.Buffer,
+    qweight_views: []DeviceQWeight,
+    ref_qweights: []reference.QWeight,
+    semantic_width_scratch: ?DeviceBuffer = null,
+    program_stencil: *program_mod.ProgramStencil,
+    outputs: []const backend_mod.ProgramIO = &.{},
+
+    fn outputReadsBuffer(self: RuntimeView, buf_idx: u16) bool {
+        for (self.outputs) |output| {
+            if (output.buf_idx == buf_idx) return true;
+        }
+        return false;
+    }
+
+    fn outputReadsSpan(self: RuntimeView, buf_idx: u16, element_offset: u32, element_count: u64) bool {
+        if (element_count == 0) return false;
+        const byte_start = @as(u64, element_offset) * @sizeOf(f32);
+        const byte_end = byte_start + element_count * @sizeOf(f32);
+        for (self.outputs) |output| {
+            if (output.buf_idx != buf_idx or output.size == 0) continue;
+            const output_start = @as(u64, output.offset);
+            const output_end = output_start + @as(u64, output.size);
+            if (byte_start < output_end and output_start < byte_end) return true;
+        }
+        return false;
+    }
+
+    fn outputReadsDenseSpan(self: RuntimeView, buf_idx: u16, element_offset: u32, rows: u32, cols: u32, row_stride: u32) bool {
+        if (rows == 0 or cols == 0) return false;
+        const stride = if (row_stride == 0) cols else row_stride;
+        const touched_elements = (@as(u64, rows) - 1) * @as(u64, stride) + @as(u64, cols);
+        return self.outputReadsSpan(buf_idx, element_offset, touched_elements);
+    }
+};
+
+test "RuntimeView output span checks byte overlap instead of whole buffer" {
+    var stencil: program_mod.ProgramStencil = undefined;
+    const outputs = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 2, .offset = 16, .size = 16 },
+        .{ .buf_idx = 3, .offset = 0, .size = 0 },
+    };
+    const view = RuntimeView{
+        .device_bufs = &.{},
+        .ref_buffers = &.{},
+        .qweight_views = &.{},
+        .ref_qweights = &.{},
+        .program_stencil = &stencil,
+        .outputs = &outputs,
+    };
+
+    try std.testing.expect(view.outputReadsBuffer(2));
+    try std.testing.expect(!view.outputReadsSpan(2, 0, 4));
+    try std.testing.expect(view.outputReadsSpan(2, 4, 1));
+    try std.testing.expect(view.outputReadsSpan(2, 7, 2));
+    try std.testing.expect(!view.outputReadsSpan(2, 8, 1));
+    try std.testing.expect(!view.outputReadsSpan(3, 0, 1));
+    try std.testing.expect(view.outputReadsDenseSpan(2, 0, 2, 2, 4));
+    try std.testing.expect(!view.outputReadsDenseSpan(2, 0, 1, 2, 4));
+}
+
 fn releaseDeviceBuffers(device_bufs: []const DeviceBuffer) void {
     for (device_bufs) |buf| c.mtl_release(buf.ptr);
+}
+
+fn releaseOptionalDeviceBuffer(device_buf: ?DeviceBuffer) void {
+    if (device_buf) |buf| c.mtl_release(buf.ptr);
 }
 
 fn releaseQWeightViews(qweight_views: []const DeviceQWeight) void {
@@ -3863,6 +6447,401 @@ fn releaseQWeightViews(qweight_views: []const DeviceQWeight) void {
         c.mtl_release(qw.data.ptr);
         c.mtl_release(qw.scales.ptr);
     }
+}
+
+fn divCeilU64(n: u32, d: u32) u64 {
+    if (d == 0) return 0;
+    return (@as(u64, n) + @as(u64, d) - 1) / @as(u64, d);
+}
+
+fn checkedF32Bytes(elements: u64) ?usize {
+    const bytes = std.math.mul(u64, elements, @sizeOf(f32)) catch return null;
+    return std.math.cast(usize, bytes);
+}
+
+fn f32ElementsFromBytes(bytes: usize) ?u64 {
+    if (bytes % @sizeOf(f32) != 0) return null;
+    return std.math.cast(u64, bytes / @sizeOf(f32));
+}
+
+fn semanticScratchRequirementForShape(rows: u32, hidden: u32, input: u32, output: u32) ?SemanticWidthScratchRequirement {
+    if (rows == 0 or hidden == 0 or input == 0 or output == 0) return null;
+    if (input > SEMANTIC_FFN_MAX_DIM or hidden <= SEMANTIC_FFN_MAX_DIM or hidden > SEMANTIC_FFN_MAX_HIDDEN or output > SEMANTIC_FFN_MAX_DIM) return null;
+
+    const row_count: u64 = rows;
+    const hidden_count: u64 = hidden;
+    const output_count: u64 = output;
+    const hidden_tiles = divCeilU64(hidden, ROW_CHAIN_TILE);
+    const output_tiles = divCeilU64(output, ROW_CHAIN_TILE);
+    const product_elements = std.math.mul(u64, row_count, hidden_count) catch return null;
+    const output_elements = std.math.mul(u64, row_count, output_count) catch return null;
+    const down_partial_elements = std.math.mul(u64, output_elements, hidden_tiles) catch return null;
+    const runtime_partial_elements = std.math.mul(u64, row_count, output_tiles) catch return null;
+    const down_partial_bytes = checkedF32Bytes(down_partial_elements) orelse return null;
+    return .{
+        .candidates = 1,
+        .rows = rows,
+        .hidden = hidden,
+        .input = input,
+        .output = output,
+        .hidden_tiles = hidden_tiles,
+        .scratch_bytes = down_partial_bytes,
+        .product_bytes = checkedF32Bytes(product_elements) orelse return null,
+        .down_partial_bytes = down_partial_bytes,
+        .output_bytes = checkedF32Bytes(output_elements) orelse return null,
+        .runtime_capacity_bytes = checkedF32Bytes(runtime_partial_elements) orelse return null,
+    };
+}
+
+fn semanticInputBridgeStagedScratchRequirementForShape(rows: u32, hidden: u32, input: u32, output: u32) ?SemanticWidthScratchRequirement {
+    var requirement = semanticScratchRequirementForShape(rows, hidden, input, output) orelse return null;
+    const input_bytes = checkedF32Bytes(std.math.mul(u64, @as(u64, rows), @as(u64, input)) catch return null) orelse return null;
+    const input_and_product = std.math.add(usize, input_bytes, requirement.product_bytes) catch return null;
+    const staged_scratch = std.math.add(usize, input_and_product, requirement.output_bytes) catch return null;
+    requirement.scratch_bytes = std.math.add(usize, staged_scratch, requirement.runtime_capacity_bytes) catch return null;
+    requirement.input_bytes = input_bytes;
+    requirement.down_partial_bytes = requirement.runtime_capacity_bytes;
+    return requirement;
+}
+
+fn semanticScratchRequirementForCommand(policy: program_mod.CommandStreamPolicy, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) ?SemanticWidthScratchRequirement {
+    if (command.kind == .semantic_ffn_sublayer) {
+        if (!policy.fuse_projection_row_chain_two_phase_candidate) return null;
+        if (command.op_count != 9) return null;
+        const start: usize = @intCast(command.op_start);
+        const gate = deviceOpAt(.qmatmul, ops, start) orelse return null;
+        const product = deviceOpAt(.elementwise, ops, start + 3) orelse return null;
+        const down = deviceOpAt(.qmatmul, ops, start + 4) orelse return null;
+        if (down.M != gate.M or down.K != gate.N) return null;
+        if (down.input != product.dst or down.input_offset != product.dst_offset) return null;
+        return semanticScratchRequirementForShape(gate.M, gate.N, gate.K, down.N);
+    }
+    if (command.kind == .semantic_ffn_sublayer_with_input_row_chain) {
+        const needs_scratch =
+            policy.fuse_projection_row_chain_two_phase_candidate or
+            policy.fuse_semantic_ffn_sublayer_input_bridge_width_parallel;
+        if (!needs_scratch) return null;
+        if (command.op_count != 14) return null;
+        const start: usize = @intCast(command.op_start);
+        const input_q = deviceOpAt(.qmatmul, ops, start) orelse return null;
+        const gate = deviceOpAt(.qmatmul, ops, start + 5) orelse return null;
+        const product = deviceOpAt(.elementwise, ops, start + 8) orelse return null;
+        const down = deviceOpAt(.qmatmul, ops, start + 9) orelse return null;
+        if (input_q.M != gate.M or input_q.N != gate.K) return null;
+        if (down.M != gate.M or down.K != gate.N) return null;
+        if (down.input != product.dst or down.input_offset != product.dst_offset) return null;
+        if (policy.fuse_semantic_ffn_sublayer_input_bridge_width_parallel and !policy.fuse_projection_row_chain_two_phase_candidate) {
+            return semanticInputBridgeStagedScratchRequirementForShape(gate.M, gate.N, gate.K, down.N);
+        }
+        return semanticScratchRequirementForShape(gate.M, gate.N, gate.K, down.N);
+    }
+    return null;
+}
+
+fn semanticWidthScratchRequirement(stencil: *const program_mod.ProgramStencil, policy: program_mod.CommandStreamPolicy) SemanticWidthScratchRequirement {
+    var requirement = SemanticWidthScratchRequirement{};
+    for (stencil.kernel_plan.commands) |command| {
+        const next = semanticScratchRequirementForCommand(policy, stencil.ops, command) orelse continue;
+        requirement.merge(next);
+    }
+    return requirement;
+}
+
+fn testSemanticInputBridgeOps() [14]backend_mod.DeviceOp {
+    const rows: u32 = 128;
+    const input_projection: u32 = 576;
+    const model: u32 = 576;
+    const hidden: u32 = 1536;
+    const model_elems = rows * model;
+    const hidden_elems = rows * hidden;
+    return .{
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = rows, .N = model, .K = input_projection } },
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 20, .n = model_elems } },
+        .{ .rmsnorm = .{ .dst = 3, .src = 2, .rows = rows, .cols = model } },
+        .{ .repeat = .{
+            .dst = 4,
+            .src = 5,
+            .n = model_elems,
+            .src_ne = .{ model, 1, 1, 1 },
+            .dst_ne = .{ model, rows, 1, 1 },
+            .src_strides = .{ 1, model, model, model },
+            .dst_strides = .{ 1, model, model_elems, model_elems },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 6, .src0 = 3, .src1 = 4, .n = model_elems } },
+        .{ .qmatmul = .{ .dst = 7, .input = 6, .weight_idx = 1, .M = rows, .N = hidden, .K = model } },
+        .{ .elementwise = .{ .op = .silu, .dst = 8, .src0 = 7, .src1 = 7, .n = hidden_elems } },
+        .{ .qmatmul = .{ .dst = 9, .input = 6, .weight_idx = 2, .M = rows, .N = hidden, .K = model } },
+        .{ .elementwise = .{ .op = .mul, .dst = 10, .src0 = 8, .src1 = 9, .n = hidden_elems } },
+        .{ .qmatmul = .{ .dst = 11, .input = 10, .weight_idx = 3, .M = rows, .N = model, .K = hidden } },
+        .{ .elementwise = .{ .op = .add, .dst = 12, .src0 = 11, .src1 = 2, .n = model_elems } },
+        .{ .rmsnorm = .{ .dst = 13, .src = 12, .rows = rows, .cols = model } },
+        .{ .repeat = .{
+            .dst = 14,
+            .src = 15,
+            .n = model_elems,
+            .src_ne = .{ model, 1, 1, 1 },
+            .dst_ne = .{ model, rows, 1, 1 },
+            .src_strides = .{ 1, model, model, model },
+            .dst_strides = .{ 1, model, model_elems, model_elems },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 16, .src0 = 13, .src1 = 14, .n = model_elems } },
+    };
+}
+
+fn semanticInputBridgeCompatibilityForTest(ops: []const backend_mod.DeviceOp) ?SemanticFfnInputBridgeCompatibility {
+    const input_q = deviceOpAt(.qmatmul, ops, 0) orelse return null;
+    const input_residual = deviceOpAt(.elementwise, ops, 1) orelse return null;
+    const input_rn = deviceOpAt(.rmsnorm, ops, 2) orelse return null;
+    const input_rp = deviceOpAt(.repeat, ops, 3) orelse return null;
+    const input_out = deviceOpAt(.elementwise, ops, 4) orelse return null;
+    const gate = deviceOpAt(.qmatmul, ops, 5) orelse return null;
+    const first = deviceOpAt(.elementwise, ops, 6) orelse return null;
+    const up = deviceOpAt(.qmatmul, ops, 7) orelse return null;
+    const product = deviceOpAt(.elementwise, ops, 8) orelse return null;
+    const down = deviceOpAt(.qmatmul, ops, 9) orelse return null;
+    const output_residual = deviceOpAt(.elementwise, ops, 10) orelse return null;
+    const output_rn = deviceOpAt(.rmsnorm, ops, 11) orelse return null;
+    const output_rp = deviceOpAt(.repeat, ops, 12) orelse return null;
+    const output_out = deviceOpAt(.elementwise, ops, 13) orelse return null;
+    return semanticFfnInputBridgeCompatibility(input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out);
+}
+
+fn testDeviceBuffer(byte_size: usize) DeviceBuffer {
+    return .{ .ptr = undefined, .size = byte_size };
+}
+
+fn testSemanticInputBridgeView(qweight_block_size: usize, scratch_bytes: usize, outputs: []const backend_mod.ProgramIO) RuntimeView {
+    const stencil = std.testing.allocator.create(program_mod.ProgramStencil) catch unreachable;
+    stencil.* = undefined;
+    const qweight = DeviceQWeight{
+        .data = testDeviceBuffer(1),
+        .scales = testDeviceBuffer(1),
+        .block_size = qweight_block_size,
+    };
+    const qweights = std.testing.allocator.alloc(DeviceQWeight, 4) catch unreachable;
+    @memset(qweights, qweight);
+    const device_bufs = std.testing.allocator.alloc(DeviceBuffer, 32) catch unreachable;
+    @memset(device_bufs, testDeviceBuffer(32 * 1024 * 1024));
+    return .{
+        .device_bufs = device_bufs,
+        .ref_buffers = &.{},
+        .qweight_views = qweights,
+        .ref_qweights = &.{},
+        .semantic_width_scratch = testDeviceBuffer(scratch_bytes),
+        .program_stencil = stencil,
+        .outputs = outputs,
+    };
+}
+
+fn deinitTestSemanticInputBridgeView(view: RuntimeView) void {
+    std.testing.allocator.free(view.qweight_views);
+    std.testing.allocator.free(view.device_bufs);
+    std.testing.allocator.destroy(view.program_stencil);
+}
+
+fn semanticInputBridgeEncodePlanForTest(view: RuntimeView, ops: []const backend_mod.DeviceOp) ?SemanticFfnInputBridgeEncodePlan {
+    const input_q = deviceOpAt(.qmatmul, ops, 0) orelse return null;
+    const input_residual = deviceOpAt(.elementwise, ops, 1) orelse return null;
+    const input_rn = deviceOpAt(.rmsnorm, ops, 2) orelse return null;
+    const input_rp = deviceOpAt(.repeat, ops, 3) orelse return null;
+    const input_out = deviceOpAt(.elementwise, ops, 4) orelse return null;
+    const gate = deviceOpAt(.qmatmul, ops, 5) orelse return null;
+    const first = deviceOpAt(.elementwise, ops, 6) orelse return null;
+    const up = deviceOpAt(.qmatmul, ops, 7) orelse return null;
+    const product = deviceOpAt(.elementwise, ops, 8) orelse return null;
+    const down = deviceOpAt(.qmatmul, ops, 9) orelse return null;
+    const output_residual = deviceOpAt(.elementwise, ops, 10) orelse return null;
+    const output_rn = deviceOpAt(.rmsnorm, ops, 11) orelse return null;
+    const output_rp = deviceOpAt(.repeat, ops, 12) orelse return null;
+    const output_out = deviceOpAt(.elementwise, ops, 13) orelse return null;
+    return semanticFfnInputBridgeEncodePlan(view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out);
+}
+
+test "semantic input bridge compatibility proves exact direct width target shape" {
+    const ops = testSemanticInputBridgeOps();
+    const bridge = semanticInputBridgeCompatibilityForTest(&ops) orelse return error.TestExpectedEqual;
+
+    try std.testing.expectEqual(@as(u32, 128), bridge.rows);
+    try std.testing.expectEqual(@as(u32, 576), bridge.input_projection);
+    try std.testing.expectEqual(@as(u32, 576), bridge.input_width);
+    try std.testing.expectEqual(@as(u32, 1536), bridge.hidden);
+    try std.testing.expectEqual(@as(u32, 576), bridge.output_width);
+    try std.testing.expectEqual(@as(u16, 20), bridge.input_secondary_buf);
+    try std.testing.expectEqual(@as(u16, 2), bridge.output_secondary_buf);
+    try std.testing.expectEqual(@as(u64, 4), bridge.row_tile_groups);
+    try std.testing.expectEqual(@as(u64, 18), bridge.output_tiles);
+    try std.testing.expectEqual(@as(u32, 4), bridge.direct_width_parallel_lanes);
+    try std.testing.expectEqual(@as(u64, 2304), bridge.direct_width_parallel_partial_slots);
+
+    const scratch = bridge.scratchRequirement() orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 1385472), scratch.scratchBytes());
+    try std.testing.expectEqual(@as(usize, 9216), scratch.runtimeScratchBytes());
+}
+
+test "semantic input bridge compatibility rejects broken residual bridge" {
+    var ops = testSemanticInputBridgeOps();
+    ops[10].elementwise.src1 = 20;
+    try std.testing.expect(semanticInputBridgeCompatibilityForTest(&ops) == null);
+}
+
+test "semantic input bridge encode plan requires native qweights and full width scratch" {
+    const ops = testSemanticInputBridgeOps();
+    const view = testSemanticInputBridgeView(32, 1385472, &.{});
+    defer deinitTestSemanticInputBridgeView(view);
+
+    const plan = semanticInputBridgeEncodePlanForTest(view, &ops) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u32, 128), plan.bridge.rows);
+    try std.testing.expectEqual(@as(u32, 576), plan.input_params.N);
+    try std.testing.expectEqual(@as(u32, 1536), plan.gate_params.N);
+    try std.testing.expectEqual(@as(u32, 1536), plan.up_params.N);
+    try std.testing.expectEqual(@as(u32, 576), plan.down_params.N);
+    try std.testing.expectEqual(@as(usize, 1385472), plan.scratch.scratchBytes());
+    try std.testing.expectEqual(@as(usize, 786432), plan.scratch.product_bytes);
+    try std.testing.expectEqual(@as(usize, 9216), plan.scratch.down_partial_bytes);
+    try std.testing.expectEqual(@as(usize, 294912), plan.scratch.output_bytes);
+    try std.testing.expectEqual(@as(usize, 9216), plan.scratch.runtimeScratchBytes());
+    try std.testing.expectEqual(@as(u32, 0), plan.scratch_layout.input_element_offset);
+    try std.testing.expectEqual(@as(u32, 73728), plan.scratch_layout.input_elements);
+    try std.testing.expectEqual(@as(u32, 73728), plan.scratch_layout.product_element_offset);
+    try std.testing.expectEqual(@as(u32, 196608), plan.scratch_layout.product_elements);
+    try std.testing.expectEqual(@as(u32, 270336), plan.scratch_layout.output_element_offset);
+    try std.testing.expectEqual(@as(u32, 73728), plan.scratch_layout.output_elements);
+    try std.testing.expectEqual(@as(u32, 0), plan.scratch_layout.down_partial_element_offset);
+    try std.testing.expectEqual(@as(u32, 346368), plan.scratch_layout.down_partial_elements);
+    try std.testing.expectEqual(@as(usize, 1385472), plan.scratch_layout.total_bytes);
+    try std.testing.expectEqual(@as(usize, 1385472), plan.scratch_bytes);
+
+    const wrong_block = testSemanticInputBridgeView(16, 1385472, &.{});
+    defer deinitTestSemanticInputBridgeView(wrong_block);
+    try std.testing.expect(semanticInputBridgeEncodePlanForTest(wrong_block, &ops) == null);
+
+    const too_little_scratch = testSemanticInputBridgeView(32, 9216, &.{});
+    defer deinitTestSemanticInputBridgeView(too_little_scratch);
+    try std.testing.expect(semanticInputBridgeEncodePlanForTest(too_little_scratch, &ops) == null);
+}
+
+test "semantic input bridge encode plan refuses externally observed intermediates" {
+    const ops = testSemanticInputBridgeOps();
+    const outputs = [_]backend_mod.ProgramIO{.{ .buf_idx = 7, .offset = 0, .size = 4 }};
+    const view = testSemanticInputBridgeView(32, 14155776, &outputs);
+    defer deinitTestSemanticInputBridgeView(view);
+    try std.testing.expect(semanticInputBridgeEncodePlanForTest(view, &ops) == null);
+}
+
+test "semantic input bridge policies reserve width scratch" {
+    const ops = testSemanticInputBridgeOps();
+    const command = program_mod.ProgramCommand.contiguous(.semantic_ffn_sublayer_with_input_row_chain, 0, 14);
+
+    try std.testing.expect(semanticScratchRequirementForCommand(program_mod.CommandStreamPolicy.promptProjectionRowChainCommand(), &ops, command) == null);
+
+    try std.testing.expect(semanticScratchRequirementForCommand(program_mod.CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeDirectSerialCandidate(), &ops, command) == null);
+
+    const direct_width = semanticScratchRequirementForCommand(program_mod.CommandStreamPolicy.promptSemanticFfnSublayerInputBridgeDirectWidthCandidate(), &ops, command) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 1385472), direct_width.scratchBytes());
+    try std.testing.expectEqual(@as(usize, 9216), direct_width.down_partial_bytes);
+    try std.testing.expectEqual(@as(usize, 9216), direct_width.runtimeScratchBytes());
+}
+
+test "semantic width scratch requirement follows executable policy" {
+    const rows: u32 = 128;
+    const input: u32 = 576;
+    const hidden: u32 = 1536;
+    const output: u32 = 576;
+    const hidden_elems = rows * hidden;
+    const output_elems = rows * output;
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = rows, .N = hidden, .K = input } },
+        .{ .elementwise = .{ .op = .silu, .dst = 2, .src0 = 1, .src1 = 1, .n = hidden_elems } },
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 1, .M = rows, .N = hidden, .K = input } },
+        .{ .elementwise = .{ .op = .mul, .dst = 3, .src0 = 2, .src1 = 1, .n = hidden_elems } },
+        .{ .qmatmul = .{ .dst = 4, .input = 3, .weight_idx = 2, .M = rows, .N = output, .K = hidden } },
+        .{ .elementwise = .{ .op = .add, .dst = 5, .src0 = 4, .src1 = 5, .n = output_elems } },
+        .{ .rmsnorm = .{ .dst = 6, .src = 5, .rows = rows, .cols = output } },
+        .{ .repeat = .{
+            .dst = 8,
+            .src = 7,
+            .n = output_elems,
+            .src_ne = .{ output, 1, 1, 1 },
+            .dst_ne = .{ output, rows, 1, 1 },
+            .src_strides = .{ 1, output, output, output },
+            .dst_strides = .{ 1, output, output_elems, output_elems },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 9, .src0 = 6, .src1 = 8, .n = output_elems } },
+    };
+    const command = program_mod.ProgramCommand.contiguous(.semantic_ffn_sublayer, 0, 9);
+
+    try std.testing.expect(semanticScratchRequirementForCommand(program_mod.CommandStreamPolicy.promptProjectionRowChainCommand(), &ops, command) == null);
+
+    const requirement = semanticScratchRequirementForCommand(program_mod.CommandStreamPolicy.promptSemanticFfnSublayerThroughputCandidate(), &ops, command) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u64, 1), requirement.candidates);
+    try std.testing.expectEqual(@as(u32, rows), requirement.rows);
+    try std.testing.expectEqual(@as(u32, hidden), requirement.hidden);
+    try std.testing.expectEqual(@as(u32, input), requirement.input);
+    try std.testing.expectEqual(@as(u32, output), requirement.output);
+    try std.testing.expectEqual(@as(u64, 48), requirement.hidden_tiles);
+    try std.testing.expectEqual(@as(usize, 786432), requirement.product_bytes);
+    try std.testing.expectEqual(@as(usize, 14155776), requirement.down_partial_bytes);
+    try std.testing.expectEqual(@as(usize, 294912), requirement.output_bytes);
+    try std.testing.expectEqual(@as(usize, 14155776), requirement.scratchBytes());
+    try std.testing.expectEqual(@as(usize, 9216), requirement.runtimeScratchBytes());
+}
+
+fn allocateSemanticWidthScratch(device: *anyopaque, requirement: SemanticWidthScratchRequirement) !?DeviceBuffer {
+    const byte_size = requirement.scratchBytes();
+    if (byte_size == 0) return null;
+    const ptr = c.mtl_create_buffer(device, byte_size) orelse return error.OutOfMemory;
+    return .{ .ptr = ptr, .size = byte_size };
+}
+
+fn deinitPreparedQWeights(alloc: std.mem.Allocator, prepared: PreparedQWeights) void {
+    releaseQWeightViews(prepared.views);
+    for (prepared.refs) |qw| reference.deinitTransposedQWeight(alloc, qw);
+    if (prepared.views.len > 0) alloc.free(prepared.views);
+    if (prepared.refs.len > 0) alloc.free(prepared.refs);
+}
+
+fn prepareQWeights(device: *anyopaque, alloc: std.mem.Allocator, qweights: []const backend_mod.QuantizedWeightUpload) !PreparedQWeights {
+    const views = try alloc.alloc(DeviceQWeight, qweights.len);
+    errdefer if (views.len > 0) alloc.free(views);
+    const refs = try alloc.alloc(reference.QWeight, qweights.len);
+    errdefer if (refs.len > 0) alloc.free(refs);
+
+    var n_views: usize = 0;
+    errdefer releaseQWeightViews(views[0..n_views]);
+    var n_refs: usize = 0;
+    errdefer for (refs[0..n_refs]) |qw| reference.deinitTransposedQWeight(alloc, qw);
+
+    for (qweights, 0..) |qw, i| {
+        const data_raw = c.mtl_create_buffer(device, qw.data.len) orelse return error.OutOfMemory;
+        const data_buf: DeviceBuffer = .{ .ptr = data_raw, .size = qw.data.len };
+        const data_ptr: [*]u8 = @ptrCast(c.mtl_buffer_contents(data_buf.ptr));
+        const i8_as_u8: [*]const u8 = @ptrCast(qw.data.ptr);
+        @memcpy(data_ptr[0..qw.data.len], i8_as_u8[0..qw.data.len]);
+
+        const scales_size = qw.scales.len * @sizeOf(f32);
+        const scales_raw = c.mtl_create_buffer(device, scales_size) orelse {
+            c.mtl_release(data_buf.ptr);
+            return error.OutOfMemory;
+        };
+        const scales_buf: DeviceBuffer = .{ .ptr = scales_raw, .size = scales_size };
+        const scales_ptr: [*]u8 = @ptrCast(c.mtl_buffer_contents(scales_buf.ptr));
+        @memcpy(scales_ptr[0..scales_size], std.mem.sliceAsBytes(qw.scales));
+
+        views[i] = .{ .data = data_buf, .scales = scales_buf, .block_size = qw.block_size };
+        n_views += 1;
+        const ref_data: [*]const i8 = @ptrCast(c.mtl_buffer_contents(data_buf.ptr));
+        const ref_scales: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(scales_buf.ptr)));
+        refs[i] = try reference.prepareTransposedQWeight(alloc, .{
+            .data = ref_data[0..qw.data.len],
+            .scales = ref_scales[0..qw.scales.len],
+            .rows = qw.rows,
+            .cols = qw.cols,
+            .block_size = qw.block_size,
+        });
+        n_refs += 1;
+    }
+
+    return .{ .views = views, .refs = refs };
 }
 
 fn metalSchedulePolicy(fine_grained: bool) program_mod.SchedulePolicy {
@@ -3874,7 +6853,7 @@ fn metalSchedulePolicy(fine_grained: bool) program_mod.SchedulePolicy {
             .row = fine_grained,
             .reduce = fine_grained,
             .movement = fine_grained,
-            .matmul = true,
+            .matmul = fine_grained,
             .qmatvec = true,
             .qmatmul = true,
             .rope = fine_grained,
@@ -3884,48 +6863,40 @@ fn metalSchedulePolicy(fine_grained: bool) program_mod.SchedulePolicy {
     };
 }
 
-pub const MetalRegionPattern = enum(u32) {
+const MetalRegionPattern = enum(u32) {
     decode_layer_stage,
     prefill_layer_stage,
+    dense_prefill_layer_stage,
+    dense_matmul_tail,
 
     pub fn index(self: MetalRegionPattern) u32 {
         return @intFromEnum(self);
     }
 
-    pub fn stageName(self: MetalRegionPattern) []const u8 {
-        return switch (self) {
-            .decode_layer_stage => "decode-layer",
-            .prefill_layer_stage => "prefill-layer",
-        };
-    }
-
     pub fn stagePolicy(self: MetalRegionPattern) program_mod.StagePolicy {
         return program_mod.StagePolicy.anchored(
-            self.stageName(),
             self.index(),
             switch (self) {
                 .decode_layer_stage => program_mod.RegionPolicy.qmatvecCluster(),
                 .prefill_layer_stage => program_mod.RegionPolicy.qmatmulCluster(),
+                .dense_prefill_layer_stage, .dense_matmul_tail => program_mod.RegionPolicy.matmulCluster(),
             },
-            metal_projection_anchors_per_stage,
+            switch (self) {
+                .dense_matmul_tail => 1,
+                else => metal_projection_anchors_per_stage,
+            },
         );
     }
 };
 
 const metal_projection_anchors_per_stage: u32 = 7;
+const metal_region_pattern_count: u32 = @typeInfo(MetalRegionPattern).@"enum".fields.len;
 const metal_region_stages = [_]program_mod.StagePolicy{
     MetalRegionPattern.decode_layer_stage.stagePolicy(),
     MetalRegionPattern.prefill_layer_stage.stagePolicy(),
+    MetalRegionPattern.dense_prefill_layer_stage.stagePolicy(),
+    MetalRegionPattern.dense_matmul_tail.stagePolicy(),
 };
-
-fn buildMetalExecutionPlan(
-    alloc: std.mem.Allocator,
-    ops: []const backend_mod.DeviceOp,
-    schedule_policy: program_mod.SchedulePolicy,
-    command_policy: program_mod.CommandStreamPolicy,
-) !program_mod.ExecutionPlan {
-    return program_mod.buildExecutionPlan(alloc, ops, schedule_policy, &metal_region_stages, command_policy);
-}
 
 const CompiledProgram = struct {
     backend: *MetalBackend,
@@ -3933,176 +6904,407 @@ const CompiledProgram = struct {
     ref_buffers: []reference.Buffer,
     qweight_views: []DeviceQWeight,
     ref_qweights: []reference.QWeight,
-    ops: []const backend_mod.DeviceOp,
+    qweight_shapes: []QWeightShape,
+    semantic_width_scratch: ?DeviceBuffer = null,
+    semantic_width_scratch_requirement: SemanticWidthScratchRequirement = .{},
+    program_stencil: program_mod.ProgramStencil,
     plan: program_mod.ExecutionPlan,
+    command_policy: program_mod.CommandStreamPolicy,
     alloc: std.mem.Allocator,
     runtime_profile: profile_mod.RuntimeProfile = .{},
-    active_program_command_kind: ?program_mod.ProgramCommandKind = null,
-
-    fn timingStart(self: *const CompiledProgram) i96 {
-        return if (self.backend.runtime_timing) nowNs() else @as(i96, 0);
-    }
-
-    fn timingElapsed(self: *const CompiledProgram, start_ns: i96) u64 {
-        return if (self.backend.runtime_timing) @intCast(nowNs() - start_ns) else 0;
-    }
+    profile_mutex: std.Io.Mutex = .init,
 
     fn deinit(self: *CompiledProgram) void {
+        releaseOptionalDeviceBuffer(self.semantic_width_scratch);
         releaseDeviceBuffers(self.device_bufs);
-        releaseQWeightViews(self.qweight_views);
-        for (self.ref_qweights) |qw| reference.deinitTransposedQWeight(self.alloc, qw);
+        deinitPreparedQWeights(self.alloc, .{ .views = self.qweight_views, .refs = self.ref_qweights });
+        if (self.qweight_shapes.len > 0) self.alloc.free(self.qweight_shapes);
         self.alloc.free(self.ref_buffers);
         self.alloc.free(self.device_bufs);
-        if (self.qweight_views.len > 0) self.alloc.free(self.qweight_views);
-        if (self.ref_qweights.len > 0) self.alloc.free(self.ref_qweights);
+        self.program_stencil.deinit(self.alloc);
         self.plan.deinit(self.alloc);
         self.alloc.destroy(self);
     }
 
-    fn execute(self: *CompiledProgram, inputs: []const backend_mod.ProgramIO, outputs: []const backend_mod.ProgramIO) void {
-        self.runtime_profile.timing_enabled = self.runtime_profile.timing_enabled or self.backend.runtime_timing;
-        // Upload per-step inputs (token embed, pos, mask) via shared memory.
-        reference.uploadToBuffers(self.ref_buffers, inputs);
+    fn upload(self: *CompiledProgram, inputs: []const backend_mod.ProgramIO) void {
+        self.uploadView(self.compiledRuntimeView(), inputs);
+    }
 
-        if (self.plan.schedule.len == 0 and self.ops.len > 0) {
-            self.executeUnscheduled();
-        } else {
-            self.executeScheduled();
+    fn uploadBound(self: *CompiledProgram, runtime: *RuntimeBindings, inputs: []const backend_mod.ProgramIO) void {
+        self.uploadView(self.boundRuntimeView(runtime), inputs);
+    }
+
+    fn uploadView(_: *CompiledProgram, view: RuntimeView, inputs: []const backend_mod.ProgramIO) void {
+        if (!view.program_stencil.ioValid(inputs, &.{})) return;
+        reference.uploadToBuffers(view.ref_buffers, inputs);
+    }
+
+    fn execute(self: *CompiledProgram, inputs: []const backend_mod.ProgramIO, outputs: []const backend_mod.ProgramIO) void {
+        if (self.executeView(self.compiledRuntimeView(), inputs, outputs)) |delta| {
+            self.mergeRuntimeProfile(delta);
         }
-        self.flushCommandsProfiled();
-        self.runtime_profile.call_count += 1;
+    }
+
+    fn executeBound(self: *CompiledProgram, runtime: *RuntimeBindings, inputs: []const backend_mod.ProgramIO, outputs: []const backend_mod.ProgramIO) void {
+        if (self.executeView(self.boundRuntimeView(runtime), inputs, outputs)) |delta| {
+            runtime.mergeRuntimeProfile(delta);
+        }
+    }
+
+    fn executeView(self: *CompiledProgram, view: RuntimeView, inputs: []const backend_mod.ProgramIO, outputs: []const backend_mod.ProgramIO) ?profile_mod.RuntimeProfile {
+        if (!view.program_stencil.ioValid(inputs, outputs)) return null;
+        var runtime_view = view;
+        runtime_view.outputs = outputs;
+        var exec = MetalExecutionContext.init(self.backend);
+        defer exec.deinit();
+
+        // Upload per-step inputs (token embed, pos, mask) via shared memory.
+        reference.uploadToBuffers(runtime_view.ref_buffers, inputs);
+
+        if (self.plan.schedule.len == 0 and runtime_view.program_stencil.ops.len > 0) {
+            self.executeUnscheduled(&exec, runtime_view);
+        } else {
+            self.executeScheduled(&exec, runtime_view);
+        }
+        exec.flushCommandsProfiled();
+        exec.profile.call_count += 1;
 
         // Download outputs (logits) via shared memory.
-        reference.downloadFromBuffers(self.ref_buffers, outputs);
+        reference.downloadFromBuffers(runtime_view.ref_buffers, outputs);
+        return exec.profile;
     }
 
-    fn executeUnscheduled(self: *CompiledProgram) void {
-        for (self.ops) |op| {
-            self.executeOp(op);
+    fn compiledRuntimeView(self: *CompiledProgram) RuntimeView {
+        return .{
+            .device_bufs = self.device_bufs,
+            .ref_buffers = self.ref_buffers,
+            .qweight_views = self.qweight_views,
+            .ref_qweights = self.ref_qweights,
+            .semantic_width_scratch = self.semantic_width_scratch,
+            .program_stencil = &self.program_stencil,
+        };
+    }
+
+    fn boundRuntimeView(self: *CompiledProgram, runtime: *RuntimeBindings) RuntimeView {
+        const has_runtime_qweights = runtime.qweight_views.len > 0;
+        return .{
+            .device_bufs = runtime.device_bufs,
+            .ref_buffers = runtime.ref_buffers,
+            .qweight_views = if (has_runtime_qweights) runtime.qweight_views else self.qweight_views,
+            .ref_qweights = if (has_runtime_qweights) runtime.ref_qweights else self.ref_qweights,
+            .semantic_width_scratch = runtime.semantic_width_scratch orelse self.semantic_width_scratch,
+            .program_stencil = &runtime.program_stencil,
+        };
+    }
+
+    fn executeUnscheduled(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView) void {
+        for (view.program_stencil.ops) |op| {
+            self.executeOp(exec, view, op);
         }
     }
 
-    fn executeScheduled(self: *CompiledProgram) void {
+    fn executeScheduled(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView) void {
+        if (self.tryEncodeWholeCommandProgram(exec, view)) return;
+
         if (self.backend.region_program_dispatch and self.plan.regions.len > 0) {
-            self.executeRegionScheduled();
+            self.executeRegionScheduled(exec, view);
             return;
         }
 
         for (self.plan.schedule) |item| {
-            self.executeScheduleItem(item);
+            self.executeScheduleItem(exec, view, item);
         }
     }
 
-    fn executeRegionScheduled(self: *CompiledProgram) void {
+    fn tryEncodeWholeCommandProgram(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView) bool {
+        const shape = self.program_stencil.kernel_plan.command_shape;
+        if (shape.semantic_ffn_sublayers == 0 and shape.projection_row_chains == 0) return false;
+        const commands = self.program_stencil.kernel_plan.commands;
+        if (commands.len == 0) return false;
+        return self.tryEncodeRegionGpuCommands(exec, view, view.program_stencil.ops, commands);
+    }
+
+    fn executeRegionScheduled(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView) void {
         for (self.plan.regions, 0..) |unit, unit_index| {
             switch (unit.kind) {
-                .item => self.executeScheduleItem(self.plan.schedule[@intCast(unit.start_item)]),
+                .item => self.executeScheduleItem(exec, view, self.plan.schedule[@intCast(unit.start_item)]),
                 .pattern_region => {
-                    if (!self.tryEncodePatternRegion(unit, unit_index)) {
-                        self.executeScheduleItems(unit.start_item, unit.item_count);
+                    if (!self.tryEncodePatternRegion(exec, view, unit, unit_index)) {
+                        self.executeScheduleItems(exec, view, unit.start_item, unit.item_count);
                     }
                 },
             }
         }
     }
 
-    fn executeScheduleItems(self: *CompiledProgram, start_item: u32, item_count: u32) void {
+    fn executeScheduleItems(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, start_item: u32, item_count: u32) void {
         const start: usize = @intCast(start_item);
         const end = start + @as(usize, item_count);
         for (self.plan.schedule[start..end]) |item| {
-            self.executeScheduleItem(item);
+            self.executeScheduleItem(exec, view, item);
         }
     }
 
-    fn executeScheduleItem(self: *CompiledProgram, item: program_mod.KernelItem) void {
+    fn executeScheduleItem(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, item: program_mod.KernelItem) void {
         const start: usize = @intCast(item.start);
         const end = start + @as(usize, item.len);
         switch (item.execution) {
             .backend => {
-                for (self.ops[start..end]) |op| {
-                    self.executeOp(op);
+                for (view.program_stencil.ops[start..end]) |op| {
+                    self.executeOp(exec, view, op);
                 }
             },
             .fallback => {
-                self.flushCommandsProfiled();
-                for (self.ops[start..end]) |op| {
-                    self.executeFallbackOp(op);
+                exec.flushCommandsProfiled();
+                for (view.program_stencil.ops[start..end]) |op| {
+                    self.executeFallbackOp(exec, view, op);
                 }
             },
         }
     }
 
-    fn executeOp(self: *CompiledProgram, op: backend_mod.DeviceOp) void {
-        const t0 = self.timingStart();
-        if (self.tryEncodeGpuOp(op)) {
-            self.runtime_profile.backend_op_count +%= 1;
+    fn executeOp(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, op: backend_mod.DeviceOp) void {
+        if (self.tryEncodeGpuOp(exec, view, op)) {
+            exec.profile.backend_op_count +%= 1;
         } else {
-            self.flushCommandsProfiled();
-            reference.executeOp(self.ref_buffers, self.ref_qweights, op);
-            self.runtime_profile.fallback_op_count +%= 1;
+            exec.flushCommandsProfiled();
+            reference.executeOp(view.ref_buffers, view.ref_qweights, op);
+            exec.profile.fallback_op_count +%= 1;
         }
-        const elapsed = self.timingElapsed(t0);
-        if (elapsed != 0) self.runtime_profile.time_ns[@intFromEnum(op)] +%= elapsed;
     }
 
-    fn executeFallbackOp(self: *CompiledProgram, op: backend_mod.DeviceOp) void {
-        const t0 = self.timingStart();
-        reference.executeOp(self.ref_buffers, self.ref_qweights, op);
-        self.runtime_profile.fallback_op_count +%= 1;
-        const elapsed = self.timingElapsed(t0);
-        if (elapsed != 0) self.runtime_profile.time_ns[@intFromEnum(op)] +%= elapsed;
+    fn executeFallbackOp(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, op: backend_mod.DeviceOp) void {
+        reference.executeOp(view.ref_buffers, view.ref_qweights, op);
+        exec.profile.fallback_op_count +%= 1;
     }
 
-    fn flushCommandsProfiled(self: *CompiledProgram) void {
-        if (self.backend.active_commands == null) return;
-        const t0 = self.timingStart();
-        self.backend.flushCommands();
-        const elapsed = self.timingElapsed(t0);
-        if (elapsed != 0) self.runtime_profile.sync_time_ns +%= elapsed;
-        self.runtime_profile.sync_count +%= 1;
+    fn encodeMatmul(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, m: anytype) void {
+        const buffers = [_]DeviceBuffer{
+            view.device_bufs[m.a],
+            view.device_bufs[m.b],
+            view.device_bufs[m.dst],
+        };
+        exec.encodeKernel(.matmul_f32, &buffers, matmulParams(m.geom), 3, matmulGrid(m.geom.M, m.geom.N), MATMUL_THREADS);
     }
 
-    fn encode(
-        self: *CompiledProgram,
-        pipeline: *anyopaque,
-        buffers: []const DeviceBuffer,
-        params: *const anyopaque,
-        params_size: usize,
-        params_index: u32,
-        grid: DispatchGrid,
-        threads_x: u32,
-    ) void {
-        var raw_buffers: [max_encode_buffers]?*anyopaque = undefined;
-        std.debug.assert(buffers.len <= raw_buffers.len);
-        for (buffers, 0..) |buf, i| raw_buffers[i] = buf.ptr;
-        c.mtl_encode_dispatch(
-            self.backend.ensureCommands(),
-            pipeline,
-            @ptrCast(&raw_buffers),
-            @intCast(buffers.len),
+    fn encodeMatvecElementwise(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, m: anytype, e: anytype, write_primary: bool) bool {
+        if (!self.canEncodeDenseMatvecElementwiseSidecar(m, e)) return false;
+        const g = m.geom;
+        const primary_is_src0 = e.src0 == m.dst and e.src0_offset == g.dst_offset;
+        const secondary_buf = if (e.op.isBinary()) (if (primary_is_src0) e.src1 else e.src0) else e.src0;
+        const secondary_offset = if (e.op.isBinary()) (if (primary_is_src0) e.src1_offset else e.src0_offset) else e.src0_offset;
+
+        var buffers: [DenseMatvecBatchKernel.buffer_count]DeviceBuffer = undefined;
+        for (0..MAX_DENSE_MATVEC_BATCH) |slot| {
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .weight)] = view.device_bufs[m.b];
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .input)] = view.device_bufs[m.a];
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .output)] = view.device_bufs[m.dst];
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .sidecar_src)] = view.device_bufs[secondary_buf];
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[e.dst];
+        }
+
+        var params = std.mem.zeroes(DenseMatvecBatch4Params);
+        params.n_ops = 1;
+        params.max_n = @intCast(g.N);
+        params.N[0] = @intCast(g.N);
+        params.K[0] = @intCast(g.K);
+        params.input_offset[0] = @intCast(g.a_offset);
+        params.input_col_stride[0] = @intCast(g.a_col_stride);
+        params.weight_offset[0] = @intCast(g.b_offset);
+        params.weight_row_stride[0] = @intCast(g.b_row_stride);
+        params.weight_col_stride[0] = @intCast(g.b_col_stride);
+        params.dst_offset[0] = @intCast(g.dst_offset);
+        params.write_primary[0] = @intFromBool(write_primary);
+        params.sidecar_kind[0] = @intFromEnum(QMatvecBatchSidecarKind.elementwise);
+        params.ew_op[0] = @intFromEnum(e.op);
+        params.ew_is_swapped[0] = @intFromBool(!primary_is_src0);
+        params.ew_dst_offset[0] = e.dst_offset;
+        params.ew_secondary_offset[0] = secondary_offset;
+
+        exec.encodeKernel(
+            .matvec_batch4_cols4_f32,
+            &buffers,
             params,
-            params_size,
-            params_index,
-            grid.gx,
-            grid.gy,
-            threads_x,
-            1,
+            DenseMatvecBatchKernel.params_index,
+            .{ .gx = (params.max_n + 3) / 4, .gy = 1 },
+            QMATVEC_DOT_THREADS,
         );
-        self.runtime_profile.backend_dispatch_count +%= 1;
-        if (self.active_program_command_kind) |kind| self.runtime_profile.recordProgramCommandDispatch(kind);
+        return true;
     }
 
-    fn encodeKernel(
-        self: *CompiledProgram,
-        kernel: MetalKernel,
-        buffers: []const DeviceBuffer,
-        params: anytype,
-        params_index: u32,
-        grid: DispatchGrid,
-        threads_x: u32,
-    ) void {
-        const Params = @TypeOf(params);
-        self.encode(self.backend.pipeline(kernel), buffers, &params, @sizeOf(Params), params_index, grid, threads_x);
+    fn encodeMatmulElementwise(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, m: anytype, e: anytype, write_primary: bool) bool {
+        if (!program_mod.matmulElementwiseSidecarCompatible(m, e)) return false;
+        const g = m.geom;
+        if (g.M == 1 and self.encodeMatvecElementwise(exec, view, m, e, write_primary)) return true;
+        const primary_is_src0 = e.src0 == m.dst and e.src0_offset == g.dst_offset;
+        const secondary_buf = if (e.op.isBinary()) (if (primary_is_src0) e.src1 else e.src0) else e.src0;
+        if (e.op.isBinary() and secondary_buf == m.dst) return false;
+        const secondary_offset = if (e.op.isBinary()) (if (primary_is_src0) e.src1_offset else e.src0_offset) else e.src0_offset;
+        const buffers = [_]DeviceBuffer{
+            view.device_bufs[m.a],
+            view.device_bufs[m.b],
+            view.device_bufs[m.dst],
+            view.device_bufs[secondary_buf],
+            view.device_bufs[e.dst],
+        };
+        const params = MatmulElementwiseParams{
+            .M = @intCast(g.M),
+            .N = @intCast(g.N),
+            .K = @intCast(g.K),
+            .a_row_stride = @intCast(g.a_row_stride),
+            .a_col_stride = @intCast(g.a_col_stride),
+            .b_row_stride = @intCast(g.b_row_stride),
+            .b_col_stride = @intCast(g.b_col_stride),
+            .a_offset = @intCast(g.a_offset),
+            .b_offset = @intCast(g.b_offset),
+            .dst_offset = @intCast(g.dst_offset),
+            .dst_row_stride = @intCast(g.dst_row_stride),
+            .write_primary = @intFromBool(write_primary),
+            .ew_op = @intFromEnum(e.op),
+            .ew_is_swapped = if (primary_is_src0) 0 else 1,
+            .ew_dst_offset = e.dst_offset,
+            .ew_secondary_offset = secondary_offset,
+        };
+        exec.encodeKernel(.matmul_elementwise_f32, &buffers, params, 5, matmulGrid(g.M, g.N), MATMUL_THREADS);
+        return true;
+    }
+
+    fn canFuseMatmulRowChain(self: *CompiledProgram, m: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype) bool {
+        _ = self;
+        if (!program_mod.matmulElementwiseSidecarCompatible(m, e)) return false;
+        const g = m.geom;
+        if (g.N > MAX_ROW_CHAIN_COLS) return false;
+        if (g.M != rn.rows or g.N != rn.cols) return false;
+        if (rn.src != e.dst or rn.src_offset != e.dst_offset) return false;
+        return canFuseRmsnormRepeatMul(rn, rp, out);
+    }
+
+    fn encodeMatmulRowChain(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, m: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool) bool {
+        if (!self.canFuseMatmulRowChain(m, e, rn, rp, out)) return false;
+        const g = m.geom;
+        const primary_is_src0 = e.src0 == m.dst and e.src0_offset == g.dst_offset;
+        const secondary_buf = if (primary_is_src0) e.src1 else e.src0;
+        if (secondary_buf == m.dst) return false;
+        const secondary_offset = if (primary_is_src0) e.src1_offset else e.src0_offset;
+        const buffers = [_]DeviceBuffer{
+            view.device_bufs[m.a],
+            view.device_bufs[m.b],
+            view.device_bufs[secondary_buf],
+            view.device_bufs[rp.src],
+            view.device_bufs[out.dst],
+            view.device_bufs[e.dst],
+        };
+        const params = MatmulRowChainParams{
+            .M = @intCast(g.M),
+            .N = @intCast(g.N),
+            .K = @intCast(g.K),
+            .a_row_stride = @intCast(g.a_row_stride),
+            .a_col_stride = @intCast(g.a_col_stride),
+            .b_row_stride = @intCast(g.b_row_stride),
+            .b_col_stride = @intCast(g.b_col_stride),
+            .a_offset = @intCast(g.a_offset),
+            .b_offset = @intCast(g.b_offset),
+            .ew_op = @intFromEnum(e.op),
+            .ew_is_swapped = if (primary_is_src0) 0 else 1,
+            .ew_secondary_offset = secondary_offset,
+            .ew_dst_offset = e.dst_offset,
+            .write_ew_output = @intFromBool(write_ew_output),
+            .rms_eps = rn.eps,
+            .scale_src_offset = rp.src_offset,
+            .scaled_dst_offset = out.dst_offset,
+        };
+        exec.encodeKernel(.matmul_row_chain_f32, &buffers, params, 6, .{ .gx = @intCast(g.M) }, QMATVEC_DOT_THREADS);
+        return true;
+    }
+
+    fn canFuseMatmulFusedElementwise(_: *CompiledProgram, m: anytype, fe: anytype) bool {
+        if (!canEncodeFusedElementwise(fe)) return false;
+        const g = m.geom;
+        for (fe.steps) |step| {
+            if (step.op.isBinary() and step.secondary_buf == m.dst and step.secondary_offset != g.dst_offset) return false;
+        }
+        return program_mod.matmulFusedElementwiseSidecarCompatible(m, fe);
+    }
+
+    fn bindMatmulFusedSecondary(
+        _: *CompiledProgram,
+        view: RuntimeView,
+        buffers: *[4 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer,
+        secondary_bufs: *[MAX_FUSED_EW_SECONDARIES]u16,
+        secondary_count: *usize,
+        params: *MatmulFusedEwParams,
+        m: anytype,
+        step: backend_mod.FusedEwStep,
+        step_index: usize,
+    ) bool {
+        params.secondary_offset[step_index] = step.secondary_offset;
+        if (!step.op.isBinary()) return true;
+
+        const g = m.geom;
+        if (step.secondary_buf == m.dst) {
+            if (step.secondary_offset != g.dst_offset) return false;
+            params.secondary_is_primary[step_index] = 1;
+            return true;
+        }
+
+        const slot = for (secondary_bufs[0..secondary_count.*], 0..) |buf_idx, slot_idx| {
+            if (buf_idx == step.secondary_buf) break slot_idx;
+        } else blk: {
+            if (secondary_count.* >= MAX_FUSED_EW_SECONDARIES) return false;
+            const next = secondary_count.*;
+            secondary_bufs[next] = step.secondary_buf;
+            buffers[4 + next] = view.device_bufs[step.secondary_buf];
+            secondary_count.* += 1;
+            break :blk next;
+        };
+        params.secondary_slot[step_index] = @intCast(slot);
+        return true;
+    }
+
+    fn encodeMatmulFusedElementwise(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, m: anytype, fe: anytype, write_primary: bool) bool {
+        if (!self.canFuseMatmulFusedElementwise(m, fe)) return false;
+        const g = m.geom;
+        var params = std.mem.zeroes(MatmulFusedEwParams);
+        params.M = @intCast(g.M);
+        params.N = @intCast(g.N);
+        params.K = @intCast(g.K);
+        params.a_row_stride = @intCast(g.a_row_stride);
+        params.a_col_stride = @intCast(g.a_col_stride);
+        params.b_row_stride = @intCast(g.b_row_stride);
+        params.b_col_stride = @intCast(g.b_col_stride);
+        params.a_offset = @intCast(g.a_offset);
+        params.b_offset = @intCast(g.b_offset);
+        params.dst_offset = @intCast(g.dst_offset);
+        params.dst_row_stride = @intCast(g.dst_row_stride);
+        params.write_primary = @intFromBool(write_primary);
+        params.n_steps = @intCast(fe.steps.len);
+        params.ew_dst_offset = fe.dst_offset;
+
+        var buffers: [4 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
+        buffers[0] = view.device_bufs[m.a];
+        buffers[1] = view.device_bufs[m.b];
+        buffers[2] = view.device_bufs[m.dst];
+        buffers[3] = view.device_bufs[fe.dst];
+        for (buffers[4..]) |*buf| buf.* = view.device_bufs[fe.src];
+
+        var secondary_bufs: [MAX_FUSED_EW_SECONDARIES]u16 = undefined;
+        var secondary_count: usize = 0;
+
+        for (fe.steps, 0..) |step, i| {
+            params.op[i] = @intFromEnum(step.op);
+            params.is_swapped[i] = @intFromBool(step.is_swapped);
+            if (!self.bindMatmulFusedSecondary(view, &buffers, &secondary_bufs, &secondary_count, &params, m, step, i)) return false;
+        }
+
+        exec.encodeKernel(
+            .matmul_fused_elementwise_f32,
+            &buffers,
+            params,
+            12,
+            matmulGrid(g.M, g.N),
+            MATMUL_THREADS,
+        );
+        return true;
     }
 
     fn canEncodeFusedElementwise(fe: anytype) bool {
@@ -4137,11 +7339,11 @@ const CompiledProgram = struct {
         };
     }
 
-    fn encodeFusedElementwise(self: *CompiledProgram, fe: anytype) bool {
-        return self.encodeFusedElementwiseWithRepeatView(fe, null);
+    fn encodeFusedElementwise(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, fe: anytype) bool {
+        return self.encodeFusedElementwiseWithRepeatView(exec, view, fe, null);
     }
 
-    fn encodeFusedElementwiseWithRepeatView(self: *CompiledProgram, fe: anytype, repeat_view: ?RepeatSecondaryView) bool {
+    fn encodeFusedElementwiseWithRepeatView(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, fe: anytype, repeat_view: ?RepeatSecondaryView) bool {
         if (!canEncodeFusedElementwise(fe)) return false;
 
         var params = std.mem.zeroes(FusedEwParams);
@@ -4151,9 +7353,9 @@ const CompiledProgram = struct {
         params.src_offset = fe.src_offset;
 
         var buffers: [2 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
-        buffers[0] = self.device_bufs[fe.src];
-        buffers[1] = self.device_bufs[fe.dst];
-        for (buffers[2..]) |*buf| buf.* = self.device_bufs[fe.src];
+        buffers[0] = view.device_bufs[fe.src];
+        buffers[1] = view.device_bufs[fe.dst];
+        for (buffers[2..]) |*buf| buf.* = view.device_bufs[fe.src];
 
         var secondary_bufs: [MAX_FUSED_EW_SECONDARIES]u16 = undefined;
         var secondary_count: usize = 0;
@@ -4186,7 +7388,7 @@ const CompiledProgram = struct {
                     if (secondary_count >= MAX_FUSED_EW_SECONDARIES) return false;
                     const next = secondary_count;
                     secondary_bufs[next] = secondary_buf;
-                    buffers[2 + next] = self.device_bufs[secondary_buf];
+                    buffers[2 + next] = view.device_bufs[secondary_buf];
                     secondary_count += 1;
                     break :blk next;
                 };
@@ -4194,7 +7396,7 @@ const CompiledProgram = struct {
             }
         }
 
-        self.encodeKernel(
+        exec.encodeKernel(
             .fused_elementwise_f32,
             buffers[0..],
             params,
@@ -4205,45 +7407,45 @@ const CompiledProgram = struct {
         return true;
     }
 
-    fn encodeRepeatFusedElementwise(self: *CompiledProgram, rp: anytype, fe: anytype) bool {
+    fn encodeRepeatFusedElementwise(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, rp: anytype, fe: anytype) bool {
         if (!program_mod.repeatFusedElementwiseCompatible(rp, fe)) return false;
-        return self.encodeFusedElementwiseWithRepeatView(fe, repeatSecondaryView(rp));
+        return self.encodeFusedElementwiseWithRepeatView(exec, view, fe, repeatSecondaryView(rp));
     }
 
-    fn tryEncodeFusedElementwise(self: *CompiledProgram, fe: anytype) bool {
+    fn tryEncodeFusedElementwise(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, fe: anytype) bool {
         if (!self.backend.fine_grained_program_dispatch) return false;
-        return self.encodeFusedElementwise(fe);
+        return self.encodeFusedElementwise(exec, view, fe);
     }
 
-    fn encodeComputeDispatch(self: *CompiledProgram, spec: ComputeDispatchSpec) void {
+    fn encodeComputeDispatch(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, spec: ComputeDispatchSpec) void {
         const buffers = [_]DeviceBuffer{
-            self.device_bufs[spec.src0],
-            self.device_bufs[spec.src1],
-            self.device_bufs[spec.dst],
+            view.device_bufs[spec.src0],
+            view.device_bufs[spec.src1],
+            view.device_bufs[spec.dst],
         };
-        self.encodeKernel(.compute_f32, &buffers, spec.params, 3, spec.grid, WG_SIZE);
+        exec.encodeKernel(.compute_f32, &buffers, spec.params, 3, spec.grid, WG_SIZE);
     }
 
     fn canEncodeElementwiseBatchOp(e: anytype) bool {
         return program_mod.canBatchElementwiseOp(e);
     }
 
-    fn encodeElementwiseBatch(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, indices: []const usize) void {
+    fn encodeElementwiseBatch(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, indices: []const usize) void {
         const first_e = ops[indices[0]].elementwise;
         var buffers: [MAX_ELEMENTWISE_BATCH * 3]DeviceBuffer = undefined;
         for (0..MAX_ELEMENTWISE_BATCH) |slot| {
-            buffers[slot * 3 + 0] = self.device_bufs[first_e.src0];
-            buffers[slot * 3 + 1] = self.device_bufs[first_e.src1];
-            buffers[slot * 3 + 2] = self.device_bufs[first_e.dst];
+            buffers[slot * 3 + 0] = view.device_bufs[first_e.src0];
+            buffers[slot * 3 + 1] = view.device_bufs[first_e.src1];
+            buffers[slot * 3 + 2] = view.device_bufs[first_e.dst];
         }
 
         var params = std.mem.zeroes(ElementwiseBatchParams);
         params.n_ops = @intCast(indices.len);
         for (indices, 0..) |op_index, slot| {
             const e = ops[op_index].elementwise;
-            buffers[slot * 3 + 0] = self.device_bufs[e.src0];
-            buffers[slot * 3 + 1] = self.device_bufs[e.src1];
-            buffers[slot * 3 + 2] = self.device_bufs[e.dst];
+            buffers[slot * 3 + 0] = view.device_bufs[e.src0];
+            buffers[slot * 3 + 1] = view.device_bufs[e.src1];
+            buffers[slot * 3 + 2] = view.device_bufs[e.dst];
             params.op[slot] = @intFromEnum(e.op);
             params.n_elements[slot] = e.n;
             params.dst_offset[slot] = e.dst_offset;
@@ -4252,7 +7454,7 @@ const CompiledProgram = struct {
             params.max_n = @max(params.max_n, e.n);
         }
 
-        self.encodeKernel(
+        exec.encodeKernel(
             .elementwise_batch8_f32,
             &buffers,
             params,
@@ -4262,16 +7464,16 @@ const CompiledProgram = struct {
         );
     }
 
-    fn encodeQMatvec(self: *CompiledProgram, q: anytype) bool {
-        if (@as(usize, q.weight_idx) >= self.qweight_views.len) return false;
-        const w = self.qweight_views[q.weight_idx];
+    fn encodeQMatvec(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype) bool {
+        if (@as(usize, q.weight_idx) >= view.qweight_views.len) return false;
+        const w = view.qweight_views[q.weight_idx];
         const buffers = [_]DeviceBuffer{
             w.data,
             w.scales,
-            self.device_bufs[q.input],
-            self.device_bufs[q.dst],
+            view.device_bufs[q.input],
+            view.device_bufs[q.dst],
         };
-        self.encodeKernel(.qmatvec_f32, &buffers, qmatmulParams(q, w.block_size), 4, .{ .gx = linearGrid(q.N) }, WG_SIZE);
+        exec.encodeKernel(.qmatvec_f32, &buffers, qmatmulParams(q, w.block_size), 4, .{ .gx = linearGrid(q.N) }, WG_SIZE);
         return true;
     }
 
@@ -4317,6 +7519,8 @@ const CompiledProgram = struct {
 
     fn encodeQMatmulBatch(
         self: *CompiledProgram,
+        exec: *MetalExecutionContext,
+        view: RuntimeView,
         ops: []const backend_mod.DeviceOp,
         indices: []const usize,
         sidecar_indices: []const ?usize,
@@ -4329,25 +7533,27 @@ const CompiledProgram = struct {
                 else => {},
             };
         }
-        self.encodeQMatmulBatchWithSidecars(ops, indices, &sidecars);
+        self.encodeQMatmulBatchWithSidecars(exec, view, ops, indices, &sidecars);
     }
 
     fn encodeQMatmulBatchWithSidecars(
-        self: *CompiledProgram,
+        _: *CompiledProgram,
+        exec: *MetalExecutionContext,
+        view: RuntimeView,
         ops: []const backend_mod.DeviceOp,
         indices: []const usize,
         sidecars: *const QMatmulBatchSidecarPlan,
     ) void {
         const first_q = ops[indices[0]].qmatmul;
-        const first_w = self.qweight_views[first_q.weight_idx];
+        const first_w = view.qweight_views[first_q.weight_idx];
         var buffers: [QMatmulBatchKernel.buffer_count]DeviceBuffer = undefined;
         for (0..MAX_QMATMUL_BATCH) |slot| {
             buffers[QMatmulBatchKernel.bufferIndex(slot, .weight_data)] = first_w.data;
             buffers[QMatmulBatchKernel.bufferIndex(slot, .weight_scales)] = first_w.scales;
-            buffers[QMatmulBatchKernel.bufferIndex(slot, .input)] = self.device_bufs[first_q.input];
-            buffers[QMatmulBatchKernel.bufferIndex(slot, .output)] = self.device_bufs[first_q.dst];
-            buffers[QMatmulBatchKernel.bufferIndex(slot, .sidecar_dst)] = self.device_bufs[first_q.dst];
-            buffers[QMatmulBatchKernel.bufferIndex(slot, .secondary)] = self.device_bufs[first_q.input];
+            buffers[QMatmulBatchKernel.bufferIndex(slot, .input)] = view.device_bufs[first_q.input];
+            buffers[QMatmulBatchKernel.bufferIndex(slot, .output)] = view.device_bufs[first_q.dst];
+            buffers[QMatmulBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[first_q.dst];
+            buffers[QMatmulBatchKernel.bufferIndex(slot, .secondary)] = view.device_bufs[first_q.input];
         }
 
         var params = std.mem.zeroes(QMatmulBatch4Params);
@@ -4356,14 +7562,14 @@ const CompiledProgram = struct {
         var max_tiles_y: u32 = 1;
         for (indices, 0..) |op_index, slot| {
             const q = ops[op_index].qmatmul;
-            const w = self.qweight_views[q.weight_idx];
+            const w = view.qweight_views[q.weight_idx];
             const qparams = qmatmulParams(q, w.block_size);
             buffers[QMatmulBatchKernel.bufferIndex(slot, .weight_data)] = w.data;
             buffers[QMatmulBatchKernel.bufferIndex(slot, .weight_scales)] = w.scales;
-            buffers[QMatmulBatchKernel.bufferIndex(slot, .input)] = self.device_bufs[q.input];
-            buffers[QMatmulBatchKernel.bufferIndex(slot, .output)] = self.device_bufs[q.dst];
-            buffers[QMatmulBatchKernel.bufferIndex(slot, .sidecar_dst)] = self.device_bufs[q.dst];
-            buffers[QMatmulBatchKernel.bufferIndex(slot, .secondary)] = self.device_bufs[q.input];
+            buffers[QMatmulBatchKernel.bufferIndex(slot, .input)] = view.device_bufs[q.input];
+            buffers[QMatmulBatchKernel.bufferIndex(slot, .output)] = view.device_bufs[q.dst];
+            buffers[QMatmulBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[q.dst];
+            buffers[QMatmulBatchKernel.bufferIndex(slot, .secondary)] = view.device_bufs[q.input];
             params.M[slot] = qparams.M;
             params.N[slot] = qparams.N;
             params.K[slot] = qparams.K;
@@ -4390,7 +7596,7 @@ const CompiledProgram = struct {
                         params.slice_dst_offset[param_slot] = sa.dst_offset;
                         params.slice_dst_row_stride[param_slot] = sa.dst_row_stride;
                         params.slice_dst_col_stride[param_slot] = sa.dst_col_stride;
-                        buffers[QMatmulBatchKernel.bufferIndex(slot, .sidecar_dst)] = self.device_bufs[sa.dst];
+                        buffers[QMatmulBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[sa.dst];
                     },
                     .elementwise => {
                         const e = ops[sidecar_index].elementwise;
@@ -4402,8 +7608,8 @@ const CompiledProgram = struct {
                         params.ew_is_swapped[param_slot] = if (q_is_src0) 0 else 1;
                         params.ew_dst_offset[param_slot] = e.dst_offset;
                         params.ew_secondary_offset[param_slot] = secondary_offset;
-                        buffers[QMatmulBatchKernel.bufferIndex(slot, .sidecar_dst)] = self.device_bufs[e.dst];
-                        buffers[QMatmulBatchKernel.bufferIndex(slot, .secondary)] = self.device_bufs[secondary_buf];
+                        buffers[QMatmulBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[e.dst];
+                        buffers[QMatmulBatchKernel.bufferIndex(slot, .secondary)] = view.device_bufs[secondary_buf];
                     },
                 }
             }
@@ -4412,7 +7618,7 @@ const CompiledProgram = struct {
         }
         params.max_tiles_y = max_tiles_y;
 
-        self.encodeKernel(
+        exec.encodeKernel(
             .qmatmul_batch4_f32,
             &buffers,
             params,
@@ -4422,93 +7628,55 @@ const CompiledProgram = struct {
         );
     }
 
-    const QMatmulRopeStorePair = struct {
-        anchor_slot: usize,
-        q_index: usize,
-        rope_index: usize,
-        store_index: usize,
-    };
-
-    fn canEncodeQMatmulRopeStorePair(self: *CompiledProgram, q: anytype, rr: anytype, sa: anytype) bool {
-        return self.canEncodeQMatmulBatchOp(q) and
-            program_mod.qmatmulRopeStoreTilePairCompatible(q, rr, sa, TILE);
-    }
-
-    fn encodeQMatmulRopeStoreBatch(
-        self: *CompiledProgram,
+    fn planQMatmulProjectionCacheCommand(
+        _: *CompiledProgram,
         ops: []const backend_mod.DeviceOp,
-        pairs: []const QMatmulRopeStorePair,
-    ) void {
-        if (pairs.len == 0) return;
+        command: program_mod.ProgramCommand,
+    ) ?QMatmulBatchSidecarPlan {
+        var plan = QMatmulBatchSidecarPlan{};
+        var direct_sidecar_dst = [_]?u16{null} ** MAX_QMATMUL_BATCH;
 
-        const first_q = ops[pairs[0].q_index].qmatmul;
-        const first_rr = ops[pairs[0].rope_index].rope;
-        const first_sa = ops[pairs[0].store_index].slice_assign;
-        const first_w = self.qweight_views[first_q.weight_idx];
-        var buffers: [QMatmulRopeStoreKernel.buffer_count]DeviceBuffer = undefined;
-        for (0..MAX_QMATMUL_ROPE_STORE_BATCH) |slot| {
-            buffers[QMatmulRopeStoreKernel.bufferIndex(slot, .weight_data)] = first_w.data;
-            buffers[QMatmulRopeStoreKernel.bufferIndex(slot, .weight_scales)] = first_w.scales;
-            buffers[QMatmulRopeStoreKernel.bufferIndex(slot, .input)] = self.device_bufs[first_q.input];
-            buffers[QMatmulRopeStoreKernel.bufferIndex(slot, .output)] = self.device_bufs[first_q.dst];
-            buffers[QMatmulRopeStoreKernel.bufferIndex(slot, .cos_sin)] = self.device_bufs[first_rr.cos_sin];
-            buffers[QMatmulRopeStoreKernel.bufferIndex(slot, .slice_dst)] = self.device_bufs[first_sa.dst];
+        var flat_i: usize = 0;
+        while (flat_i < command.sidecar_count) : (flat_i += 1) {
+            const idx = command.sidecar_indices[flat_i] orelse continue;
+            if (idx >= ops.len) return null;
+            switch (ops[idx]) {
+                .slice_assign => |sa| {
+                    const slot = command.sidecarAnchorSlot(flat_i) orelse return null;
+                    const anchor_idx = command.indices[slot];
+                    if (anchor_idx >= ops.len or ops[anchor_idx] != .qmatmul) return null;
+                    if (!program_mod.qmatmulSliceSidecarCompatible(ops[anchor_idx].qmatmul, sa)) return null;
+                    if (direct_sidecar_dst[slot]) |dst| {
+                        if (dst != sa.dst) return null;
+                    } else {
+                        direct_sidecar_dst[slot] = sa.dst;
+                    }
+                    if (!plan.appendSlice(slot, idx)) return null;
+                },
+                .elementwise => |e| {
+                    const slot = command.sidecarAnchorSlot(flat_i) orelse return null;
+                    const anchor_idx = command.indices[slot];
+                    if (anchor_idx >= ops.len or ops[anchor_idx] != .qmatmul) return null;
+                    if (!program_mod.qmatmulElementwiseSidecarCompatible(ops[anchor_idx].qmatmul, e)) return null;
+                    if (direct_sidecar_dst[slot]) |dst| {
+                        if (dst != e.dst) return null;
+                    } else {
+                        direct_sidecar_dst[slot] = e.dst;
+                    }
+                    if (!plan.appendElementwise(slot, idx)) return null;
+                },
+                else => return null,
+            }
         }
 
-        var params = std.mem.zeroes(QMatmulRopeStoreBatch4Params);
-        params.n_ops = @intCast(pairs.len);
-        var max_tiles_x: u32 = 1;
-        var max_tiles_y: u32 = 1;
-        for (pairs, 0..) |pair, slot| {
-            const q = ops[pair.q_index].qmatmul;
-            const rr = ops[pair.rope_index].rope;
-            const sa = ops[pair.store_index].slice_assign;
-            const w = self.qweight_views[q.weight_idx];
-            const qparams = qmatmulParams(q, w.block_size);
-
-            buffers[QMatmulRopeStoreKernel.bufferIndex(slot, .weight_data)] = w.data;
-            buffers[QMatmulRopeStoreKernel.bufferIndex(slot, .weight_scales)] = w.scales;
-            buffers[QMatmulRopeStoreKernel.bufferIndex(slot, .input)] = self.device_bufs[q.input];
-            buffers[QMatmulRopeStoreKernel.bufferIndex(slot, .output)] = self.device_bufs[q.dst];
-            buffers[QMatmulRopeStoreKernel.bufferIndex(slot, .cos_sin)] = self.device_bufs[rr.cos_sin];
-            buffers[QMatmulRopeStoreKernel.bufferIndex(slot, .slice_dst)] = self.device_bufs[sa.dst];
-
-            params.M[slot] = qparams.M;
-            params.N[slot] = qparams.N;
-            params.K[slot] = qparams.K;
-            params.block_size[slot] = qparams.block_size;
-            params.input_offset[slot] = qparams.input_offset;
-            params.input_row_stride[slot] = qparams.input_row_stride;
-            params.dst_offset[slot] = qparams.dst_offset;
-            params.dst_row_stride[slot] = qparams.dst_row_stride;
-            params.write_primary[slot] = 0;
-            params.rope_half_d[slot] = rr.half_d;
-            params.rope_src_col_start[slot] = program_mod.qmatmulRopeSrcColStart(q, rr).?;
-            params.rope_cs_off[slot] = rr.cs_off;
-            params.rope_cs_cs[slot] = rr.cs_cs;
-            params.slice_dst_offset[slot] = sa.dst_offset;
-            params.slice_dst_row_stride[slot] = sa.dst_row_stride;
-            params.slice_dst_col_stride[slot] = sa.dst_col_stride;
-            max_tiles_x = @max(max_tiles_x, (rr.half_d + TILE - 1) / TILE);
-            max_tiles_y = @max(max_tiles_y, (qparams.M + TILE - 1) / TILE);
-        }
-        params.max_tiles_y = max_tiles_y;
-
-        self.encodeKernel(
-            .qmatmul_rope_store_batch4_f32,
-            &buffers,
-            params,
-            QMatmulRopeStoreKernel.params_index,
-            .{ .gx = max_tiles_x, .gy = max_tiles_y * @as(u32, @intCast(pairs.len)) },
-            MATMUL_THREADS,
-        );
+        return plan;
     }
 
     const QMatvecBatchSidecarKind = enum(u32) {
         none = 0,
         slice = 1,
-        rope = 2,
-        elementwise = 3,
+        elementwise = 2,
+        rope_store = 3,
     };
 
     const QMatvecSliceSidecar = struct {
@@ -4543,10 +7711,6 @@ const CompiledProgram = struct {
         };
     }
 
-    fn qmatvecSliceSidecarCompatible(q: anytype, sa: QMatvecSliceSidecar) bool {
-        return program_mod.qmatvecSliceSidecarCompatible(q, sa);
-    }
-
     fn qmatvecSliceSidecarSpan(q: anytype, sa: QMatvecSliceSidecar) ?struct { start: u32, len: u32 } {
         const start = program_mod.qmatmulSliceSrcColStart(q, sa) orelse return null;
         const len64 = @as(u64, sa.rows) * @as(u64, sa.cols);
@@ -4554,9 +7718,15 @@ const CompiledProgram = struct {
         return .{ .start = start, .len = @intCast(len64) };
     }
 
-    fn mergeOrderedQMatvecSliceSidecars(q: anytype, left: QMatvecSliceSidecar, right: QMatvecSliceSidecar) ?QMatvecSliceSidecar {
-        const l = qmatvecSliceSidecarSpan(q, left) orelse return null;
-        const r = qmatvecSliceSidecarSpan(q, right) orelse return null;
+    fn mergeOrderedMatvecSliceSidecars(
+        anchor: anytype,
+        left: QMatvecSliceSidecar,
+        right: QMatvecSliceSidecar,
+        comptime spanFn: anytype,
+        comptime compatibleFn: anytype,
+    ) ?QMatvecSliceSidecar {
+        const l = spanFn(anchor, left) orelse return null;
+        const r = spanFn(anchor, right) orelse return null;
         if (@as(u64, l.start) + @as(u64, l.len) != @as(u64, r.start)) return null;
 
         const stride = if (left.cols > 1) left.dst_col_stride else if (right.cols > 1) right.dst_col_stride else blk: {
@@ -4571,57 +7741,152 @@ const CompiledProgram = struct {
         merged.cols += right.cols;
         merged.src_col_stride = merged.rows;
         merged.dst_col_stride = stride;
-        return if (qmatvecSliceSidecarCompatible(q, merged)) merged else null;
+        return if (compatibleFn(anchor, merged)) merged else null;
+    }
+
+    fn mergeMatvecSliceSidecars(
+        anchor: anytype,
+        a: QMatvecSliceSidecar,
+        b: QMatvecSliceSidecar,
+        comptime spanFn: anytype,
+        comptime compatibleFn: anytype,
+    ) ?QMatvecSliceSidecar {
+        if (!compatibleFn(anchor, a) or !compatibleFn(anchor, b)) return null;
+        if (a.src != b.src or a.dst != b.dst or a.rows != b.rows or a.dst_row_stride != b.dst_row_stride) return null;
+        if (a.src_row_stride != b.src_row_stride or a.patch_stride != b.patch_stride) return null;
+        return mergeOrderedMatvecSliceSidecars(anchor, a, b, spanFn, compatibleFn) orelse mergeOrderedMatvecSliceSidecars(anchor, b, a, spanFn, compatibleFn);
     }
 
     fn mergeQMatvecSliceSidecars(q: anytype, a: QMatvecSliceSidecar, b: QMatvecSliceSidecar) ?QMatvecSliceSidecar {
-        if (!qmatvecSliceSidecarCompatible(q, a) or !qmatvecSliceSidecarCompatible(q, b)) return null;
-        if (a.src != b.src or a.dst != b.dst or a.rows != b.rows or a.dst_row_stride != b.dst_row_stride) return null;
-        if (a.src_row_stride != b.src_row_stride or a.patch_stride != b.patch_stride) return null;
-        return mergeOrderedQMatvecSliceSidecars(q, a, b) orelse mergeOrderedQMatvecSliceSidecars(q, b, a);
+        return mergeMatvecSliceSidecars(q, a, b, qmatvecSliceSidecarSpan, program_mod.qmatvecSliceSidecarCompatible);
     }
 
-    const QMatvecBatchSidecarPlan = struct {
-        kinds: [MAX_QMATVEC_BATCH]QMatvecBatchSidecarKind = [_]QMatvecBatchSidecarKind{.none} ** MAX_QMATVEC_BATCH,
-        rope_indices: [MAX_QMATVEC_BATCH]?usize = [_]?usize{null} ** MAX_QMATVEC_BATCH,
-        store_indices: [MAX_QMATVEC_BATCH]?usize = [_]?usize{null} ** MAX_QMATVEC_BATCH,
-        slice_overrides: [MAX_QMATVEC_BATCH]?QMatvecSliceSidecar = [_]?QMatvecSliceSidecar{null} ** MAX_QMATVEC_BATCH,
+    fn MatvecBatchSidecarPlan(comptime max_batch: usize) type {
+        return struct {
+            const Self = @This();
 
-        fn appendSlice(self: *QMatvecBatchSidecarPlan, slot: usize, idx: usize) bool {
-            if (slot >= MAX_QMATVEC_BATCH or self.kinds[slot] != .none) return false;
-            self.kinds[slot] = .slice;
-            self.store_indices[slot] = idx;
-            return true;
-        }
+            kinds: [max_batch]QMatvecBatchSidecarKind = [_]QMatvecBatchSidecarKind{.none} ** max_batch,
+            store_indices: [max_batch]?usize = [_]?usize{null} ** max_batch,
+            rope_counts: [max_batch]u32 = [_]u32{0} ** max_batch,
+            rope_indices: [max_batch][MAX_QMATVEC_ROPE_STORES]?usize = [_][MAX_QMATVEC_ROPE_STORES]?usize{[_]?usize{null} ** MAX_QMATVEC_ROPE_STORES} ** max_batch,
+            rope_store_indices: [max_batch][MAX_QMATVEC_ROPE_STORES]?usize = [_][MAX_QMATVEC_ROPE_STORES]?usize{[_]?usize{null} ** MAX_QMATVEC_ROPE_STORES} ** max_batch,
+            slice_overrides: [max_batch]?QMatvecSliceSidecar = [_]?QMatvecSliceSidecar{null} ** max_batch,
 
-        fn mergeSlice(self: *QMatvecBatchSidecarPlan, ops: []const backend_mod.DeviceOp, slot: usize, idx: usize, q: anytype) bool {
-            if (slot >= MAX_QMATVEC_BATCH or self.kinds[slot] != .slice) return false;
-            const next = qmatvecSliceSidecarFrom(ops[idx].slice_assign);
-            const current = self.slice_overrides[slot] orelse qmatvecSliceSidecarFrom(ops[self.store_indices[slot].?].slice_assign);
-            const merged = mergeQMatvecSliceSidecars(q, current, next) orelse return false;
-            self.slice_overrides[slot] = merged;
-            return true;
-        }
+            fn appendSlice(self: *Self, slot: usize, idx: usize) bool {
+                if (slot >= max_batch or self.kinds[slot] != .none) return false;
+                self.kinds[slot] = .slice;
+                self.store_indices[slot] = idx;
+                return true;
+            }
 
-        fn appendElementwise(self: *QMatvecBatchSidecarPlan, slot: usize, idx: usize) bool {
-            if (slot >= MAX_QMATVEC_BATCH or self.kinds[slot] != .none) return false;
-            self.kinds[slot] = .elementwise;
-            self.store_indices[slot] = idx;
-            return true;
-        }
+            fn mergeSliceWith(self: *Self, comptime mergeFn: anytype, ops: []const backend_mod.DeviceOp, slot: usize, idx: usize, anchor: anytype) bool {
+                if (slot >= max_batch or self.kinds[slot] != .slice) return false;
+                const next = qmatvecSliceSidecarFrom(ops[idx].slice_assign);
+                const current = self.slice_overrides[slot] orelse qmatvecSliceSidecarFrom(ops[self.store_indices[slot].?].slice_assign);
+                self.slice_overrides[slot] = mergeFn(anchor, current, next) orelse return false;
+                return true;
+            }
 
-        fn appendRope(self: *QMatvecBatchSidecarPlan, slot: usize, rope_idx: usize, store_idx: ?usize) bool {
-            if (slot >= MAX_QMATVEC_BATCH or self.kinds[slot] != .none) return false;
-            self.kinds[slot] = .rope;
-            self.rope_indices[slot] = rope_idx;
-            self.store_indices[slot] = store_idx;
-            return true;
-        }
+            fn appendElementwise(self: *Self, slot: usize, idx: usize) bool {
+                if (slot >= max_batch or self.kinds[slot] != .none) return false;
+                self.kinds[slot] = .elementwise;
+                self.store_indices[slot] = idx;
+                return true;
+            }
 
-        fn appendRopeStore(self: *QMatvecBatchSidecarPlan, slot: usize, rope_idx: usize, store_idx: usize) bool {
-            return self.appendRope(slot, rope_idx, store_idx);
+            fn appendRopeStore(self: *Self, slot: usize, rope_idx: usize, store_idx: usize) bool {
+                if (slot >= max_batch) return false;
+                if (self.kinds[slot] != .none and self.kinds[slot] != .rope_store) return false;
+                const count: usize = @intCast(self.rope_counts[slot]);
+                if (count >= MAX_QMATVEC_ROPE_STORES) return false;
+                self.kinds[slot] = .rope_store;
+                self.rope_indices[slot][count] = rope_idx;
+                self.rope_store_indices[slot][count] = store_idx;
+                self.rope_counts[slot] += 1;
+                return true;
+            }
+        };
+    }
+
+    fn projectionCacheRopeStorePair(
+        ops: []const backend_mod.DeviceOp,
+        command: *const program_mod.ProgramCommand,
+        flat_i: usize,
+    ) ?struct { slot: usize, anchor_idx: usize, store_idx: usize } {
+        if (flat_i + 1 >= command.sidecar_count) return null;
+        const store_idx = command.sidecar_indices[flat_i + 1] orelse return null;
+        if (store_idx >= ops.len or ops[store_idx] != .slice_assign) return null;
+        const slot = command.sidecarAnchorSlot(flat_i) orelse return null;
+        if (command.sidecarAnchorSlot(flat_i + 1) != slot) return null;
+        const anchor_idx = command.indices[slot];
+        if (anchor_idx >= ops.len) return null;
+        return .{ .slot = slot, .anchor_idx = anchor_idx, .store_idx = store_idx };
+    }
+
+    fn ProjectionCacheAnchor(comptime tag: DeviceOpTag) type {
+        return struct {
+            slot: usize,
+            op: DeviceOpPayload(tag),
+        };
+    }
+
+    fn projectionCacheAnchor(
+        comptime tag: DeviceOpTag,
+        ops: []const backend_mod.DeviceOp,
+        command: *const program_mod.ProgramCommand,
+        flat_i: usize,
+    ) ?ProjectionCacheAnchor(tag) {
+        const slot = command.sidecarAnchorSlot(flat_i) orelse return null;
+        const idx = command.indices[slot];
+        const op = deviceOpAt(tag, ops, idx) orelse return null;
+        return .{ .slot = slot, .op = op };
+    }
+
+    fn planRopeStoreSharesSink(plan: anytype, ops: []const backend_mod.DeviceOp, slot: usize, rr: anytype, store: anytype) bool {
+        if (plan.rope_counts[slot] == 0) return true;
+        const first_rope_idx = plan.rope_indices[slot][0] orelse return false;
+        const first_store_idx = plan.rope_store_indices[slot][0] orelse return false;
+        return ops[first_rope_idx].rope.cos_sin == rr.cos_sin and ops[first_store_idx].slice_assign.dst == store.dst;
+    }
+
+    fn appendProjectionCacheSlicePlan(
+        plan: anytype,
+        ops: []const backend_mod.DeviceOp,
+        command: *const program_mod.ProgramCommand,
+        flat_i: usize,
+        idx: usize,
+        sa: anytype,
+        comptime anchor_tag: DeviceOpTag,
+        comptime sliceCompatibleFn: anytype,
+        comptime mergeFn: anytype,
+    ) bool {
+        const anchor = projectionCacheAnchor(anchor_tag, ops, command, flat_i) orelse return false;
+        if (!sliceCompatibleFn(anchor.op, sa)) return false;
+        if (!plan.appendSlice(anchor.slot, idx)) {
+            if (!plan.mergeSliceWith(mergeFn, ops, anchor.slot, idx, anchor.op)) return false;
         }
-    };
+        return true;
+    }
+
+    fn appendProjectionCacheRopeStorePlan(
+        plan: anytype,
+        ops: []const backend_mod.DeviceOp,
+        command: *const program_mod.ProgramCommand,
+        flat_i: usize,
+        idx: usize,
+        rr: anytype,
+        comptime anchor_tag: DeviceOpTag,
+        comptime compatibleFn: anytype,
+    ) bool {
+        const pair = projectionCacheRopeStorePair(ops, command, flat_i) orelse return false;
+        const anchor = deviceOpAt(anchor_tag, ops, pair.anchor_idx) orelse return false;
+        const store = ops[pair.store_idx].slice_assign;
+        if (!compatibleFn(anchor, rr, store)) return false;
+        if (!planRopeStoreSharesSink(plan, ops, pair.slot, rr, store)) return false;
+        return plan.appendRopeStore(pair.slot, idx, pair.store_idx);
+    }
+
+    const QMatvecBatchSidecarPlan = MatvecBatchSidecarPlan(MAX_QMATVEC_BATCH);
 
     fn canEncodeQMatvecBatchOp(self: *CompiledProgram, q: anytype) bool {
         return q.M == 1 and @as(usize, q.weight_idx) < self.qweight_views.len;
@@ -4630,12 +7895,53 @@ const CompiledProgram = struct {
     fn canEncodeQMatvecElementwiseSidecar(_: *CompiledProgram, q: anytype, e: anytype) bool {
         if (!program_mod.qmatvecElementwiseSidecarCompatible(q, e)) return false;
         const primary_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
-        const secondary_buf = if (primary_is_src0) e.src1 else e.src0;
-        return secondary_buf != q.dst;
+        const secondary_buf = if (e.op.isBinary()) (if (primary_is_src0) e.src1 else e.src0) else e.src0;
+        return !e.op.isBinary() or secondary_buf != q.dst;
+    }
+
+    fn planQMatvecProjectionCacheCommand(
+        self: *CompiledProgram,
+        ops: []const backend_mod.DeviceOp,
+        command: program_mod.ProgramCommand,
+    ) ?QMatvecBatchSidecarPlan {
+        var plan = QMatvecBatchSidecarPlan{};
+        var flat_i: usize = 0;
+        while (flat_i < command.sidecar_count) : (flat_i += 1) {
+            const idx = command.sidecar_indices[flat_i] orelse continue;
+            if (idx >= ops.len) return null;
+            switch (ops[idx]) {
+                .slice_assign => |sa| {
+                    if (!appendProjectionCacheSlicePlan(
+                        &plan,
+                        ops,
+                        &command,
+                        flat_i,
+                        idx,
+                        sa,
+                        .qmatmul,
+                        program_mod.qmatvecSliceSidecarCompatible,
+                        mergeQMatvecSliceSidecars,
+                    )) return null;
+                },
+                .elementwise => |e| {
+                    const anchor = projectionCacheAnchor(.qmatmul, ops, &command, flat_i) orelse return null;
+                    if (!self.canEncodeQMatvecElementwiseSidecar(anchor.op, e)) return null;
+                    if (!plan.appendElementwise(anchor.slot, idx)) return null;
+                },
+                .rope => |rr| {
+                    if (!appendProjectionCacheRopeStorePlan(&plan, ops, &command, flat_i, idx, rr, .qmatmul, program_mod.qmatvecRopeStoreSidecarCompatible)) return null;
+                    flat_i += 1;
+                },
+                else => return null,
+            }
+        }
+        return plan;
     }
 
     fn encodeQMatvecBatch(
         self: *CompiledProgram,
+        exec: *MetalExecutionContext,
+        view: RuntimeView,
         ops: []const backend_mod.DeviceOp,
         indices: []const usize,
         sidecar_indices: []const ?usize,
@@ -4649,39 +7955,41 @@ const CompiledProgram = struct {
                 else => {},
             }
         }
-        self.encodeQMatvecBatchWithSidecars(ops, indices, &sidecars);
+        self.encodeQMatvecBatchWithSidecars(exec, view, ops, indices, &sidecars);
     }
 
     fn encodeQMatvecBatchWithSidecars(
-        self: *CompiledProgram,
+        _: *CompiledProgram,
+        exec: *MetalExecutionContext,
+        view: RuntimeView,
         ops: []const backend_mod.DeviceOp,
         indices: []const usize,
         sidecars: *const QMatvecBatchSidecarPlan,
     ) void {
         const first_q = ops[indices[0]].qmatmul;
-        const first_w = self.qweight_views[first_q.weight_idx];
+        const first_w = view.qweight_views[first_q.weight_idx];
         var buffers: [QMatvecBatchKernel.buffer_count]DeviceBuffer = undefined;
         for (0..MAX_QMATVEC_BATCH) |slot| {
             buffers[QMatvecBatchKernel.bufferIndex(slot, .weight_data)] = first_w.data;
             buffers[QMatvecBatchKernel.bufferIndex(slot, .weight_scales)] = first_w.scales;
-            buffers[QMatvecBatchKernel.bufferIndex(slot, .input)] = self.device_bufs[first_q.input];
-            buffers[QMatvecBatchKernel.bufferIndex(slot, .output)] = self.device_bufs[first_q.dst];
-            buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_src)] = self.device_bufs[first_q.input];
-            buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = self.device_bufs[first_q.dst];
+            buffers[QMatvecBatchKernel.bufferIndex(slot, .input)] = view.device_bufs[first_q.input];
+            buffers[QMatvecBatchKernel.bufferIndex(slot, .output)] = view.device_bufs[first_q.dst];
+            buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_src)] = view.device_bufs[first_q.input];
+            buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[first_q.dst];
         }
 
         var params = std.mem.zeroes(QMatvecBatch4Params);
         params.n_ops = @intCast(indices.len);
         for (indices, 0..) |op_index, slot| {
             const q = ops[op_index].qmatmul;
-            const w = self.qweight_views[q.weight_idx];
+            const w = view.qweight_views[q.weight_idx];
             const qparams = qmatmulParams(q, w.block_size);
             buffers[QMatvecBatchKernel.bufferIndex(slot, .weight_data)] = w.data;
             buffers[QMatvecBatchKernel.bufferIndex(slot, .weight_scales)] = w.scales;
-            buffers[QMatvecBatchKernel.bufferIndex(slot, .input)] = self.device_bufs[q.input];
-            buffers[QMatvecBatchKernel.bufferIndex(slot, .output)] = self.device_bufs[q.dst];
-            buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_src)] = self.device_bufs[q.input];
-            buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = self.device_bufs[q.dst];
+            buffers[QMatvecBatchKernel.bufferIndex(slot, .input)] = view.device_bufs[q.input];
+            buffers[QMatvecBatchKernel.bufferIndex(slot, .output)] = view.device_bufs[q.dst];
+            buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_src)] = view.device_bufs[q.input];
+            buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[q.dst];
             params.N[slot] = qparams.N;
             params.K[slot] = qparams.K;
             params.block_size[slot] = qparams.block_size;
@@ -4702,16 +8010,16 @@ const CompiledProgram = struct {
                     params.slice_dst_offset[slot] = sa.dst_offset;
                     params.slice_dst_row_stride[slot] = sa.dst_row_stride;
                     params.slice_dst_col_stride[slot] = sa.dst_col_stride;
-                    buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = self.device_bufs[sa.dst];
+                    buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[sa.dst];
                 },
                 .elementwise => {
                     const sidecar_index = sidecars.store_indices[slot].?;
                     const e = ops[sidecar_index].elementwise;
                     if (!program_mod.qmatvecElementwiseSidecarCompatible(q, e)) return;
                     const primary_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
-                    const secondary_buf = if (primary_is_src0) e.src1 else e.src0;
-                    const secondary_offset = if (primary_is_src0) e.src1_offset else e.src0_offset;
-                    if (secondary_buf == q.dst) return;
+                    const secondary_buf = if (e.op.isBinary()) (if (primary_is_src0) e.src1 else e.src0) else e.src0;
+                    const secondary_offset = if (e.op.isBinary()) (if (primary_is_src0) e.src1_offset else e.src0_offset) else e.src0_offset;
+                    if (e.op.isBinary() and secondary_buf == q.dst) return;
                     const carried = [_]?usize{sidecar_index};
                     params.write_primary[slot] = @intFromBool(program_mod.projectionPrimaryOutputHasExternalUsersExcept(ops, op_index, &carried));
                     params.sidecar_kind[slot] = @intFromEnum(QMatvecBatchSidecarKind.elementwise);
@@ -4719,50 +8027,439 @@ const CompiledProgram = struct {
                     params.ew_is_swapped[slot] = @intFromBool(!primary_is_src0);
                     params.ew_dst_offset[slot] = e.dst_offset;
                     params.ew_secondary_offset[slot] = secondary_offset;
-                    buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_src)] = self.device_bufs[secondary_buf];
-                    buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = self.device_bufs[e.dst];
+                    buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_src)] = view.device_bufs[secondary_buf];
+                    buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[e.dst];
                 },
-                .rope => {
-                    const rope_index = sidecars.rope_indices[slot].?;
-                    const rr = ops[rope_index].rope;
-                    const maybe_store_index = sidecars.store_indices[slot];
-                    const carried = [_]?usize{ rope_index, maybe_store_index };
-                    params.write_primary[slot] = @intFromBool(program_mod.projectionPrimaryOutputHasExternalUsersExcept(ops, op_index, &carried));
-                    params.sidecar_kind[slot] = @intFromEnum(QMatvecBatchSidecarKind.rope);
-                    params.slice_rows[slot] = rr.half_d * 2;
-                    params.slice_src_col_start[slot] = program_mod.qmatmulRopeSrcColStart(q, rr).?;
-                    params.slice_dst_offset[slot] = rr.dst_off;
-                    params.slice_dst_row_stride[slot] = 1;
-                    params.rope_half_d[slot] = rr.half_d;
-                    params.rope_cs_off[slot] = rr.cs_off;
-                    buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_src)] = self.device_bufs[rr.cos_sin];
-                    buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = self.device_bufs[rr.dst];
-                    if (maybe_store_index) |store_index| {
+                .rope_store => {
+                    var carried = [_]?usize{null} ** (MAX_QMATVEC_ROPE_STORES * 2);
+                    var r: usize = 0;
+                    while (r < @as(usize, @intCast(sidecars.rope_counts[slot]))) : (r += 1) {
+                        const rope_index = sidecars.rope_indices[slot][r].?;
+                        const store_index = sidecars.rope_store_indices[slot][r].?;
+                        const rr = ops[rope_index].rope;
                         const sa = ops[store_index].slice_assign;
-                        params.slice_dst_offset[slot] = sa.dst_offset;
-                        params.slice_dst_row_stride[slot] = sa.dst_row_stride;
-                        buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = self.device_bufs[sa.dst];
+                        if (!program_mod.qmatvecRopeStoreSidecarCompatible(q, rr, sa)) return;
+                        carried[r * 2] = rope_index;
+                        carried[r * 2 + 1] = store_index;
+                        params.rope_src_col_start[slot][r] = program_mod.qmatmulRopeSrcColStart(q, rr).?;
+                        params.rope_dst_offset[slot][r] = sa.dst_offset;
+                        params.rope_dst_row_stride[slot][r] = sa.dst_row_stride;
+                        params.rope_dst_col_stride[slot][r] = sa.dst_col_stride;
+                        params.rope_half_d[slot][r] = rr.half_d;
+                        params.rope_cs_off[slot][r] = rr.cs_off;
+                        buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_src)] = view.device_bufs[rr.cos_sin];
+                        buffers[QMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[sa.dst];
                     }
+                    params.write_primary[slot] = @intFromBool(program_mod.projectionPrimaryOutputHasExternalUsersExcept(ops, op_index, &carried));
+                    params.sidecar_kind[slot] = @intFromEnum(QMatvecBatchSidecarKind.rope_store);
+                    params.rope_count[slot] = sidecars.rope_counts[slot];
                 },
             }
             params.max_n = @max(params.max_n, qparams.N);
         }
 
-        self.encodeKernel(
-            .qmatvec_batch4_f32,
+        const grid_x = (params.max_n + 3) / 4;
+        exec.encodeKernel(
+            .qmatvec_batch4_cols4_f32,
             &buffers,
             params,
             QMatvecBatchKernel.params_index,
-            .{ .gx = params.max_n, .gy = @intCast(indices.len) },
+            .{ .gx = grid_x, .gy = @intCast(indices.len) },
             QMATVEC_DOT_THREADS,
         );
     }
 
-    fn encodeRope(self: *CompiledProgram, rr: anytype) void {
+    const DenseMatvecBatchSidecarPlan = MatvecBatchSidecarPlan(MAX_DENSE_MATVEC_BATCH);
+
+    fn denseMatvecSliceSidecarSpan(m: anytype, sa: QMatvecSliceSidecar) ?struct { start: u32, len: u32 } {
+        const start = program_mod.denseMatvecSliceSrcColStart(m, sa) orelse return null;
+        const len64 = @as(u64, sa.rows) * @as(u64, sa.cols);
+        if (len64 > std.math.maxInt(u32)) return null;
+        return .{ .start = start, .len = @intCast(len64) };
+    }
+
+    fn mergeDenseMatvecSliceSidecars(m: anytype, a: QMatvecSliceSidecar, b: QMatvecSliceSidecar) ?QMatvecSliceSidecar {
+        return mergeMatvecSliceSidecars(m, a, b, denseMatvecSliceSidecarSpan, program_mod.denseMatvecSliceSidecarCompatible);
+    }
+
+    fn canEncodeDenseMatvecBatchOp(_: *CompiledProgram, m: anytype) bool {
+        return m.geom.M == 1 and m.geom.N != 0 and m.geom.K != 0 and m.geom.dst_row_stride == m.geom.N;
+    }
+
+    fn canEncodeDenseMatvecElementwiseSidecar(_: *CompiledProgram, m: anytype, e: anytype) bool {
+        if (!program_mod.matmulElementwiseSidecarCompatible(m, e)) return false;
+        if (m.geom.M != 1) return false;
+        const primary_is_src0 = e.src0 == m.dst and e.src0_offset == m.geom.dst_offset;
+        const secondary_buf = if (e.op.isBinary()) (if (primary_is_src0) e.src1 else e.src0) else e.src0;
+        return !e.op.isBinary() or secondary_buf != m.dst;
+    }
+
+    fn canEncodeDenseMatmulBatchOp(_: *CompiledProgram, m: anytype) bool {
+        return m.geom.M > 1 and m.geom.N != 0 and m.geom.K != 0 and m.geom.dst_row_stride == m.geom.N;
+    }
+
+    fn planDenseProjectionCacheCommand(
+        self: *CompiledProgram,
+        ops: []const backend_mod.DeviceOp,
+        command: program_mod.ProgramCommand,
+    ) ?DenseMatvecBatchSidecarPlan {
+        var plan = DenseMatvecBatchSidecarPlan{};
+        var flat_i: usize = 0;
+        while (flat_i < command.sidecar_count) : (flat_i += 1) {
+            const idx = command.sidecar_indices[flat_i] orelse continue;
+            if (idx >= ops.len) return null;
+            switch (ops[idx]) {
+                .slice_assign => |sa| {
+                    if (!appendProjectionCacheSlicePlan(
+                        &plan,
+                        ops,
+                        &command,
+                        flat_i,
+                        idx,
+                        sa,
+                        .matmul,
+                        program_mod.denseMatvecSliceSidecarCompatible,
+                        mergeDenseMatvecSliceSidecars,
+                    )) return null;
+                },
+                .rope => |rr| {
+                    if (!appendProjectionCacheRopeStorePlan(&plan, ops, &command, flat_i, idx, rr, .matmul, program_mod.denseMatvecRopeStoreSidecarCompatible)) return null;
+                    flat_i += 1;
+                },
+                .elementwise => |e| {
+                    const anchor = projectionCacheAnchor(.matmul, ops, &command, flat_i) orelse return null;
+                    if (!self.canEncodeDenseMatvecElementwiseSidecar(anchor.op, e)) return null;
+                    if (!plan.appendElementwise(anchor.slot, idx)) return null;
+                },
+                else => return null,
+            }
+        }
+        return plan;
+    }
+
+    const DenseMatmulBatchSidecarPlan = struct {
+        counts: [MAX_DENSE_MATMUL_BATCH]u32 = [_]u32{0} ** MAX_DENSE_MATMUL_BATCH,
+        indices: [DENSE_MATMUL_BATCH_SIDECAR_SLOTS]?usize = [_]?usize{null} ** DENSE_MATMUL_BATCH_SIDECAR_SLOTS,
+
+        fn appendSlice(self: *DenseMatmulBatchSidecarPlan, slot: usize, idx: usize) bool {
+            if (slot >= MAX_DENSE_MATMUL_BATCH) return false;
+            const count: usize = @intCast(self.counts[slot]);
+            if (count >= MAX_DENSE_MATMUL_BATCH_SIDECARS) return false;
+            const sidecar_slot = DenseMatmulBatchSidecarLayout.index(slot, count);
+            self.indices[sidecar_slot] = idx;
+            self.counts[slot] += 1;
+            return true;
+        }
+
+        fn slotIndices(self: *const DenseMatmulBatchSidecarPlan, slot: usize) []const ?usize {
+            const start = DenseMatmulBatchSidecarLayout.start(slot);
+            const count: usize = @intCast(self.counts[slot]);
+            return self.indices[start .. start + count];
+        }
+    };
+
+    fn planDenseMatmulProjectionCacheCommand(
+        self: *CompiledProgram,
+        ops: []const backend_mod.DeviceOp,
+        command: program_mod.ProgramCommand,
+    ) ?DenseMatmulBatchSidecarPlan {
+        _ = self;
+        var plan = DenseMatmulBatchSidecarPlan{};
+        var direct_sidecar_dst = [_]?u16{null} ** MAX_DENSE_MATMUL_BATCH;
+        var flat_i: usize = 0;
+        while (flat_i < command.sidecar_count) : (flat_i += 1) {
+            const idx = command.sidecar_indices[flat_i] orelse continue;
+            if (idx >= ops.len) return null;
+            switch (ops[idx]) {
+                .slice_assign => |sa| {
+                    const anchor = projectionCacheAnchor(.matmul, ops, &command, flat_i) orelse return null;
+                    if (!program_mod.denseProjectionSliceSidecarCompatible(anchor.op, sa)) return null;
+                    if (direct_sidecar_dst[anchor.slot]) |dst| {
+                        if (dst != sa.dst) return null;
+                    } else {
+                        direct_sidecar_dst[anchor.slot] = sa.dst;
+                    }
+                    if (!plan.appendSlice(anchor.slot, idx)) return null;
+                },
+                else => return null,
+            }
+        }
+        return plan;
+    }
+
+    fn encodeDenseMatmulBatchWithSidecars(
+        _: *CompiledProgram,
+        exec: *MetalExecutionContext,
+        view: RuntimeView,
+        ops: []const backend_mod.DeviceOp,
+        indices: []const usize,
+        sidecars: *const DenseMatmulBatchSidecarPlan,
+    ) void {
+        const first = ops[indices[0]].matmul;
+        var buffers: [DenseMatmulBatchKernel.buffer_count]DeviceBuffer = undefined;
+        for (0..MAX_DENSE_MATMUL_BATCH) |slot| {
+            buffers[DenseMatmulBatchKernel.bufferIndex(slot, .weight)] = view.device_bufs[first.b];
+            buffers[DenseMatmulBatchKernel.bufferIndex(slot, .input)] = view.device_bufs[first.a];
+            buffers[DenseMatmulBatchKernel.bufferIndex(slot, .output)] = view.device_bufs[first.dst];
+            buffers[DenseMatmulBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[first.dst];
+        }
+
+        var params = std.mem.zeroes(DenseMatmulBatch4Params);
+        params.n_ops = @intCast(indices.len);
+        var max_tiles_x: u32 = 1;
+        var max_tiles_y: u32 = 1;
+        for (indices, 0..) |op_index, slot| {
+            const m = ops[op_index].matmul;
+            const g = m.geom;
+            buffers[DenseMatmulBatchKernel.bufferIndex(slot, .weight)] = view.device_bufs[m.b];
+            buffers[DenseMatmulBatchKernel.bufferIndex(slot, .input)] = view.device_bufs[m.a];
+            buffers[DenseMatmulBatchKernel.bufferIndex(slot, .output)] = view.device_bufs[m.dst];
+            buffers[DenseMatmulBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[m.dst];
+            params.M[slot] = @intCast(g.M);
+            params.N[slot] = @intCast(g.N);
+            params.K[slot] = @intCast(g.K);
+            params.input_offset[slot] = @intCast(g.a_offset);
+            params.input_row_stride[slot] = @intCast(g.a_row_stride);
+            params.input_col_stride[slot] = @intCast(g.a_col_stride);
+            params.weight_offset[slot] = @intCast(g.b_offset);
+            params.weight_row_stride[slot] = @intCast(g.b_row_stride);
+            params.weight_col_stride[slot] = @intCast(g.b_col_stride);
+            params.dst_offset[slot] = @intCast(g.dst_offset);
+            params.dst_row_stride[slot] = @intCast(g.dst_row_stride);
+            params.write_primary[slot] = 1;
+            params.sidecar_count[slot] = sidecars.counts[slot];
+            if (params.sidecar_count[slot] > 0) {
+                params.write_primary[slot] = @intFromBool(program_mod.matmulPrimaryOutputHasExternalUsersExcept(ops, op_index, sidecars.slotIndices(slot)));
+            }
+            for (sidecars.slotIndices(slot), 0..) |maybe_sidecar_index, sidecar_slot| {
+                const sidecar_index = maybe_sidecar_index orelse continue;
+                const param_slot = DenseMatmulBatchSidecarLayout.index(slot, sidecar_slot);
+                const sa = ops[sidecar_index].slice_assign;
+                params.sidecar_kind[param_slot] = @intFromEnum(QMatmulBatchSidecarCode.slice);
+                params.slice_rows[param_slot] = sa.rows;
+                params.slice_cols[param_slot] = sa.cols;
+                params.slice_src_col_start[param_slot] = program_mod.denseMatvecSliceSrcColStart(m, sa).?;
+                params.slice_dst_offset[param_slot] = sa.dst_offset;
+                params.slice_dst_row_stride[param_slot] = sa.dst_row_stride;
+                params.slice_dst_col_stride[param_slot] = sa.dst_col_stride;
+                buffers[DenseMatmulBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[sa.dst];
+            }
+            max_tiles_x = @max(max_tiles_x, (@as(u32, @intCast(g.N)) + TILE - 1) / TILE);
+            max_tiles_y = @max(max_tiles_y, (@as(u32, @intCast(g.M)) + TILE - 1) / TILE);
+        }
+        params.max_tiles_y = max_tiles_y;
+
+        exec.encodeKernel(
+            .matmul_batch4_f32,
+            &buffers,
+            params,
+            DenseMatmulBatchKernel.params_index,
+            .{ .gx = max_tiles_x, .gy = max_tiles_y * @as(u32, @intCast(indices.len)) },
+            MATMUL_THREADS,
+        );
+    }
+
+    fn encodeDenseMatvecBatchWithSidecars(
+        _: *CompiledProgram,
+        exec: *MetalExecutionContext,
+        view: RuntimeView,
+        ops: []const backend_mod.DeviceOp,
+        indices: []const usize,
+        sidecars: *const DenseMatvecBatchSidecarPlan,
+    ) void {
+        const first = ops[indices[0]].matmul;
+        var buffers: [DenseMatvecBatchKernel.buffer_count]DeviceBuffer = undefined;
+        for (0..MAX_DENSE_MATVEC_BATCH) |slot| {
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .weight)] = view.device_bufs[first.b];
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .input)] = view.device_bufs[first.a];
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .output)] = view.device_bufs[first.dst];
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .sidecar_src)] = view.device_bufs[first.a];
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[first.dst];
+        }
+
+        var params = std.mem.zeroes(DenseMatvecBatch4Params);
+        params.n_ops = @intCast(indices.len);
+        for (indices, 0..) |op_index, slot| {
+            const m = ops[op_index].matmul;
+            const g = m.geom;
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .weight)] = view.device_bufs[m.b];
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .input)] = view.device_bufs[m.a];
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .output)] = view.device_bufs[m.dst];
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .sidecar_src)] = view.device_bufs[m.a];
+            buffers[DenseMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[m.dst];
+            params.N[slot] = @intCast(g.N);
+            params.K[slot] = @intCast(g.K);
+            params.input_offset[slot] = @intCast(g.a_offset);
+            params.input_col_stride[slot] = @intCast(g.a_col_stride);
+            params.weight_offset[slot] = @intCast(g.b_offset);
+            params.weight_row_stride[slot] = @intCast(g.b_row_stride);
+            params.weight_col_stride[slot] = @intCast(g.b_col_stride);
+            params.dst_offset[slot] = @intCast(g.dst_offset);
+            params.write_primary[slot] = 1;
+            switch (sidecars.kinds[slot]) {
+                .none => {},
+                .slice => {
+                    const sidecar_index = sidecars.store_indices[slot].?;
+                    const sa = sidecars.slice_overrides[slot] orelse qmatvecSliceSidecarFrom(ops[sidecar_index].slice_assign);
+                    const carried = [_]?usize{sidecar_index};
+                    params.write_primary[slot] = @intFromBool(program_mod.matmulPrimaryOutputHasExternalUsersExcept(ops, op_index, &carried));
+                    params.sidecar_kind[slot] = @intFromEnum(QMatvecBatchSidecarKind.slice);
+                    params.slice_rows[slot] = sa.rows;
+                    params.slice_cols[slot] = sa.cols;
+                    params.slice_src_col_start[slot] = program_mod.denseMatvecSliceSrcColStart(m, sa).?;
+                    params.slice_dst_offset[slot] = sa.dst_offset;
+                    params.slice_dst_row_stride[slot] = sa.dst_row_stride;
+                    params.slice_dst_col_stride[slot] = sa.dst_col_stride;
+                    buffers[DenseMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[sa.dst];
+                },
+                .rope_store => {
+                    var carried = [_]?usize{null} ** (MAX_QMATVEC_ROPE_STORES * 2);
+                    var r: usize = 0;
+                    while (r < @as(usize, @intCast(sidecars.rope_counts[slot]))) : (r += 1) {
+                        const rope_index = sidecars.rope_indices[slot][r].?;
+                        const store_index = sidecars.rope_store_indices[slot][r].?;
+                        const rr = ops[rope_index].rope;
+                        const sa = ops[store_index].slice_assign;
+                        if (!program_mod.denseMatvecRopeStoreSidecarCompatible(m, rr, sa)) return;
+                        carried[r * 2] = rope_index;
+                        carried[r * 2 + 1] = store_index;
+                        params.rope_src_col_start[slot][r] = program_mod.denseMatvecRopeSrcColStart(m, rr).?;
+                        params.rope_dst_offset[slot][r] = sa.dst_offset;
+                        params.rope_dst_row_stride[slot][r] = sa.dst_row_stride;
+                        params.rope_dst_col_stride[slot][r] = sa.dst_col_stride;
+                        params.rope_half_d[slot][r] = rr.half_d;
+                        params.rope_cs_off[slot][r] = rr.cs_off;
+                        buffers[DenseMatvecBatchKernel.bufferIndex(slot, .sidecar_src)] = view.device_bufs[rr.cos_sin];
+                        buffers[DenseMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[sa.dst];
+                    }
+                    params.write_primary[slot] = @intFromBool(program_mod.matmulPrimaryOutputHasExternalUsersExcept(ops, op_index, &carried));
+                    params.sidecar_kind[slot] = @intFromEnum(QMatvecBatchSidecarKind.rope_store);
+                    params.rope_count[slot] = sidecars.rope_counts[slot];
+                },
+                .elementwise => {
+                    const sidecar_index = sidecars.store_indices[slot].?;
+                    const e = ops[sidecar_index].elementwise;
+                    if (!program_mod.matmulElementwiseSidecarCompatible(m, e)) return;
+                    const primary_is_src0 = e.src0 == m.dst and e.src0_offset == g.dst_offset;
+                    const secondary_buf = if (e.op.isBinary()) (if (primary_is_src0) e.src1 else e.src0) else e.src0;
+                    const secondary_offset = if (e.op.isBinary()) (if (primary_is_src0) e.src1_offset else e.src0_offset) else e.src0_offset;
+                    if (e.op.isBinary() and secondary_buf == m.dst) return;
+                    const carried = [_]?usize{sidecar_index};
+                    params.write_primary[slot] = @intFromBool(program_mod.matmulPrimaryOutputHasExternalUsersExcept(ops, op_index, &carried));
+                    params.sidecar_kind[slot] = @intFromEnum(QMatvecBatchSidecarKind.elementwise);
+                    params.ew_op[slot] = @intFromEnum(e.op);
+                    params.ew_is_swapped[slot] = @intFromBool(!primary_is_src0);
+                    params.ew_dst_offset[slot] = e.dst_offset;
+                    params.ew_secondary_offset[slot] = secondary_offset;
+                    buffers[DenseMatvecBatchKernel.bufferIndex(slot, .sidecar_src)] = view.device_bufs[secondary_buf];
+                    buffers[DenseMatvecBatchKernel.bufferIndex(slot, .sidecar_dst)] = view.device_bufs[e.dst];
+                },
+            }
+            params.max_n = @max(params.max_n, @as(u32, @intCast(g.N)));
+        }
+
+        const grid_x = (params.max_n + 3) / 4;
+        exec.encodeKernel(
+            .matvec_batch4_cols4_f32,
+            &buffers,
+            params,
+            DenseMatvecBatchKernel.params_index,
+            .{ .gx = grid_x, .gy = @intCast(indices.len) },
+            QMATVEC_DOT_THREADS,
+        );
+    }
+
+    fn canFuseQMatvecFusedElementwise(self: *CompiledProgram, q: anytype, fe: anytype) bool {
+        if (@as(usize, q.weight_idx) >= self.qweight_views.len) return false;
+        if (!canEncodeFusedElementwise(fe)) return false;
+        for (fe.steps) |step| {
+            if (step.op.isBinary() and step.secondary_buf == q.dst and step.secondary_offset != q.dst_offset) return false;
+        }
+        return program_mod.qmatvecFusedElementwiseSidecarCompatible(q, fe);
+    }
+
+    fn bindQMatvecFusedSecondary(
+        _: *CompiledProgram,
+        _: *MetalExecutionContext,
+        view: RuntimeView,
+        buffers: *[5 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer,
+        secondary_bufs: *[MAX_FUSED_EW_SECONDARIES]u16,
+        secondary_count: *usize,
+        params: *QMatvecFusedEwParams,
+        q: anytype,
+        step: backend_mod.FusedEwStep,
+        step_index: usize,
+    ) bool {
+        params.secondary_offset[step_index] = step.secondary_offset;
+        if (!step.op.isBinary()) return true;
+
+        if (step.secondary_buf == q.dst) {
+            if (step.secondary_offset != q.dst_offset) return false;
+            params.secondary_is_primary[step_index] = 1;
+            return true;
+        }
+
+        const slot = for (secondary_bufs[0..secondary_count.*], 0..) |buf_idx, slot_idx| {
+            if (buf_idx == step.secondary_buf) break slot_idx;
+        } else blk: {
+            if (secondary_count.* >= MAX_FUSED_EW_SECONDARIES) return false;
+            const next = secondary_count.*;
+            secondary_bufs[next] = step.secondary_buf;
+            buffers[5 + next] = view.device_bufs[step.secondary_buf];
+            secondary_count.* += 1;
+            break :blk next;
+        };
+        params.secondary_slot[step_index] = @intCast(slot);
+        return true;
+    }
+
+    fn encodeQMatvecFusedElementwise(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, fe: anytype, write_primary: bool) bool {
+        if (!self.canFuseQMatvecFusedElementwise(q, fe)) return false;
+        const w = view.qweight_views[q.weight_idx];
+        const qparams = qmatmulParams(q, w.block_size);
+        var params = std.mem.zeroes(QMatvecFusedEwParams);
+        params.N = qparams.N;
+        params.K = qparams.K;
+        params.block_size = qparams.block_size;
+        params.input_offset = qparams.input_offset;
+        params.dst_offset = qparams.dst_offset;
+        params.write_primary = @intFromBool(write_primary);
+        params.n_steps = @intCast(fe.steps.len);
+        params.ew_dst_offset = fe.dst_offset;
+
+        var buffers: [5 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
+        buffers[0] = w.data;
+        buffers[1] = w.scales;
+        buffers[2] = view.device_bufs[q.input];
+        buffers[3] = view.device_bufs[q.dst];
+        buffers[4] = view.device_bufs[fe.dst];
+        for (buffers[5..]) |*buf| buf.* = view.device_bufs[fe.src];
+
+        var secondary_bufs: [MAX_FUSED_EW_SECONDARIES]u16 = undefined;
+        var secondary_count: usize = 0;
+
+        for (fe.steps, 0..) |step, i| {
+            params.op[i] = @intFromEnum(step.op);
+            params.is_swapped[i] = @intFromBool(step.is_swapped);
+            if (!self.bindQMatvecFusedSecondary(exec, view, &buffers, &secondary_bufs, &secondary_count, &params, q, step, i)) return false;
+        }
+
+        exec.encodeKernel(
+            .qmatvec_fused_elementwise_f32,
+            &buffers,
+            params,
+            13,
+            .{ .gx = q.N },
+            QMATVEC_DOT_THREADS,
+        );
+        return true;
+    }
+
+    fn encodeRope(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, rr: anytype) void {
         const buffers = [_]DeviceBuffer{
-            self.device_bufs[rr.src],
-            self.device_bufs[rr.cos_sin],
-            self.device_bufs[rr.dst],
+            view.device_bufs[rr.src],
+            view.device_bufs[rr.cos_sin],
+            view.device_bufs[rr.dst],
         };
         const params = RopeParams{
             .half_d = rr.half_d,
@@ -4774,23 +8471,15 @@ const CompiledProgram = struct {
             .src_cs = rr.src_cs,
             .cs_cs = rr.cs_cs,
         };
-        self.encodeKernel(.rope_f32, &buffers, params, 3, .{ .gx = linearGrid(rr.half_d * rr.seq_len) }, WG_SIZE);
+        exec.encodeKernel(.rope_f32, &buffers, params, 3, .{ .gx = linearGrid(rr.half_d * rr.seq_len) }, WG_SIZE);
     }
 
-    fn ropeBatchCompatible(first: anytype, next: anytype) bool {
-        return program_mod.ropeBatchCompatible(first, next);
-    }
-
-    fn ropeBatchRunLen(ops: []const backend_mod.DeviceOp) usize {
-        return program_mod.ropeBatchRunLen(ops, MAX_ROPE_BATCH);
-    }
-
-    fn encodeRopeBatch(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, n: usize) void {
+    fn encodeRopeBatch(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, n: usize) void {
         const first = ops[0].rope;
         const buffers = [_]DeviceBuffer{
-            self.device_bufs[first.src],
-            self.device_bufs[first.cos_sin],
-            self.device_bufs[first.dst],
+            view.device_bufs[first.src],
+            view.device_bufs[first.cos_sin],
+            view.device_bufs[first.dst],
         };
         var params = std.mem.zeroes(RopeBatchParams);
         params.n_ops = @intCast(n);
@@ -4806,18 +8495,18 @@ const CompiledProgram = struct {
             params.cs_cs[i] = rr.cs_cs;
             params.max_n = @max(params.max_n, rr.half_d * rr.seq_len);
         }
-        self.encodeKernel(.rope_batch_f32, &buffers, params, 3, .{ .gx = linearGrid(params.max_n), .gy = @intCast(n) }, WG_SIZE);
+        exec.encodeKernel(.rope_batch_f32, &buffers, params, 3, .{ .gx = linearGrid(params.max_n), .gy = @intCast(n) }, WG_SIZE);
     }
 
     fn canFuseRopeSliceAssign(rr: anytype, sa: anytype) bool {
         return program_mod.ropeSliceAssignCompatible(rr, sa);
     }
 
-    fn encodeRopeSliceAssign(self: *CompiledProgram, rr: anytype, sa: anytype) void {
+    fn encodeRopeSliceAssign(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, rr: anytype, sa: anytype) void {
         const buffers = [_]DeviceBuffer{
-            self.device_bufs[rr.src],
-            self.device_bufs[rr.cos_sin],
-            self.device_bufs[sa.dst],
+            view.device_bufs[rr.src],
+            view.device_bufs[rr.cos_sin],
+            view.device_bufs[sa.dst],
         };
         const params = RopeSliceAssignParams{
             .half_d = rr.half_d,
@@ -4831,7 +8520,7 @@ const CompiledProgram = struct {
             .dst_row_stride = sa.dst_row_stride,
             .dst_col_stride = sa.dst_col_stride,
         };
-        self.encodeKernel(.rope_slice_assign_f32, &buffers, params, 3, .{ .gx = linearGrid(rr.half_d * rr.seq_len) }, WG_SIZE);
+        exec.encodeKernel(.rope_slice_assign_f32, &buffers, params, 3, .{ .gx = linearGrid(rr.half_d * rr.seq_len) }, WG_SIZE);
     }
 
     fn canEncodeRopeStoreGroupCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
@@ -4870,22 +8559,22 @@ const CompiledProgram = struct {
         return true;
     }
 
-    fn encodeRopeStoreGroupCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) void {
+    fn encodeRopeStoreGroupCommand(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) void {
         const first_rope = ops[command.indices[0]].rope;
         const first_sa = ops[command.sidecar_indices[0].?].slice_assign;
         var buffers: [MAX_ROPE_BATCH + 2]DeviceBuffer = undefined;
         for (buffers[0..MAX_ROPE_BATCH]) |*buffer| {
-            buffer.* = self.device_bufs[first_rope.src];
+            buffer.* = view.device_bufs[first_rope.src];
         }
-        buffers[MAX_ROPE_BATCH] = self.device_bufs[first_rope.cos_sin];
-        buffers[MAX_ROPE_BATCH + 1] = self.device_bufs[first_sa.dst];
+        buffers[MAX_ROPE_BATCH] = view.device_bufs[first_rope.cos_sin];
+        buffers[MAX_ROPE_BATCH + 1] = view.device_bufs[first_sa.dst];
         var params = std.mem.zeroes(RopeSliceAssignBatchParams);
         params.n_ops = command.anchor_count;
         var i: usize = 0;
         while (i < command.anchor_count) : (i += 1) {
             const rr = ops[command.indices[i]].rope;
             const sa = ops[command.sidecar_indices[i].?].slice_assign;
-            buffers[i] = self.device_bufs[rr.src];
+            buffers[i] = view.device_bufs[rr.src];
             params.half_d[i] = rr.half_d;
             params.seq_len[i] = rr.seq_len;
             params.src_off[i] = rr.src_off;
@@ -4898,7 +8587,7 @@ const CompiledProgram = struct {
             params.dst_col_stride[i] = sa.dst_col_stride;
             params.max_n = @max(params.max_n, rr.half_d * rr.seq_len);
         }
-        self.encodeKernel(.rope_slice_assign_batch_f32, &buffers, params, MAX_ROPE_BATCH + 2, .{ .gx = linearGrid(params.max_n), .gy = command.anchor_count }, WG_SIZE);
+        exec.encodeKernel(.rope_slice_assign_batch_f32, &buffers, params, MAX_ROPE_BATCH + 2, .{ .gx = linearGrid(params.max_n), .gy = command.anchor_count }, WG_SIZE);
     }
 
     fn canFuseQMatvecSliceAssign(self: *CompiledProgram, q: anytype, sa: anytype) bool {
@@ -4911,16 +8600,16 @@ const CompiledProgram = struct {
             program_mod.qmatmulSliceSidecarCompatible(q, sa);
     }
 
-    fn encodeQMatvecSliceAssign(self: *CompiledProgram, q: anytype, sa: anytype, write_primary: bool) bool {
+    fn encodeQMatvecSliceAssign(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, sa: anytype, write_primary: bool) bool {
         if (!self.canFuseQMatvecSliceAssign(q, sa)) return false;
-        const w = self.qweight_views[q.weight_idx];
+        const w = view.qweight_views[q.weight_idx];
         const qparams = qmatmulParams(q, w.block_size);
         const buffers = [_]DeviceBuffer{
             w.data,
             w.scales,
-            self.device_bufs[q.input],
-            self.device_bufs[q.dst],
-            self.device_bufs[sa.dst],
+            view.device_bufs[q.input],
+            view.device_bufs[q.dst],
+            view.device_bufs[sa.dst],
         };
         const params = QMatmulSliceAssignParams{
             .M = qparams.M,
@@ -4939,20 +8628,20 @@ const CompiledProgram = struct {
             .slice_dst_row_stride = sa.dst_row_stride,
             .slice_dst_col_stride = sa.dst_col_stride,
         };
-        self.encodeKernel(.qmatvec_slice_assign_f32, &buffers, params, 5, .{ .gx = linearGrid(q.N) }, WG_SIZE);
+        exec.encodeKernel(.qmatvec_slice_assign_f32, &buffers, params, 5, .{ .gx = linearGrid(q.N) }, WG_SIZE);
         return true;
     }
 
-    fn encodeQMatmulSliceAssign(self: *CompiledProgram, q: anytype, sa: anytype, write_primary: bool) bool {
+    fn encodeQMatmulSliceAssign(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, sa: anytype, write_primary: bool) bool {
         if (!self.canFuseQMatmulSliceAssign(q, sa)) return false;
-        const w = self.qweight_views[q.weight_idx];
+        const w = view.qweight_views[q.weight_idx];
         const qparams = qmatmulParams(q, w.block_size);
         const buffers = [_]DeviceBuffer{
             w.data,
             w.scales,
-            self.device_bufs[q.input],
-            self.device_bufs[q.dst],
-            self.device_bufs[sa.dst],
+            view.device_bufs[q.input],
+            view.device_bufs[q.dst],
+            view.device_bufs[sa.dst],
         };
         const params = QMatmulSliceAssignParams{
             .M = qparams.M,
@@ -4971,29 +8660,32 @@ const CompiledProgram = struct {
             .slice_dst_row_stride = sa.dst_row_stride,
             .slice_dst_col_stride = sa.dst_col_stride,
         };
-        self.encodeKernel(.qmatmul_slice_assign_f32, &buffers, params, 5, matmulGrid(q.M, q.N), MATMUL_THREADS);
+        exec.encodeKernel(.qmatmul_slice_assign_f32, &buffers, params, 5, matmulGrid(q.M, q.N), MATMUL_THREADS);
         return true;
     }
 
     fn canFuseQMatmulElementwise(self: *CompiledProgram, q: anytype, e: anytype) bool {
         if (@as(usize, q.weight_idx) >= self.qweight_views.len) return false;
-        return program_mod.qmatmulElementwiseSidecarCompatible(q, e);
+        return if (q.M == 1)
+            program_mod.qmatvecElementwiseSidecarCompatible(q, e)
+        else
+            program_mod.qmatmulElementwiseSidecarCompatible(q, e);
     }
 
-    fn encodeQMatmulElementwise(self: *CompiledProgram, q: anytype, e: anytype, write_primary: bool) bool {
+    fn encodeQMatmulElementwise(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, write_primary: bool) bool {
         if (!self.canFuseQMatmulElementwise(q, e)) return false;
         const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
-        const secondary_buf = if (q_is_src0) e.src1 else e.src0;
-        const secondary_offset = if (q_is_src0) e.src1_offset else e.src0_offset;
-        const w = self.qweight_views[q.weight_idx];
+        const secondary_buf = if (e.op.isBinary()) (if (q_is_src0) e.src1 else e.src0) else e.src0;
+        const secondary_offset = if (e.op.isBinary()) (if (q_is_src0) e.src1_offset else e.src0_offset) else e.src0_offset;
+        const w = view.qweight_views[q.weight_idx];
         const qparams = qmatmulParams(q, w.block_size);
         const buffers = [_]DeviceBuffer{
             w.data,
             w.scales,
-            self.device_bufs[q.input],
-            self.device_bufs[q.dst],
-            self.device_bufs[secondary_buf],
-            self.device_bufs[e.dst],
+            view.device_bufs[q.input],
+            view.device_bufs[q.dst],
+            view.device_bufs[secondary_buf],
+            view.device_bufs[e.dst],
         };
         const params = QMatmulElementwiseParams{
             .M = qparams.M,
@@ -5010,7 +8702,244 @@ const CompiledProgram = struct {
             .ew_dst_offset = e.dst_offset,
             .ew_secondary_offset = secondary_offset,
         };
-        self.encodeKernel(.qmatmul_elementwise_f32, &buffers, params, 6, matmulGrid(q.M, q.N), MATMUL_THREADS);
+        exec.encodeKernel(.qmatmul_elementwise_f32, &buffers, params, 6, matmulGrid(q.M, q.N), MATMUL_THREADS);
+        return true;
+    }
+
+    fn canFuseQMatmulRowChain(self: *CompiledProgram, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype) bool {
+        if (!self.canFuseQMatmulElementwise(q, e)) return false;
+        if (q.N > MAX_ROW_CHAIN_COLS) return false;
+        if (q.K > MAX_ROW_CHAIN_K) return false;
+        if (q.M != rn.rows or q.N != rn.cols) return false;
+        if (rn.src != e.dst or rn.src_offset != e.dst_offset) return false;
+        return canFuseRmsnormRepeatMul(rn, rp, out);
+    }
+
+    fn encodeQMatmulRowChain(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool) bool {
+        if (!self.canFuseQMatmulRowChain(q, e, rn, rp, out)) return false;
+        const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
+        const secondary_buf = if (q_is_src0) e.src1 else e.src0;
+        const secondary_offset = if (q_is_src0) e.src1_offset else e.src0_offset;
+        const w = view.qweight_views[q.weight_idx];
+        const qparams = qmatmulParams(q, w.block_size);
+        const buffers = [_]DeviceBuffer{
+            w.data,
+            w.scales,
+            view.device_bufs[q.input],
+            view.device_bufs[secondary_buf],
+            view.device_bufs[rp.src],
+            view.device_bufs[out.dst],
+            view.device_bufs[e.dst],
+        };
+        const params = QMatmulRowChainParams{
+            .M = qparams.M,
+            .N = qparams.N,
+            .K = qparams.K,
+            .block_size = qparams.block_size,
+            .input_offset = qparams.input_offset,
+            .input_row_stride = qparams.input_row_stride,
+            .ew_op = @intFromEnum(e.op),
+            .ew_is_swapped = if (q_is_src0) 0 else 1,
+            .ew_secondary_offset = secondary_offset,
+            .ew_dst_offset = e.dst_offset,
+            .write_ew_output = @intFromBool(write_ew_output),
+            .rms_eps = rn.eps,
+            .scale_src_offset = rp.src_offset,
+            .scaled_dst_offset = out.dst_offset,
+            .partial_dst_offset = rn.dst_offset,
+            .partial_cols = 0,
+        };
+        exec.encodeKernel(.qmatmul_row_chain_f32, &buffers, params, 7, .{ .gx = q.M }, QMATMUL_ROW_CHAIN_THREADS);
+        return true;
+    }
+
+    fn encodeQMatmulRowChainTwoPhaseTiled(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool, output_spill: bool) bool {
+        if (!self.canFuseQMatmulRowChain(q, e, rn, rp, out)) return false;
+        if (q.M <= 1) return false;
+        const partial_cols = (q.N + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE;
+        const partial_len = @as(usize, q.M) * @as(usize, partial_cols);
+        const partial_bytes = partial_len * @sizeOf(f32);
+        const program_partial_end = @as(usize, rn.dst_offset) + partial_len;
+        const program_partial_fits = program_partial_end * @sizeOf(f32) <= view.device_bufs[rn.dst].size;
+        const scratch_partial = if (view.semantic_width_scratch) |scratch|
+            if (scratch.size >= partial_bytes) scratch else null
+        else
+            null;
+        if (scratch_partial == null and !program_partial_fits) return false;
+        const partial_buffer = scratch_partial orelse view.device_bufs[rn.dst];
+        const partial_dst_offset: u32 = if (scratch_partial != null) 0 else rn.dst_offset;
+
+        const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
+        const secondary_buf = if (q_is_src0) e.src1 else e.src0;
+        const secondary_offset = if (q_is_src0) e.src1_offset else e.src0_offset;
+        const w = view.qweight_views[q.weight_idx];
+        const qparams = qmatmulParams(q, w.block_size);
+        const partial_buffers = [_]DeviceBuffer{
+            w.data,
+            w.scales,
+            view.device_bufs[q.input],
+            view.device_bufs[secondary_buf],
+            view.device_bufs[out.dst],
+            view.device_bufs[e.dst],
+            partial_buffer,
+        };
+        const params = QMatmulRowChainParams{
+            .M = qparams.M,
+            .N = qparams.N,
+            .K = qparams.K,
+            .block_size = qparams.block_size,
+            .input_offset = qparams.input_offset,
+            .input_row_stride = qparams.input_row_stride,
+            .ew_op = @intFromEnum(e.op),
+            .ew_is_swapped = if (q_is_src0) 0 else 1,
+            .ew_secondary_offset = secondary_offset,
+            .ew_dst_offset = e.dst_offset,
+            .write_ew_output = @intFromBool(write_ew_output),
+            .rms_eps = rn.eps,
+            .scale_src_offset = rp.src_offset,
+            .scaled_dst_offset = out.dst_offset,
+            .partial_dst_offset = partial_dst_offset,
+            .partial_cols = partial_cols,
+        };
+        exec.profile.recordQMatmulRowChainTwoPhaseTiledSpill(q.M, q.N, q.K, ROW_CHAIN_TILE, write_ew_output, output_spill);
+        if (scratch_partial != null) exec.profile.recordSemanticWidthScratchRuntimeUse(partial_bytes);
+        exec.encodeKernel(.qmatmul_row_chain_tiled_partials_f32, &partial_buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = partial_cols }, MATMUL_THREADS);
+
+        const ew_src = if (write_ew_output) view.device_bufs[e.dst] else view.device_bufs[out.dst];
+        const finalize_buffers = [_]DeviceBuffer{
+            ew_src,
+            partial_buffer,
+            view.device_bufs[rp.src],
+            view.device_bufs[out.dst],
+        };
+        exec.encodeKernel(
+            .qmatmul_row_chain_tiled_finalize_tiles_f32,
+            &finalize_buffers,
+            params,
+            4,
+            .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = partial_cols },
+            MATMUL_THREADS,
+        );
+        return true;
+    }
+
+    fn encodeQMatmulRowChainWidthParallelTiled(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool, output_spill: bool) bool {
+        if (!self.canFuseQMatmulRowChain(q, e, rn, rp, out)) return false;
+        if (q.M <= 1 or q.K <= ROW_CHAIN_TILE or q.K > SEMANTIC_FFN_MAX_HIDDEN) return false;
+
+        const output_tiles: u32 = (q.N + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE;
+        const partial_len = std.math.mul(usize, @as(usize, q.M), @as(usize, output_tiles)) catch return false;
+        const partial_bytes = std.math.mul(usize, partial_len, @sizeOf(f32)) catch return false;
+        const program_partial_end = @as(usize, rn.dst_offset) + partial_len;
+        const program_partial_fits = program_partial_end * @sizeOf(f32) <= view.device_bufs[rn.dst].size;
+        const scratch_partial = if (view.semantic_width_scratch) |scratch|
+            if (scratch.size >= partial_bytes) scratch else null
+        else
+            null;
+        if (scratch_partial == null and !program_partial_fits) return false;
+        const partial_buffer = scratch_partial orelse view.device_bufs[rn.dst];
+        const partial_dst_offset: u32 = if (scratch_partial != null) 0 else rn.dst_offset;
+
+        const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
+        const secondary_buf = if (q_is_src0) e.src1 else e.src0;
+        const secondary_offset = if (q_is_src0) e.src1_offset else e.src0_offset;
+        const w = view.qweight_views[q.weight_idx];
+        const qparams = qmatmulParams(q, w.block_size);
+        const params = QMatmulRowChainParams{
+            .M = qparams.M,
+            .N = qparams.N,
+            .K = qparams.K,
+            .block_size = qparams.block_size,
+            .input_offset = qparams.input_offset,
+            .input_row_stride = qparams.input_row_stride,
+            .ew_op = @intFromEnum(e.op),
+            .ew_is_swapped = if (q_is_src0) 0 else 1,
+            .ew_secondary_offset = secondary_offset,
+            .ew_dst_offset = e.dst_offset,
+            .write_ew_output = @intFromBool(write_ew_output),
+            .rms_eps = rn.eps,
+            .scale_src_offset = rp.src_offset,
+            .scaled_dst_offset = out.dst_offset,
+            .partial_dst_offset = partial_dst_offset,
+            .partial_cols = output_tiles,
+        };
+
+        exec.profile.recordQMatmulRowChainWidthParallelTiledSpill(q.M, q.N, q.K, ROW_CHAIN_TILE, ROW_CHAIN_WIDTH_LANES, write_ew_output, output_spill);
+        if (scratch_partial != null) exec.profile.recordSemanticWidthScratchRuntimeUse(partial_bytes);
+
+        const partial_buffers = [_]DeviceBuffer{
+            w.data,
+            w.scales,
+            view.device_bufs[q.input],
+            view.device_bufs[secondary_buf],
+            view.device_bufs[out.dst],
+            view.device_bufs[e.dst],
+            partial_buffer,
+        };
+        exec.encodeKernel(
+            .qmatmul_row_chain_width_partials_f32,
+            &partial_buffers,
+            params,
+            7,
+            .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = output_tiles },
+            SEMANTIC_FFN_THREADS,
+        );
+
+        const ew_src = if (write_ew_output) view.device_bufs[e.dst] else view.device_bufs[out.dst];
+        const finalize_buffers = [_]DeviceBuffer{
+            ew_src,
+            partial_buffer,
+            view.device_bufs[rp.src],
+            view.device_bufs[out.dst],
+        };
+        exec.encodeKernel(
+            .qmatmul_row_chain_tiled_finalize_tiles_f32,
+            &finalize_buffers,
+            params,
+            4,
+            .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE, .gy = output_tiles },
+            MATMUL_THREADS,
+        );
+        return true;
+    }
+
+    fn encodeQMatmulRowChainTiledLeaf(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, e: anytype, rn: anytype, rp: anytype, out: anytype, write_ew_output: bool, output_spill: bool) bool {
+        if (!self.canFuseQMatmulRowChain(q, e, rn, rp, out)) return false;
+        if (q.M <= 1) return false;
+        const q_is_src0 = e.src0 == q.dst and e.src0_offset == q.dst_offset;
+        const secondary_buf = if (q_is_src0) e.src1 else e.src0;
+        const secondary_offset = if (q_is_src0) e.src1_offset else e.src0_offset;
+        const w = view.qweight_views[q.weight_idx];
+        const qparams = qmatmulParams(q, w.block_size);
+        const buffers = [_]DeviceBuffer{
+            w.data,
+            w.scales,
+            view.device_bufs[q.input],
+            view.device_bufs[secondary_buf],
+            view.device_bufs[rp.src],
+            view.device_bufs[out.dst],
+            view.device_bufs[e.dst],
+        };
+        const params = QMatmulRowChainParams{
+            .M = qparams.M,
+            .N = qparams.N,
+            .K = qparams.K,
+            .block_size = qparams.block_size,
+            .input_offset = qparams.input_offset,
+            .input_row_stride = qparams.input_row_stride,
+            .ew_op = @intFromEnum(e.op),
+            .ew_is_swapped = if (q_is_src0) 0 else 1,
+            .ew_secondary_offset = secondary_offset,
+            .ew_dst_offset = e.dst_offset,
+            .write_ew_output = @intFromBool(write_ew_output),
+            .rms_eps = rn.eps,
+            .scale_src_offset = rp.src_offset,
+            .scaled_dst_offset = out.dst_offset,
+            .partial_dst_offset = rn.dst_offset,
+            .partial_cols = (q.N + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE,
+        };
+        exec.profile.recordQMatmulRowChainTiledSpill(q.M, q.N, q.K, ROW_CHAIN_TILE, write_ew_output, output_spill);
+        exec.encodeKernel(.qmatmul_row_chain_tiled_f32, &buffers, params, 7, .{ .gx = (q.M + ROW_CHAIN_TILE - 1) / ROW_CHAIN_TILE }, MATMUL_THREADS);
         return true;
     }
 
@@ -5024,7 +8953,9 @@ const CompiledProgram = struct {
     }
 
     fn bindQMatmulFusedSecondary(
-        self: *CompiledProgram,
+        _: *CompiledProgram,
+        _: *MetalExecutionContext,
+        view: RuntimeView,
         buffers: *[5 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer,
         secondary_bufs: *[MAX_FUSED_EW_SECONDARIES]u16,
         secondary_count: *usize,
@@ -5065,7 +8996,7 @@ const CompiledProgram = struct {
             if (secondary_count.* >= MAX_FUSED_EW_SECONDARIES) return false;
             const next = secondary_count.*;
             secondary_bufs[next] = secondary_buf;
-            buffers[5 + next] = self.device_bufs[secondary_buf];
+            buffers[5 + next] = view.device_bufs[secondary_buf];
             secondary_count.* += 1;
             break :blk next;
         };
@@ -5073,9 +9004,9 @@ const CompiledProgram = struct {
         return true;
     }
 
-    fn encodeQMatmulFusedElementwise(self: *CompiledProgram, q: anytype, fe: anytype, write_primary: bool) bool {
+    fn encodeQMatmulFusedElementwise(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, q: anytype, fe: anytype, write_primary: bool) bool {
         if (!self.canFuseQMatmulFusedElementwise(q, fe)) return false;
-        const w = self.qweight_views[q.weight_idx];
+        const w = view.qweight_views[q.weight_idx];
         const qparams = qmatmulParams(q, w.block_size);
         var params = std.mem.zeroes(QMatmulFusedEwParams);
         params.M = qparams.M;
@@ -5093,10 +9024,10 @@ const CompiledProgram = struct {
         var buffers: [5 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
         buffers[0] = w.data;
         buffers[1] = w.scales;
-        buffers[2] = self.device_bufs[q.input];
-        buffers[3] = self.device_bufs[q.dst];
-        buffers[4] = self.device_bufs[fe.dst];
-        for (buffers[5..]) |*buf| buf.* = self.device_bufs[fe.src];
+        buffers[2] = view.device_bufs[q.input];
+        buffers[3] = view.device_bufs[q.dst];
+        buffers[4] = view.device_bufs[fe.dst];
+        for (buffers[5..]) |*buf| buf.* = view.device_bufs[fe.src];
 
         var secondary_bufs: [MAX_FUSED_EW_SECONDARIES]u16 = undefined;
         var secondary_count: usize = 0;
@@ -5104,67 +9035,10 @@ const CompiledProgram = struct {
         for (fe.steps, 0..) |step, i| {
             params.op[i] = @intFromEnum(step.op);
             params.is_swapped[i] = @intFromBool(step.is_swapped);
-            if (!self.bindQMatmulFusedSecondary(&buffers, &secondary_bufs, &secondary_count, &params, q, step, i, null)) return false;
+            if (!self.bindQMatmulFusedSecondary(exec, view, &buffers, &secondary_bufs, &secondary_count, &params, q, step, i, null)) return false;
         }
 
-        self.encodeKernel(
-            .qmatmul_fused_elementwise_f32,
-            &buffers,
-            params,
-            13,
-            matmulGrid(q.M, q.N),
-            MATMUL_THREADS,
-        );
-        return true;
-    }
-
-    fn encodeQMatmulFusedElementwiseChain(self: *CompiledProgram, q: anytype, first: anytype, rp: anytype, second: anytype) bool {
-        if (@as(usize, q.weight_idx) >= self.qweight_views.len) return false;
-        if (!program_mod.projectionFusedElementwiseChainCompatible(q, first, rp, second)) return false;
-        if (first.steps.len + second.steps.len > MAX_FUSED_EW_STEPS) return false;
-
-        const w = self.qweight_views[q.weight_idx];
-        const qparams = qmatmulParams(q, w.block_size);
-        var params = std.mem.zeroes(QMatmulFusedEwParams);
-        params.M = qparams.M;
-        params.N = qparams.N;
-        params.K = qparams.K;
-        params.block_size = qparams.block_size;
-        params.input_offset = qparams.input_offset;
-        params.input_row_stride = qparams.input_row_stride;
-        params.dst_offset = qparams.dst_offset;
-        params.dst_row_stride = qparams.dst_row_stride;
-        params.write_primary = 0;
-        params.n_steps = @intCast(first.steps.len + second.steps.len);
-        params.ew_dst_offset = second.dst_offset;
-
-        var buffers: [5 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
-        buffers[0] = w.data;
-        buffers[1] = w.scales;
-        buffers[2] = self.device_bufs[q.input];
-        buffers[3] = self.device_bufs[q.dst];
-        buffers[4] = self.device_bufs[second.dst];
-        for (buffers[5..]) |*buf| buf.* = self.device_bufs[q.input];
-
-        var secondary_bufs: [MAX_FUSED_EW_SECONDARIES]u16 = undefined;
-        var secondary_count: usize = 0;
-
-        var step_index: usize = 0;
-        for (first.steps) |step| {
-            params.op[step_index] = @intFromEnum(step.op);
-            params.is_swapped[step_index] = @intFromBool(step.is_swapped);
-            if (!self.bindQMatmulFusedSecondary(&buffers, &secondary_bufs, &secondary_count, &params, q, step, step_index, null)) return false;
-            step_index += 1;
-        }
-        const repeat_view = repeatSecondaryView(rp);
-        for (second.steps) |step| {
-            params.op[step_index] = @intFromEnum(step.op);
-            params.is_swapped[step_index] = @intFromBool(step.is_swapped);
-            if (!self.bindQMatmulFusedSecondary(&buffers, &secondary_bufs, &secondary_count, &params, q, step, step_index, repeat_view)) return false;
-            step_index += 1;
-        }
-
-        self.encodeKernel(
+        exec.encodeKernel(
             .qmatmul_fused_elementwise_f32,
             &buffers,
             params,
@@ -5176,7 +9050,9 @@ const CompiledProgram = struct {
     }
 
     fn bindQMatmulPairFusedSecondary(
-        self: *CompiledProgram,
+        _: *CompiledProgram,
+        _: *MetalExecutionContext,
+        view: RuntimeView,
         buffers: *[6 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer,
         secondary_bufs: *[MAX_FUSED_EW_SECONDARIES]u16,
         secondary_count: *usize,
@@ -5219,7 +9095,7 @@ const CompiledProgram = struct {
             if (secondary_count.* >= MAX_FUSED_EW_SECONDARIES) return false;
             const next = secondary_count.*;
             secondary_bufs[next] = secondary_buf;
-            buffers[6 + next] = self.device_bufs[secondary_buf];
+            buffers[6 + next] = view.device_bufs[secondary_buf];
             secondary_count.* += 1;
             break :blk next;
         };
@@ -5229,6 +9105,8 @@ const CompiledProgram = struct {
 
     fn encodeQMatmulPairFusedElementwiseChain(
         self: *CompiledProgram,
+        exec: *MetalExecutionContext,
+        view: RuntimeView,
         gate: anytype,
         first: anytype,
         rp: anytype,
@@ -5236,13 +9114,13 @@ const CompiledProgram = struct {
         up: anytype,
         product: anytype,
     ) bool {
-        if (@as(usize, gate.weight_idx) >= self.qweight_views.len) return false;
-        if (@as(usize, up.weight_idx) >= self.qweight_views.len) return false;
+        if (@as(usize, gate.weight_idx) >= view.qweight_views.len) return false;
+        if (@as(usize, up.weight_idx) >= view.qweight_views.len) return false;
         if (!program_mod.projectionPairFusedElementwiseChainCompatible(gate, first, rp, second, up, product)) return false;
         if (first.steps.len + second.steps.len > MAX_FUSED_EW_STEPS) return false;
 
-        const left_w = self.qweight_views[gate.weight_idx];
-        const right_w = self.qweight_views[up.weight_idx];
+        const left_w = view.qweight_views[gate.weight_idx];
+        const right_w = view.qweight_views[up.weight_idx];
         const gate_params = qmatmulParams(gate, left_w.block_size);
         const up_params = qmatmulParams(up, right_w.block_size);
         if (gate_params.M != up_params.M or gate_params.N != up_params.N or gate_params.K != up_params.K) return false;
@@ -5256,6 +9134,7 @@ const CompiledProgram = struct {
         params.input_offset = gate_params.input_offset;
         params.input_row_stride = gate_params.input_row_stride;
         params.dst_offset = product.dst_offset;
+        params.final_op = @intFromEnum(product.op);
         params.n_steps = @intCast(first.steps.len + second.steps.len);
 
         var buffers: [6 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
@@ -5263,9 +9142,9 @@ const CompiledProgram = struct {
         buffers[1] = left_w.scales;
         buffers[2] = right_w.data;
         buffers[3] = right_w.scales;
-        buffers[4] = self.device_bufs[gate.input];
-        buffers[5] = self.device_bufs[product.dst];
-        for (buffers[6..]) |*buf| buf.* = self.device_bufs[product.dst];
+        buffers[4] = view.device_bufs[gate.input];
+        buffers[5] = view.device_bufs[product.dst];
+        for (buffers[6..]) |*buf| buf.* = view.device_bufs[product.dst];
 
         var secondary_bufs: [MAX_FUSED_EW_SECONDARIES]u16 = undefined;
         var secondary_count: usize = 0;
@@ -5274,40 +9153,309 @@ const CompiledProgram = struct {
         for (first.steps) |step| {
             params.op[step_index] = @intFromEnum(step.op);
             params.is_swapped[step_index] = @intFromBool(step.is_swapped);
-            if (!self.bindQMatmulPairFusedSecondary(&buffers, &secondary_bufs, &secondary_count, &params, gate, up, step, step_index, null)) return false;
+            if (!self.bindQMatmulPairFusedSecondary(exec, view, &buffers, &secondary_bufs, &secondary_count, &params, gate, up, step, step_index, null)) return false;
             step_index += 1;
         }
         const repeat_view = repeatSecondaryView(rp);
         for (second.steps) |step| {
             params.op[step_index] = @intFromEnum(step.op);
             params.is_swapped[step_index] = @intFromBool(step.is_swapped);
-            if (!self.bindQMatmulPairFusedSecondary(&buffers, &secondary_bufs, &secondary_count, &params, gate, up, step, step_index, repeat_view)) return false;
+            if (!self.bindQMatmulPairFusedSecondary(exec, view, &buffers, &secondary_bufs, &secondary_count, &params, gate, up, step, step_index, repeat_view)) return false;
             step_index += 1;
         }
 
-        self.encodeKernel(
-            .qmatmul_pair_fused_elementwise_f32,
+        const kernel: MetalKernel = if (gate.M == 1) .qmatvec_pair_fused_elementwise_f32 else .qmatmul_pair_fused_elementwise_f32;
+        const grid = if (gate.M == 1) DispatchGrid{ .gx = gate.N } else matmulGrid(gate.M, gate.N);
+        const threads = if (gate.M == 1) QMATVEC_DOT_THREADS else MATMUL_THREADS;
+        exec.encodeKernel(kernel, &buffers, params, 14, grid, threads);
+        return true;
+    }
+
+    fn encodeQMatmulPairSingleFusedElementwiseChain(
+        self: *CompiledProgram,
+        exec: *MetalExecutionContext,
+        view: RuntimeView,
+        gate: anytype,
+        first: anytype,
+        up: anytype,
+        product: anytype,
+    ) bool {
+        if (@as(usize, gate.weight_idx) >= view.qweight_views.len) return false;
+        if (@as(usize, up.weight_idx) >= view.qweight_views.len) return false;
+        if (!program_mod.projectionPairSingleFusedElementwiseChainCompatible(gate, first, up, product)) return false;
+        if (first.steps.len > MAX_FUSED_EW_STEPS) return false;
+
+        const left_w = view.qweight_views[gate.weight_idx];
+        const right_w = view.qweight_views[up.weight_idx];
+        const gate_params = qmatmulParams(gate, left_w.block_size);
+        const up_params = qmatmulParams(up, right_w.block_size);
+        if (gate_params.M != up_params.M or gate_params.N != up_params.N or gate_params.K != up_params.K) return false;
+        if (gate_params.input_offset != up_params.input_offset or gate_params.input_row_stride != up_params.input_row_stride) return false;
+
+        var params = std.mem.zeroes(QMatmulPairFusedEwParams);
+        params.M = gate_params.M;
+        params.N = gate_params.N;
+        params.K = gate_params.K;
+        params.left_block_size = gate_params.block_size;
+        params.right_block_size = up_params.block_size;
+        params.input_offset = gate_params.input_offset;
+        params.input_row_stride = gate_params.input_row_stride;
+        params.dst_offset = product.dst_offset;
+        params.final_op = @intFromEnum(product.op);
+        params.n_steps = @intCast(first.steps.len);
+
+        var buffers: [6 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
+        buffers[0] = left_w.data;
+        buffers[1] = left_w.scales;
+        buffers[2] = right_w.data;
+        buffers[3] = right_w.scales;
+        buffers[4] = view.device_bufs[gate.input];
+        buffers[5] = view.device_bufs[product.dst];
+        for (buffers[6..]) |*buf| buf.* = view.device_bufs[product.dst];
+
+        var secondary_bufs: [MAX_FUSED_EW_SECONDARIES]u16 = undefined;
+        var secondary_count: usize = 0;
+        for (first.steps, 0..) |step, step_index| {
+            params.op[step_index] = @intFromEnum(step.op);
+            params.is_swapped[step_index] = @intFromBool(step.is_swapped);
+            if (!self.bindQMatmulPairFusedSecondary(exec, view, &buffers, &secondary_bufs, &secondary_count, &params, gate, up, step, step_index, null)) return false;
+        }
+
+        const kernel: MetalKernel = if (gate.M == 1) .qmatvec_pair_fused_elementwise_f32 else .qmatmul_pair_fused_elementwise_f32;
+        const grid = if (gate.M == 1) DispatchGrid{ .gx = gate.N } else matmulGrid(gate.M, gate.N);
+        const threads = if (gate.M == 1) QMATVEC_DOT_THREADS else MATMUL_THREADS;
+        exec.encodeKernel(kernel, &buffers, params, 14, grid, threads);
+        return true;
+    }
+
+    fn encodeQMatvecPairElementwise(
+        _: *CompiledProgram,
+        exec: *MetalExecutionContext,
+        view: RuntimeView,
+        left: anytype,
+        right: anytype,
+        e: anytype,
+    ) bool {
+        if (@as(usize, left.weight_idx) >= view.qweight_views.len) return false;
+        if (@as(usize, right.weight_idx) >= view.qweight_views.len) return false;
+        if (!program_mod.qmatvecPairElementwiseCompatible(left, right, e)) return false;
+
+        const left_w = view.qweight_views[left.weight_idx];
+        const right_w = view.qweight_views[right.weight_idx];
+        const left_params = qmatmulParams(left, left_w.block_size);
+        const right_params = qmatmulParams(right, right_w.block_size);
+        if (left_params.M != 1 or right_params.M != 1) return false;
+        if (left_params.N != right_params.N or left_params.K != right_params.K) return false;
+        if (left_params.input_offset != right_params.input_offset) return false;
+
+        var params = std.mem.zeroes(QMatmulPairFusedEwParams);
+        params.M = 1;
+        params.N = left_params.N;
+        params.K = left_params.K;
+        params.left_block_size = left_params.block_size;
+        params.right_block_size = right_params.block_size;
+        params.input_offset = left_params.input_offset;
+        params.input_row_stride = left_params.input_row_stride;
+        params.dst_offset = e.dst_offset;
+        params.final_op = @intFromEnum(e.op);
+        params.n_steps = 0;
+
+        var buffers: [6 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
+        buffers[0] = left_w.data;
+        buffers[1] = left_w.scales;
+        buffers[2] = right_w.data;
+        buffers[3] = right_w.scales;
+        buffers[4] = view.device_bufs[left.input];
+        buffers[5] = view.device_bufs[e.dst];
+        for (buffers[6..]) |*buf| buf.* = view.device_bufs[e.dst];
+
+        exec.encodeKernel(
+            .qmatvec_pair_fused_elementwise_f32,
             &buffers,
             params,
             14,
-            matmulGrid(gate.M, gate.N),
-            MATMUL_THREADS,
+            .{ .gx = left.N },
+            QMATVEC_DOT_THREADS,
         );
         return true;
     }
 
-    fn sliceAssignBatchCompatible(first: anytype, next: anytype) bool {
-        return program_mod.sliceAssignBatchCompatible(first, next);
+    fn bindMatmulPairFusedSecondary(
+        _: *CompiledProgram,
+        _: *MetalExecutionContext,
+        view: RuntimeView,
+        buffers: *[4 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer,
+        secondary_bufs: *[MAX_FUSED_EW_SECONDARIES]u16,
+        secondary_count: *usize,
+        params: *MatmulPairFusedEwParams,
+        gate: anytype,
+        up: anytype,
+        step: backend_mod.FusedEwStep,
+        step_index: usize,
+        repeat_view: ?RepeatSecondaryView,
+    ) bool {
+        params.secondary_offset[step_index] = step.secondary_offset;
+        if (!step.op.isBinary()) return true;
+
+        if (step.secondary_buf == gate.dst) {
+            if (step.secondary_offset != gate.geom.dst_offset) return false;
+            params.secondary_is_primary[step_index] = 1;
+            return true;
+        }
+        if (step.secondary_buf == up.dst) return false;
+
+        var secondary_buf = step.secondary_buf;
+        if (repeat_view) |rp| {
+            if (step.secondary_buf == rp.dst) {
+                if (step.secondary_offset < rp.dst_offset) return false;
+                const rel = step.secondary_offset - rp.dst_offset;
+                if (@as(u64, rel) + @as(u64, params.M * params.N) > @as(u64, rp.n)) return false;
+                secondary_buf = rp.src;
+                params.secondary_is_repeat[step_index] = 1;
+                params.secondary_repeat_dst_offset[step_index] = rel;
+                params.secondary_repeat_src_offset[step_index] = rp.src_offset;
+                params.secondary_repeat_src_ne[step_index] = rp.src_ne;
+                params.secondary_repeat_src_strides[step_index] = rp.src_strides;
+                params.secondary_repeat_dst_strides[step_index] = rp.dst_strides;
+            }
+        }
+
+        const slot = for (secondary_bufs[0..secondary_count.*], 0..) |buf_idx, slot_idx| {
+            if (buf_idx == secondary_buf) break slot_idx;
+        } else blk: {
+            if (secondary_count.* >= MAX_FUSED_EW_SECONDARIES) return false;
+            const next = secondary_count.*;
+            secondary_bufs[next] = secondary_buf;
+            buffers[4 + next] = view.device_bufs[secondary_buf];
+            secondary_count.* += 1;
+            break :blk next;
+        };
+        params.secondary_slot[step_index] = @intCast(slot);
+        return true;
     }
 
-    fn sliceAssignBatchRunLen(ops: []const backend_mod.DeviceOp) usize {
-        return program_mod.sliceAssignBatchRunLen(ops, MAX_SLICE_ASSIGN_BATCH);
+    fn encodeMatmulPairFusedElementwiseChain(
+        self: *CompiledProgram,
+        exec: *MetalExecutionContext,
+        view: RuntimeView,
+        gate: anytype,
+        first: anytype,
+        rp: anytype,
+        second: anytype,
+        up: anytype,
+        product: anytype,
+    ) bool {
+        if (!program_mod.denseProjectionPairFusedElementwiseChainCompatible(gate, first, rp, second, up, product)) return false;
+        if (first.steps.len + second.steps.len > MAX_FUSED_EW_STEPS) return false;
+
+        const gg = gate.geom;
+        const ug = up.geom;
+        var params = std.mem.zeroes(MatmulPairFusedEwParams);
+        params.M = @intCast(gg.M);
+        params.N = @intCast(gg.N);
+        params.K = @intCast(gg.K);
+        params.input_offset = @intCast(gg.a_offset);
+        params.input_row_stride = @intCast(gg.a_row_stride);
+        params.input_col_stride = @intCast(gg.a_col_stride);
+        params.left_b_offset = @intCast(gg.b_offset);
+        params.left_b_row_stride = @intCast(gg.b_row_stride);
+        params.left_b_col_stride = @intCast(gg.b_col_stride);
+        params.right_b_offset = @intCast(ug.b_offset);
+        params.right_b_row_stride = @intCast(ug.b_row_stride);
+        params.right_b_col_stride = @intCast(ug.b_col_stride);
+        params.dst_offset = product.dst_offset;
+        params.final_op = @intFromEnum(product.op);
+        params.n_steps = @intCast(first.steps.len + second.steps.len);
+
+        var buffers: [4 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
+        buffers[0] = view.device_bufs[gate.b];
+        buffers[1] = view.device_bufs[up.b];
+        buffers[2] = view.device_bufs[gate.a];
+        buffers[3] = view.device_bufs[product.dst];
+        for (buffers[4..]) |*buf| buf.* = view.device_bufs[product.dst];
+
+        var secondary_bufs: [MAX_FUSED_EW_SECONDARIES]u16 = undefined;
+        var secondary_count: usize = 0;
+
+        var step_index: usize = 0;
+        for (first.steps) |step| {
+            params.op[step_index] = @intFromEnum(step.op);
+            params.is_swapped[step_index] = @intFromBool(step.is_swapped);
+            if (!self.bindMatmulPairFusedSecondary(exec, view, &buffers, &secondary_bufs, &secondary_count, &params, gate, up, step, step_index, null)) return false;
+            step_index += 1;
+        }
+        const repeat_view = repeatSecondaryView(rp);
+        for (second.steps) |step| {
+            params.op[step_index] = @intFromEnum(step.op);
+            params.is_swapped[step_index] = @intFromBool(step.is_swapped);
+            if (!self.bindMatmulPairFusedSecondary(exec, view, &buffers, &secondary_bufs, &secondary_count, &params, gate, up, step, step_index, repeat_view)) return false;
+            step_index += 1;
+        }
+
+        const kernel: MetalKernel = if (gg.M == 1) .matvec_pair_fused_elementwise_f32 else .matmul_pair_fused_elementwise_f32;
+        const grid = if (gg.M == 1) DispatchGrid{ .gx = @intCast(gg.N) } else matmulGrid(gg.M, gg.N);
+        const threads = if (gg.M == 1) QMATVEC_DOT_THREADS else MATMUL_THREADS;
+        exec.encodeKernel(kernel, &buffers, params, 12, grid, threads);
+        return true;
     }
 
-    fn encodeSliceAssignBatch(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, n: usize) void {
+    fn encodeMatmulPairSingleFusedElementwiseChain(
+        self: *CompiledProgram,
+        exec: *MetalExecutionContext,
+        view: RuntimeView,
+        gate: anytype,
+        first: anytype,
+        up: anytype,
+        product: anytype,
+    ) bool {
+        if (!program_mod.denseProjectionPairSingleFusedElementwiseChainCompatible(gate, first, up, product)) return false;
+        if (first.steps.len > MAX_FUSED_EW_STEPS) return false;
+
+        const gg = gate.geom;
+        const ug = up.geom;
+        var params = std.mem.zeroes(MatmulPairFusedEwParams);
+        params.M = @intCast(gg.M);
+        params.N = @intCast(gg.N);
+        params.K = @intCast(gg.K);
+        params.input_offset = @intCast(gg.a_offset);
+        params.input_row_stride = @intCast(gg.a_row_stride);
+        params.input_col_stride = @intCast(gg.a_col_stride);
+        params.left_b_offset = @intCast(gg.b_offset);
+        params.left_b_row_stride = @intCast(gg.b_row_stride);
+        params.left_b_col_stride = @intCast(gg.b_col_stride);
+        params.right_b_offset = @intCast(ug.b_offset);
+        params.right_b_row_stride = @intCast(ug.b_row_stride);
+        params.right_b_col_stride = @intCast(ug.b_col_stride);
+        params.dst_offset = product.dst_offset;
+        params.final_op = @intFromEnum(product.op);
+        params.n_steps = @intCast(first.steps.len);
+
+        var buffers: [4 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
+        buffers[0] = view.device_bufs[gate.b];
+        buffers[1] = view.device_bufs[up.b];
+        buffers[2] = view.device_bufs[gate.a];
+        buffers[3] = view.device_bufs[product.dst];
+        for (buffers[4..]) |*buf| buf.* = view.device_bufs[product.dst];
+
+        var secondary_bufs: [MAX_FUSED_EW_SECONDARIES]u16 = undefined;
+        var secondary_count: usize = 0;
+        for (first.steps, 0..) |step, step_index| {
+            params.op[step_index] = @intFromEnum(step.op);
+            params.is_swapped[step_index] = @intFromBool(step.is_swapped);
+            if (!self.bindMatmulPairFusedSecondary(exec, view, &buffers, &secondary_bufs, &secondary_count, &params, gate, up, step, step_index, null)) return false;
+        }
+
+        const kernel: MetalKernel = if (gg.M == 1) .matvec_pair_fused_elementwise_f32 else .matmul_pair_fused_elementwise_f32;
+        const grid = if (gg.M == 1) DispatchGrid{ .gx = @intCast(gg.N) } else matmulGrid(gg.M, gg.N);
+        const threads = if (gg.M == 1) QMATVEC_DOT_THREADS else MATMUL_THREADS;
+        exec.encodeKernel(kernel, &buffers, params, 12, grid, threads);
+        return true;
+    }
+
+    fn encodeSliceAssignBatch(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, n: usize) void {
         var indices: [MAX_SLICE_ASSIGN_BATCH]usize = undefined;
         for (0..n) |i| indices[i] = i;
-        self.encodeSliceAssignBatchIndices(ops, indices[0..n]);
+        self.encodeSliceAssignBatchIndices(exec, view, ops, indices[0..n]);
     }
 
     fn canEncodeSliceAssignBatchIndices(_: *CompiledProgram, ops: []const backend_mod.DeviceOp, indices: []const usize) bool {
@@ -5323,16 +9471,16 @@ const CompiledProgram = struct {
                 .slice_assign => |sa| sa,
                 else => return false,
             };
-            if (!sliceAssignBatchCompatible(first, next)) return false;
+            if (!program_mod.sliceAssignBatchCompatible(first, next)) return false;
         }
         return true;
     }
 
-    fn encodeSliceAssignBatchIndices(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, indices: []const usize) void {
+    fn encodeSliceAssignBatchIndices(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, indices: []const usize) void {
         const first = ops[indices[0]].slice_assign;
         const buffers = [_]DeviceBuffer{
-            self.device_bufs[first.src],
-            self.device_bufs[first.dst],
+            view.device_bufs[first.src],
+            view.device_bufs[first.dst],
         };
         var params = std.mem.zeroes(SliceAssignBatchParams);
         params.n_ops = @intCast(indices.len);
@@ -5348,7 +9496,7 @@ const CompiledProgram = struct {
             params.src_col_stride[i] = sa.src_col_stride;
             params.max_n = @max(params.max_n, sa.rows * sa.cols);
         }
-        self.encodeKernel(.slice_assign_batch_f32, &buffers, params, 2, .{ .gx = linearGrid(params.max_n), .gy = @intCast(indices.len) }, WG_SIZE);
+        exec.encodeKernel(.slice_assign_batch_f32, &buffers, params, 2, .{ .gx = linearGrid(params.max_n), .gy = @intCast(indices.len) }, WG_SIZE);
     }
 
     fn canFuseRmsnormRepeatMul(rn: anytype, rp: anytype, e: anytype) bool {
@@ -5359,15 +9507,8 @@ const CompiledProgram = struct {
         );
     }
 
-    fn encodeRmsnormRepeatMul(self: *CompiledProgram, rn: anytype, rp: anytype, e: anytype) bool {
+    fn encodeRmsnormRepeatMul(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, rn: anytype, rp: anytype, e: anytype, materialize_intermediates: bool) bool {
         if (!canFuseRmsnormRepeatMul(rn, rp, e)) return false;
-        const buffers = [_]DeviceBuffer{
-            self.device_bufs[rn.src],
-            self.device_bufs[rp.src],
-            self.device_bufs[rn.dst],
-            self.device_bufs[rp.dst],
-            self.device_bufs[e.dst],
-        };
         const params = RmsNormScaleParams{
             .rows = rn.rows,
             .cols = rn.cols,
@@ -5378,89 +9519,105 @@ const CompiledProgram = struct {
             .scale_repeat_dst_offset = rp.dst_offset,
             .scaled_dst_offset = e.dst_offset,
         };
-        self.encodeKernel(.rmsnorm_scale_f32, &buffers, params, 5, .{ .gx = linearGrid(rn.rows) }, WG_SIZE);
+        if (materialize_intermediates) {
+            const buffers = [_]DeviceBuffer{
+                view.device_bufs[rn.src],
+                view.device_bufs[rp.src],
+                view.device_bufs[rn.dst],
+                view.device_bufs[rp.dst],
+                view.device_bufs[e.dst],
+            };
+            exec.encodeKernel(.rmsnorm_scale_f32, &buffers, params, 5, .{ .gx = rn.rows }, QMATVEC_DOT_THREADS);
+        } else {
+            const buffers = [_]DeviceBuffer{
+                view.device_bufs[rn.src],
+                view.device_bufs[rp.src],
+                view.device_bufs[e.dst],
+            };
+            exec.encodeKernel(.rmsnorm_scale_leaf_f32, &buffers, params, 3, .{ .gx = rn.rows }, QMATVEC_DOT_THREADS);
+        }
         return true;
     }
 
-    fn encodeAttention(self: *CompiledProgram, att: anytype) void {
+    fn encodeAttention(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, att: anytype) void {
         const buffers = [_]DeviceBuffer{
-            self.device_bufs[att.q],
-            self.device_bufs[att.k],
-            self.device_bufs[att.v],
-            self.device_bufs[att.mask],
-            self.device_bufs[att.dst],
+            view.device_bufs[att.q],
+            view.device_bufs[att.k],
+            view.device_bufs[att.v],
+            view.device_bufs[att.mask],
+            view.device_bufs[att.dst],
         };
-        self.encodeKernel(.attention_f32, &buffers, attentionParams(att), 5, .{ .gx = att.seq_q }, WG_SIZE);
+        exec.encodeKernel(.attention_f32, &buffers, attentionParams(att), 5, .{ .gx = att.seq_q }, WG_SIZE);
     }
 
-    fn encodeAttentionSliceAssign(self: *CompiledProgram, sa: anytype, att: anytype) bool {
+    fn encodeAttentionSliceAssign(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, sa: anytype, att: anytype) bool {
         const operand = program_mod.attentionSliceAssignOperand(sa, att) orelse return false;
         if (!canEncodeAttention(att)) return false;
 
         var buffers = [_]DeviceBuffer{
-            self.device_bufs[att.q],
-            self.device_bufs[att.k],
-            self.device_bufs[att.v],
-            self.device_bufs[att.mask],
-            self.device_bufs[att.dst],
-            self.device_bufs[sa.src],
-            self.device_bufs[sa.dst],
+            view.device_bufs[att.q],
+            view.device_bufs[att.k],
+            view.device_bufs[att.v],
+            view.device_bufs[att.mask],
+            view.device_bufs[att.dst],
+            view.device_bufs[sa.src],
+            view.device_bufs[sa.dst],
         };
         var params = attentionSliceAssignParams(att, sa);
         switch (operand) {
             .q => {
-                buffers[0] = self.device_bufs[sa.src];
+                buffers[0] = view.device_bufs[sa.src];
                 params.q_off = sa.src_offset;
                 params.q_rs = sa.src_row_stride;
                 params.q_cs = sa.src_col_stride;
             },
             .k => {
-                buffers[1] = self.device_bufs[sa.src];
+                buffers[1] = view.device_bufs[sa.src];
                 params.k_off = sa.src_offset;
                 params.k_rs = sa.src_row_stride;
                 params.k_cs = sa.src_col_stride;
             },
             .v => {
-                buffers[2] = self.device_bufs[sa.src];
+                buffers[2] = view.device_bufs[sa.src];
                 params.v_off = sa.src_offset;
                 params.v_rs = sa.src_row_stride;
                 params.v_cs = sa.src_col_stride;
             },
         }
-        self.encodeKernel(.attention_slice_assign_f32, &buffers, params, 7, .{ .gx = att.seq_q }, WG_SIZE);
+        exec.encodeKernel(.attention_slice_assign_f32, &buffers, params, 7, .{ .gx = att.seq_q }, WG_SIZE);
         return true;
     }
 
-    fn encodeAttentionSliceStore(self: *CompiledProgram, att: anytype, sa: anytype) bool {
+    fn encodeAttentionSliceStore(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, att: anytype, sa: anytype) bool {
         if (!program_mod.attentionSliceStoreCompatible(att, sa)) return false;
         if (!canEncodeAttention(att)) return false;
         const buffers = [_]DeviceBuffer{
-            self.device_bufs[att.q],
-            self.device_bufs[att.k],
-            self.device_bufs[att.v],
-            self.device_bufs[att.mask],
-            self.device_bufs[att.dst],
-            self.device_bufs[sa.dst],
+            view.device_bufs[att.q],
+            view.device_bufs[att.k],
+            view.device_bufs[att.v],
+            view.device_bufs[att.mask],
+            view.device_bufs[att.dst],
+            view.device_bufs[sa.dst],
         };
-        self.encodeKernel(.attention_store_f32, &buffers, attentionStoreParams(att, sa), 6, .{ .gx = att.seq_q }, WG_SIZE);
+        exec.encodeKernel(.attention_store_f32, &buffers, attentionStoreParams(att, sa), 6, .{ .gx = att.seq_q }, WG_SIZE);
         return true;
     }
 
-    fn encodeAttentionRopeStore(self: *CompiledProgram, rr: anytype, att: anytype, sa: anytype) bool {
+    fn encodeAttentionRopeStore(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, rr: anytype, att: anytype, sa: anytype) bool {
         if (!program_mod.ropeAttentionCompatible(rr, att)) return false;
         if (!program_mod.attentionSliceStoreCompatible(att, sa)) return false;
         if (!canEncodeAttention(att)) return false;
         if (rr.half_d * 2 != att.d_head) return false;
         const buffers = [_]DeviceBuffer{
-            self.device_bufs[rr.src],
-            self.device_bufs[rr.cos_sin],
-            self.device_bufs[att.k],
-            self.device_bufs[att.v],
-            self.device_bufs[att.mask],
-            self.device_bufs[att.dst],
-            self.device_bufs[sa.dst],
+            view.device_bufs[rr.src],
+            view.device_bufs[rr.cos_sin],
+            view.device_bufs[att.k],
+            view.device_bufs[att.v],
+            view.device_bufs[att.mask],
+            view.device_bufs[att.dst],
+            view.device_bufs[sa.dst],
         };
-        self.encodeKernel(.attention_rope_store_f32, &buffers, attentionRopeStoreParams(rr, att, sa), 7, .{ .gx = att.seq_q }, WG_SIZE);
+        exec.encodeKernel(.attention_rope_store_f32, &buffers, attentionRopeStoreParams(rr, att, sa), 7, .{ .gx = att.seq_q }, WG_SIZE);
         return true;
     }
 
@@ -5486,17 +9643,17 @@ const CompiledProgram = struct {
         return true;
     }
 
-    fn encodeAttentionRopeStoreSharedBatchCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) void {
+    fn encodeAttentionRopeStoreSharedBatchCommand(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) void {
         const first_rope = ops[command.indices[0]].rope;
         const first_att = ops[command.indices[1]].attention;
         const first_sa = ops[command.sidecar_indices[0].?].slice_assign;
         const buffers = [_]DeviceBuffer{
-            self.device_bufs[first_rope.src],
-            self.device_bufs[first_rope.cos_sin],
-            self.device_bufs[first_att.k],
-            self.device_bufs[first_att.v],
-            self.device_bufs[first_att.mask],
-            self.device_bufs[first_sa.dst],
+            view.device_bufs[first_rope.src],
+            view.device_bufs[first_rope.cos_sin],
+            view.device_bufs[first_att.k],
+            view.device_bufs[first_att.v],
+            view.device_bufs[first_att.mask],
+            view.device_bufs[first_sa.dst],
         };
 
         var params = std.mem.zeroes(AttentionRopeStoreSharedBatchParams);
@@ -5531,7 +9688,7 @@ const CompiledProgram = struct {
             params.slice_dst_offset[i] = sa.dst_offset;
         }
 
-        self.encodeKernel(.attention_rope_store_shared_batch_f32, &buffers, params, @intCast(buffers.len), .{ .gx = first_att.seq_q, .gy = @intCast(command.sidecar_count) }, WG_SIZE);
+        exec.encodeKernel(.attention_rope_store_shared_batch_f32, &buffers, params, @intCast(buffers.len), .{ .gx = first_att.seq_q, .gy = @intCast(command.sidecar_count) }, WG_SIZE);
     }
 
     fn canEncodeAttentionRopeStoreBatchCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
@@ -5589,7 +9746,7 @@ const CompiledProgram = struct {
         return true;
     }
 
-    fn encodeAttentionRopeStoreBatchCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) void {
+    fn encodeAttentionRopeStoreBatchCommand(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) void {
         const first_rope = ops[command.indices[0]].rope;
         const first_att = ops[command.indices[1]].attention;
         const first_sa = ops[command.sidecar_indices[0].?].slice_assign;
@@ -5602,13 +9759,13 @@ const CompiledProgram = struct {
         const slice_dst_base = dst_base + MAX_ATTENTION_STORE_BATCH_HEADS;
         var buffers: [MAX_ATTENTION_STORE_BATCH_HEADS * 7]DeviceBuffer = undefined;
         for (0..MAX_ATTENTION_STORE_BATCH_HEADS) |i| {
-            buffers[q_src_base + i] = self.device_bufs[first_rope.src];
-            buffers[cos_sin_base + i] = self.device_bufs[first_rope.cos_sin];
-            buffers[k_base + i] = self.device_bufs[first_att.k];
-            buffers[v_base + i] = self.device_bufs[first_att.v];
-            buffers[mask_base + i] = self.device_bufs[first_att.mask];
-            buffers[dst_base + i] = self.device_bufs[first_att.dst];
-            buffers[slice_dst_base + i] = self.device_bufs[first_sa.dst];
+            buffers[q_src_base + i] = view.device_bufs[first_rope.src];
+            buffers[cos_sin_base + i] = view.device_bufs[first_rope.cos_sin];
+            buffers[k_base + i] = view.device_bufs[first_att.k];
+            buffers[v_base + i] = view.device_bufs[first_att.v];
+            buffers[mask_base + i] = view.device_bufs[first_att.mask];
+            buffers[dst_base + i] = view.device_bufs[first_att.dst];
+            buffers[slice_dst_base + i] = view.device_bufs[first_sa.dst];
         }
 
         var params = std.mem.zeroes(AttentionRopeStoreBatchParams);
@@ -5637,13 +9794,13 @@ const CompiledProgram = struct {
             const rr = ops[command.indices[i * 2]].rope;
             const att = ops[command.indices[i * 2 + 1]].attention;
             const sa = ops[command.sidecar_indices[i].?].slice_assign;
-            buffers[q_src_base + i] = self.device_bufs[rr.src];
-            buffers[cos_sin_base + i] = self.device_bufs[rr.cos_sin];
-            buffers[k_base + i] = self.device_bufs[att.k];
-            buffers[v_base + i] = self.device_bufs[att.v];
-            buffers[mask_base + i] = self.device_bufs[att.mask];
-            buffers[dst_base + i] = self.device_bufs[att.dst];
-            buffers[slice_dst_base + i] = self.device_bufs[sa.dst];
+            buffers[q_src_base + i] = view.device_bufs[rr.src];
+            buffers[cos_sin_base + i] = view.device_bufs[rr.cos_sin];
+            buffers[k_base + i] = view.device_bufs[att.k];
+            buffers[v_base + i] = view.device_bufs[att.v];
+            buffers[mask_base + i] = view.device_bufs[att.mask];
+            buffers[dst_base + i] = view.device_bufs[att.dst];
+            buffers[slice_dst_base + i] = view.device_bufs[sa.dst];
             params.rope_src_off[i] = rr.src_off;
             params.rope_cs_off[i] = rr.cs_off;
             params.k_off[i] = att.k_off;
@@ -5653,7 +9810,7 @@ const CompiledProgram = struct {
             params.slice_dst_offset[i] = sa.dst_offset;
         }
 
-        self.encodeKernel(.attention_rope_store_batch_f32, &buffers, params, @intCast(buffers.len), .{ .gx = first_att.seq_q, .gy = @intCast(command.sidecar_count) }, WG_SIZE);
+        exec.encodeKernel(.attention_rope_store_batch_f32, &buffers, params, @intCast(buffers.len), .{ .gx = first_att.seq_q, .gy = @intCast(command.sidecar_count) }, WG_SIZE);
     }
 
     fn canEncodeAttentionStoreBatchCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
@@ -5696,7 +9853,7 @@ const CompiledProgram = struct {
         return true;
     }
 
-    fn encodeAttentionStoreBatchCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) void {
+    fn encodeAttentionStoreBatchCommand(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) void {
         const first = ops[command.indices[0]].attention;
         const first_sa = ops[command.sidecar_indices[0].?].slice_assign;
         const q_base = 0;
@@ -5707,12 +9864,12 @@ const CompiledProgram = struct {
         const slice_dst_base = dst_base + MAX_ATTENTION_STORE_BATCH_HEADS;
         var buffers: [MAX_ATTENTION_STORE_BATCH_HEADS * 6]DeviceBuffer = undefined;
         for (0..MAX_ATTENTION_STORE_BATCH_HEADS) |i| {
-            buffers[q_base + i] = self.device_bufs[first.q];
-            buffers[k_base + i] = self.device_bufs[first.k];
-            buffers[v_base + i] = self.device_bufs[first.v];
-            buffers[mask_base + i] = self.device_bufs[first.mask];
-            buffers[dst_base + i] = self.device_bufs[first.dst];
-            buffers[slice_dst_base + i] = self.device_bufs[first_sa.dst];
+            buffers[q_base + i] = view.device_bufs[first.q];
+            buffers[k_base + i] = view.device_bufs[first.k];
+            buffers[v_base + i] = view.device_bufs[first.v];
+            buffers[mask_base + i] = view.device_bufs[first.mask];
+            buffers[dst_base + i] = view.device_bufs[first.dst];
+            buffers[slice_dst_base + i] = view.device_bufs[first_sa.dst];
         }
         var params = std.mem.zeroes(AttentionStoreBatchParams);
         params.n_heads = @intCast(command.anchor_count);
@@ -5735,12 +9892,12 @@ const CompiledProgram = struct {
         for (command.anchorIndices(), command.sidecarIndices(), 0..) |idx, maybe_sa_idx, i| {
             const att = ops[idx].attention;
             const sa = ops[maybe_sa_idx.?].slice_assign;
-            buffers[q_base + i] = self.device_bufs[att.q];
-            buffers[k_base + i] = self.device_bufs[att.k];
-            buffers[v_base + i] = self.device_bufs[att.v];
-            buffers[mask_base + i] = self.device_bufs[att.mask];
-            buffers[dst_base + i] = self.device_bufs[att.dst];
-            buffers[slice_dst_base + i] = self.device_bufs[sa.dst];
+            buffers[q_base + i] = view.device_bufs[att.q];
+            buffers[k_base + i] = view.device_bufs[att.k];
+            buffers[v_base + i] = view.device_bufs[att.v];
+            buffers[mask_base + i] = view.device_bufs[att.mask];
+            buffers[dst_base + i] = view.device_bufs[att.dst];
+            buffers[slice_dst_base + i] = view.device_bufs[sa.dst];
             params.q_off[i] = att.q_off;
             params.k_off[i] = att.k_off;
             params.v_off[i] = att.v_off;
@@ -5748,30 +9905,7 @@ const CompiledProgram = struct {
             params.dst_off[i] = att.dst_off;
             params.slice_dst_offset[i] = sa.dst_offset;
         }
-        self.encodeKernel(.attention_store_batch_f32, &buffers, params, @intCast(buffers.len), .{ .gx = first.seq_q, .gy = @intCast(command.anchor_count) }, WG_SIZE);
-    }
-
-    fn attentionBatchCompatible(first: anytype, next: anytype) bool {
-        return program_mod.attentionBatchCompatible(first, next);
-    }
-
-    fn attentionBatchRunLen(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) usize {
-        _ = self;
-        const n = program_mod.attentionBatchRunLen(ops, MAX_ATTENTION_BATCH_HEADS);
-        if (n == 0) return 0;
-        const first = switch (ops[0]) {
-            .attention => |att| att,
-            else => return 0,
-        };
-        if (!canEncodeAttention(first)) return 0;
-        for (ops[1..n]) |op| {
-            const next = switch (op) {
-                .attention => |att| att,
-                else => return 0,
-            };
-            if (!canEncodeAttention(next) or !attentionBatchCompatible(first, next)) return 0;
-        }
-        return n;
+        exec.encodeKernel(.attention_store_batch_f32, &buffers, params, @intCast(buffers.len), .{ .gx = first.seq_q, .gy = @intCast(command.anchor_count) }, WG_SIZE);
     }
 
     fn canEncodeAttentionBatchIndices(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, indices: []const usize) bool {
@@ -5789,25 +9923,19 @@ const CompiledProgram = struct {
                 .attention => |att| att,
                 else => return false,
             };
-            if (!canEncodeAttention(next) or !attentionBatchCompatible(first, next)) return false;
+            if (!canEncodeAttention(next) or !program_mod.attentionBatchCompatible(first, next)) return false;
         }
         return true;
     }
 
-    fn encodeAttentionBatch(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, n: usize) void {
-        var indices: [MAX_ATTENTION_BATCH_HEADS]usize = undefined;
-        for (0..n) |i| indices[i] = i;
-        self.encodeAttentionBatchIndices(ops, indices[0..n]);
-    }
-
-    fn encodeAttentionBatchIndices(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, indices: []const usize) void {
+    fn encodeAttentionBatchIndices(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, indices: []const usize) void {
         const first = ops[indices[0]].attention;
         const buffers = [_]DeviceBuffer{
-            self.device_bufs[first.q],
-            self.device_bufs[first.k],
-            self.device_bufs[first.v],
-            self.device_bufs[first.mask],
-            self.device_bufs[first.dst],
+            view.device_bufs[first.q],
+            view.device_bufs[first.k],
+            view.device_bufs[first.v],
+            view.device_bufs[first.mask],
+            view.device_bufs[first.dst],
         };
         var params = std.mem.zeroes(AttentionBatchParams);
         params.n_heads = @intCast(indices.len);
@@ -5833,7 +9961,7 @@ const CompiledProgram = struct {
             params.mask_off[i] = att.mask_off;
             params.dst_off[i] = att.dst_off;
         }
-        self.encodeKernel(.attention_batch_f32, &buffers, params, 5, .{ .gx = first.seq_q, .gy = @intCast(indices.len) }, WG_SIZE);
+        exec.encodeKernel(.attention_batch_f32, &buffers, params, 5, .{ .gx = first.seq_q, .gy = @intCast(indices.len) }, WG_SIZE);
     }
 
     fn canEncodeRegionGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
@@ -5848,50 +9976,16 @@ const CompiledProgram = struct {
         };
     }
 
-    fn recordRegionBackendOp(self: *CompiledProgram, op: backend_mod.DeviceOp, elapsed_ns: u64) void {
-        const tag: usize = @intFromEnum(op);
-        self.runtime_profile.backend_op_count +%= 1;
-        self.runtime_profile.time_ns[tag] +%= elapsed_ns;
+    fn recordRegionBackendOp(_: *CompiledProgram, exec: *MetalExecutionContext) void {
+        exec.profile.backend_op_count +%= 1;
     }
 
-    fn recordRegionFusedRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, elapsed_ns: u64) void {
-        if (ops.len == 0) return;
-        const per_op = elapsed_ns / ops.len;
-        var used: u64 = 0;
-        for (ops, 0..) |op, i| {
-            const t = if (i + 1 == ops.len) elapsed_ns - used else per_op;
-            self.recordRegionBackendOp(op, t);
-            used += t;
-        }
-    }
-
-    fn recordRegionFusedRunFromIndices(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, indices: []const usize, elapsed_ns: u64) void {
-        if (indices.len == 0) return;
-        const per_op = elapsed_ns / indices.len;
-        var used: u64 = 0;
-        for (indices, 0..) |idx, i| {
-            const t = if (i + 1 == indices.len) elapsed_ns - used else per_op;
-            self.recordRegionBackendOp(ops[idx], t);
-            used += t;
-        }
-    }
-
-    fn recordRegionFusedRunFromCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand, elapsed_ns: u64) void {
+    fn recordRegionFusedRunFromCommand(self: *CompiledProgram, exec: *MetalExecutionContext, command: program_mod.ProgramCommand) void {
         var indices = command.coveredIndexIterator();
-        const count = indices.remainingCount();
-        if (count == 0) return;
-        const per_op = elapsed_ns / count;
-        var used: u64 = 0;
-        var i: usize = 0;
-        while (indices.next()) |idx| : (i += 1) {
-            if (idx >= ops.len) continue;
-            const t = if (i + 1 == count) elapsed_ns - used else per_op;
-            self.recordRegionBackendOp(ops[idx], t);
-            used += t;
-        }
+        while (indices.next()) |_| self.recordRegionBackendOp(exec);
     }
 
-    fn tryEncodeProjectionCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeProjectionCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         switch (command.projection_kind) {
             .qmatvec => {
                 for (command.anchorIndices()) |idx| {
@@ -5907,12 +10001,7 @@ const CompiledProgram = struct {
                     }
                 }
 
-                const t0 = self.timingStart();
-                self.encodeQMatvecBatch(ops, command.anchorIndices(), command.sidecarIndices());
-                self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), self.timingElapsed(t0));
-                for (command.sidecarIndices()) |maybe_idx| {
-                    if (maybe_idx) |idx| self.recordRegionBackendOp(ops[idx], 0);
-                }
+                self.encodeQMatvecBatch(exec, view, ops, command.anchorIndices(), command.sidecarIndices());
                 return true;
             },
             .qmatmul => {
@@ -5929,19 +10018,14 @@ const CompiledProgram = struct {
                     }
                 }
 
-                const t0 = self.timingStart();
-                self.encodeQMatmulBatch(ops, command.anchorIndices(), command.sidecarIndices());
-                self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), self.timingElapsed(t0));
-                for (command.sidecarIndices()) |maybe_idx| {
-                    if (maybe_idx) |idx| self.recordRegionBackendOp(ops[idx], 0);
-                }
+                self.encodeQMatmulBatch(exec, view, ops, command.anchorIndices(), command.sidecarIndices());
                 return true;
             },
         }
     }
 
-    fn tryEncodeProjectionCacheCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
-        if (command.projection_kind == .qmatvec) return self.tryEncodeQMatvecProjectionCacheCommand(ops, command);
+    fn tryEncodeProjectionCacheCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.projection_kind == .qmatvec) return self.tryEncodeQMatvecProjectionCacheCommand(exec, view, ops, command);
         if (command.projection_kind != .qmatmul) return false;
         if (command.anchor_count == 0 or command.anchor_count > MAX_QMATMUL_BATCH) return false;
         for (command.anchorIndices()) |idx| {
@@ -5949,187 +10033,53 @@ const CompiledProgram = struct {
             if (!self.canEncodeQMatmulBatchOp(ops[idx].qmatmul)) return false;
         }
 
-        var direct_sidecars = QMatmulBatchSidecarPlan{};
-        var direct_sidecar_dst = [_]?u16{null} ** MAX_QMATMUL_BATCH;
-        var rope_pairs: [MAX_QMATMUL_ROPE_STORE_BATCH]QMatmulRopeStorePair = undefined;
-        var rope_pair_count: usize = 0;
-        var anchor_has_rope = [_]bool{false} ** MAX_QMATMUL_BATCH;
+        const plan = self.planQMatmulProjectionCacheCommand(ops, command) orelse return false;
 
-        var flat_i: usize = 0;
-        while (flat_i < command.sidecar_count) : (flat_i += 1) {
-            const idx = command.sidecar_indices[flat_i] orelse continue;
-            if (idx >= ops.len) return false;
-            switch (ops[idx]) {
-                .slice_assign => |sa| {
-                    const slot = for (command.anchorIndices(), 0..) |anchor_idx, slot| {
-                        const q = ops[anchor_idx].qmatmul;
-                        if (program_mod.qmatmulSliceSidecarCompatible(q, sa)) break slot;
-                    } else return false;
-                    if (direct_sidecar_dst[slot]) |dst| {
-                        if (dst != sa.dst) return false;
-                    } else {
-                        direct_sidecar_dst[slot] = sa.dst;
-                    }
-                    if (!direct_sidecars.appendSlice(slot, idx)) return false;
-                },
-                .rope => |rr| {
-                    if (flat_i + 1 >= command.sidecar_count) return false;
-                    const store_idx = command.sidecar_indices[flat_i + 1] orelse return false;
-                    if (store_idx >= ops.len) return false;
-                    const sa = switch (ops[store_idx]) {
-                        .slice_assign => |sa| sa,
-                        else => return false,
-                    };
-                    const slot = for (command.anchorIndices(), 0..) |anchor_idx, slot| {
-                        const q = ops[anchor_idx].qmatmul;
-                        if (self.canEncodeQMatmulRopeStorePair(q, rr, sa)) break slot;
-                    } else return false;
-                    if (anchor_has_rope[slot]) return false;
-                    if (rope_pair_count >= MAX_QMATMUL_ROPE_STORE_BATCH) return false;
-                    rope_pairs[rope_pair_count] = .{
-                        .anchor_slot = slot,
-                        .q_index = command.indices[slot],
-                        .rope_index = idx,
-                        .store_index = store_idx,
-                    };
-                    rope_pair_count += 1;
-                    anchor_has_rope[slot] = true;
-                    flat_i += 1;
-                },
-                else => return false,
-            }
-        }
-
-        const t0 = self.timingStart();
-        if (rope_pair_count == 0) {
-            self.encodeQMatmulBatchWithSidecars(ops, command.anchorIndices(), &direct_sidecars);
-        } else {
-            var normal_indices: [MAX_QMATMUL_BATCH]usize = undefined;
-            var normal_slot_for_anchor = [_]?usize{null} ** MAX_QMATMUL_BATCH;
-            var normal_count: usize = 0;
-            for (command.anchorIndices(), 0..) |anchor_idx, anchor_slot| {
-                const has_direct_sidecars = direct_sidecars.counts[anchor_slot] != 0;
-                const primary_needed = program_mod.projectionPrimaryOutputHasExternalUsersExcept(ops, anchor_idx, command.carriedSidecarIndices());
-                if (!anchor_has_rope[anchor_slot] or has_direct_sidecars or primary_needed) {
-                    normal_slot_for_anchor[anchor_slot] = normal_count;
-                    normal_indices[normal_count] = anchor_idx;
-                    normal_count += 1;
-                }
-            }
-
-            var normal_sidecars = QMatmulBatchSidecarPlan{};
-            for (0..command.anchor_count) |anchor_slot| {
-                const normal_slot = normal_slot_for_anchor[anchor_slot] orelse {
-                    if (direct_sidecars.counts[anchor_slot] != 0) return false;
-                    continue;
-                };
-                for (direct_sidecars.slotIndices(anchor_slot)) |maybe_idx| {
-                    if (maybe_idx) |sidecar_idx| {
-                        if (!normal_sidecars.appendSlice(normal_slot, sidecar_idx)) return false;
-                    }
-                }
-            }
-
-            if (normal_count > 0) {
-                self.encodeQMatmulBatchWithSidecars(ops, normal_indices[0..normal_count], &normal_sidecars);
-            }
-            self.encodeQMatmulRopeStoreBatch(ops, rope_pairs[0..rope_pair_count]);
-        }
-        self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), self.timingElapsed(t0));
-        for (command.carriedSidecarIndices()) |maybe_idx| {
-            if (maybe_idx) |idx| self.recordRegionBackendOp(ops[idx], 0);
-        }
+        self.encodeQMatmulBatchWithSidecars(exec, view, ops, command.anchorIndices(), &plan);
         return true;
     }
 
-    fn tryEncodeQMatvecProjectionCacheCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeQMatvecProjectionCacheCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         if (command.anchor_count == 0 or command.anchor_count > MAX_QMATVEC_BATCH) return false;
         for (command.anchorIndices()) |idx| {
             if (idx >= ops.len) return false;
             if (!self.canEncodeQMatvecBatchOp(ops[idx].qmatmul)) return false;
         }
 
-        var sidecars = QMatvecBatchSidecarPlan{};
-        var flat_i: usize = 0;
-        while (flat_i < command.sidecar_count) : (flat_i += 1) {
-            const idx = command.sidecar_indices[flat_i] orelse continue;
+        const plan = self.planQMatvecProjectionCacheCommand(ops, command) orelse return false;
+
+        self.encodeQMatvecBatchWithSidecars(exec, view, ops, command.anchorIndices(), &plan);
+        return true;
+    }
+
+    fn tryEncodeDenseProjectionCacheCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.anchor_count == 0 or command.anchor_count > MAX_DENSE_MATMUL_BATCH) return false;
+        const first_idx = command.indices[0];
+        if (first_idx >= ops.len) return false;
+        const first = deviceOpAt(.matmul, ops, first_idx) orelse return false;
+        const prefill = first.geom.M > 1;
+        for (command.anchorIndices()) |idx| {
             if (idx >= ops.len) return false;
-            switch (ops[idx]) {
-                .slice_assign => |sa| {
-                    const slot = for (command.anchorIndices(), 0..) |anchor_idx, slot| {
-                        const q = ops[anchor_idx].qmatmul;
-                        if (program_mod.qmatvecSliceSidecarCompatible(q, sa)) break slot;
-                    } else return false;
-                    if (!sidecars.appendSlice(slot, idx)) {
-                        const q = ops[command.indices[slot]].qmatmul;
-                        if (!sidecars.mergeSlice(ops, slot, idx, q)) return self.tryEncodeQMatvecProjectionCacheMaterialized(ops, command);
-                    }
-                },
-                .elementwise => |e| {
-                    const slot = for (command.anchorIndices(), 0..) |anchor_idx, slot| {
-                        const q = ops[anchor_idx].qmatmul;
-                        if (self.canEncodeQMatvecElementwiseSidecar(q, e)) break slot;
-                    } else return false;
-                    if (!sidecars.appendElementwise(slot, idx)) return self.tryEncodeQMatvecProjectionCacheMaterialized(ops, command);
-                },
-                .rope => |rr| {
-                    var maybe_store_idx: ?usize = null;
-                    const slot = for (command.anchorIndices(), 0..) |anchor_idx, slot| {
-                        const q = ops[anchor_idx].qmatmul;
-                        if (program_mod.qmatvecRopeSidecarCompatible(q, rr)) break slot;
-                    } else return false;
-                    if (flat_i + 1 < command.sidecar_count) {
-                        const store_idx = command.sidecar_indices[flat_i + 1] orelse return false;
-                        if (store_idx >= ops.len) return false;
-                        if (ops[store_idx] == .slice_assign) {
-                            const store = ops[store_idx].slice_assign;
-                            const q = ops[command.indices[slot]].qmatmul;
-                            if (program_mod.qmatvecRopeStoreSidecarCompatible(q, rr, store)) {
-                                maybe_store_idx = store_idx;
-                                flat_i += 1;
-                            }
-                        }
-                    }
-                    if (!sidecars.appendRope(slot, idx, maybe_store_idx)) return self.tryEncodeQMatvecProjectionCacheMaterialized(ops, command);
-                },
-                else => return false,
+            const m = deviceOpAt(.matmul, ops, idx) orelse return false;
+            if (prefill) {
+                if (!self.canEncodeDenseMatmulBatchOp(m)) return false;
+            } else {
+                if (!self.canEncodeDenseMatvecBatchOp(m)) return false;
             }
         }
 
-        const t0 = self.timingStart();
-        self.encodeQMatvecBatchWithSidecars(ops, command.anchorIndices(), &sidecars);
-        self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), self.timingElapsed(t0));
-        for (command.carriedSidecarIndices()) |maybe_idx| {
-            if (maybe_idx) |idx| self.recordRegionBackendOp(ops[idx], 0);
+        if (prefill) {
+            const plan = self.planDenseMatmulProjectionCacheCommand(ops, command) orelse return false;
+            self.encodeDenseMatmulBatchWithSidecars(exec, view, ops, command.anchorIndices(), &plan);
+            return true;
         }
+
+        const plan = self.planDenseProjectionCacheCommand(ops, command) orelse return false;
+        self.encodeDenseMatvecBatchWithSidecars(exec, view, ops, command.anchorIndices(), &plan);
         return true;
     }
 
-    fn tryEncodeQMatvecProjectionCacheMaterialized(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
-        if (command.anchor_count == 0 or command.anchor_count > MAX_QMATVEC_BATCH) return false;
-        for (command.anchorIndices()) |idx| {
-            if (idx >= ops.len) return false;
-            if (!self.canEncodeQMatvecBatchOp(ops[idx].qmatmul)) return false;
-        }
-        for (command.carriedSidecarIndices()) |maybe_idx| {
-            const idx = maybe_idx orelse continue;
-            if (idx >= ops.len) return false;
-            if (!self.canEncodeRegionGpuOp(ops[idx])) return false;
-        }
-
-        var no_sidecars = [_]?usize{null} ** MAX_QMATVEC_BATCH;
-        const t0 = self.timingStart();
-        self.encodeQMatvecBatch(ops, command.anchorIndices(), no_sidecars[0..command.anchor_count]);
-        self.recordRegionFusedRunFromIndices(ops, command.anchorIndices(), self.timingElapsed(t0));
-
-        for (command.carriedSidecarIndices()) |maybe_idx| {
-            const idx = maybe_idx orelse continue;
-            std.debug.assert(self.tryEncodeRegionGpuOp(ops[idx]));
-        }
-        return true;
-    }
-
-    fn tryEncodeProjectionChainCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeProjectionChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         if (command.anchor_count != 1 or command.sidecar_count != 1) return false;
         const anchor_idx = command.indices[0];
         const sidecar_idx = command.sidecar_indices[0] orelse return false;
@@ -6139,91 +10089,254 @@ const CompiledProgram = struct {
             else => return false,
         };
         const write_primary = program_mod.projectionPrimaryOutputHasExternalUsers(ops, anchor_idx, sidecar_idx);
-        return switch (ops[sidecar_idx]) {
-            .slice_assign => |sa| if (q.M == 1) self.encodeQMatvecSliceAssign(q, sa, write_primary) else self.encodeQMatmulSliceAssign(q, sa, write_primary),
+        const encoded = switch (ops[sidecar_idx]) {
+            .slice_assign => |sa| if (q.M == 1) self.encodeQMatvecSliceAssign(exec, view, q, sa, write_primary) else self.encodeQMatmulSliceAssign(exec, view, q, sa, write_primary),
             .elementwise => |e| if (q.M == 1) blk: {
                 if (!self.canEncodeQMatvecElementwiseSidecar(q, e)) break :blk false;
                 const anchors = [_]usize{anchor_idx};
                 const sidecars = [_]?usize{sidecar_idx};
-                self.encodeQMatvecBatch(ops, &anchors, &sidecars);
+                self.encodeQMatvecBatch(exec, view, ops, &anchors, &sidecars);
                 break :blk true;
-            } else self.encodeQMatmulElementwise(q, e, write_primary),
-            .fused_elementwise => |fe| if (q.M == 1) false else self.encodeQMatmulFusedElementwise(q, fe, write_primary),
+            } else self.encodeQMatmulElementwise(exec, view, q, e, write_primary),
+            .fused_elementwise => |fe| if (q.M == 1) self.encodeQMatvecFusedElementwise(exec, view, q, fe, write_primary) else self.encodeQMatmulFusedElementwise(exec, view, q, fe, write_primary),
             else => false,
         };
+        if (encoded) exec.profile.recordProjectionChainSidecar(q.M == 1, ops[sidecar_idx]);
+        return encoded;
     }
 
-    fn tryEncodeRegionGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
-        const t0 = self.timingStart();
+    fn tryEncodeProjectionPairElementwiseChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.anchor_count != 2 or command.sidecar_count != 1 or command.projection_kind != .qmatvec) return false;
+        const left_idx = command.indices[0];
+        const right_idx = command.indices[1];
+        const sidecar_idx = command.sidecar_indices[0] orelse return false;
+        if (left_idx >= ops.len or right_idx >= ops.len or sidecar_idx >= ops.len) return false;
+        const left = deviceOpAt(.qmatmul, ops, left_idx) orelse return false;
+        const right = deviceOpAt(.qmatmul, ops, right_idx) orelse return false;
+        const e = deviceOpAt(.elementwise, ops, sidecar_idx) orelse return false;
+        return self.encodeQMatvecPairElementwise(exec, view, left, right, e);
+    }
+
+    fn tryEncodeDenseProjectionChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.anchor_count != 1) return false;
+        const matmul_idx = command.indices[0];
+        if (matmul_idx >= ops.len) return false;
+        const m = deviceOpAt(.matmul, ops, matmul_idx) orelse return false;
+        if (command.sidecar_count == 1) {
+            const sidecar_idx = command.sidecar_indices[0] orelse return false;
+            if (sidecar_idx >= ops.len) return false;
+            const write_primary = program_mod.matmulPrimaryOutputHasExternalUsers(ops, matmul_idx, sidecar_idx);
+            return switch (ops[sidecar_idx]) {
+                .elementwise => |e| self.encodeMatmulElementwise(exec, view, m, e, write_primary),
+                .fused_elementwise => |fe| self.encodeMatmulFusedElementwise(exec, view, m, fe, write_primary),
+                else => false,
+            };
+        }
+        if (command.sidecar_count == 2 or command.sidecar_count == 3) {
+            const repeat_idx = command.sidecar_indices[0] orelse return false;
+            const bias_idx = command.sidecar_indices[1] orelse return false;
+            if (repeat_idx >= ops.len or bias_idx >= ops.len) return false;
+            const rp = deviceOpAt(.repeat, ops, repeat_idx) orelse return false;
+            const bias = deviceOpAt(.elementwise, ops, bias_idx) orelse return false;
+            const activation = if (command.sidecar_count == 3) blk: {
+                const activation_idx = command.sidecar_indices[2] orelse return false;
+                if (activation_idx >= ops.len) return false;
+                break :blk deviceOpAt(.elementwise, ops, activation_idx) orelse return false;
+            } else null;
+            if (activation) |act| {
+                if (!program_mod.matmulRepeatElementwiseBiasActivationCompatible(m, ops[repeat_idx], ops[bias_idx], .{ .elementwise = act })) return false;
+            } else if (!program_mod.matmulRepeatElementwiseBiasCompatible(m, ops[repeat_idx], ops[bias_idx])) return false;
+
+            if (!self.tryEncodeRegionGpuOp(exec, view, .{ .repeat = rp })) return false;
+            const write_primary = program_mod.matmulPrimaryOutputHasExternalUsersExcept(ops, matmul_idx, command.sidecar_indices[0..command.sidecar_count]);
+            if (activation) |act| {
+                const steps = [_]backend_mod.FusedEwStep{
+                    .{ .op = bias.op, .is_swapped = bias.src0 != m.dst, .secondary_buf = rp.dst, .secondary_offset = rp.dst_offset },
+                    .{ .op = act.op, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+                };
+                const fe = .{
+                    .steps = steps[0..],
+                    .n = bias.n,
+                    .dst = act.dst,
+                    .src = m.dst,
+                    .dst_offset = act.dst_offset,
+                    .src_offset = m.geom.dst_offset,
+                };
+                return self.encodeMatmulFusedElementwise(exec, view, m, fe, write_primary);
+            }
+            const steps = [_]backend_mod.FusedEwStep{.{ .op = bias.op, .is_swapped = bias.src0 != m.dst, .secondary_buf = rp.dst, .secondary_offset = rp.dst_offset }};
+            const fe = .{
+                .steps = steps[0..],
+                .n = bias.n,
+                .dst = bias.dst,
+                .src = m.dst,
+                .dst_offset = bias.dst_offset,
+                .src_offset = m.geom.dst_offset,
+            };
+            return self.encodeMatmulFusedElementwise(exec, view, m, fe, write_primary);
+        }
+        return false;
+    }
+
+    fn tryEncodeDenseProjectionPairFusedElementwiseChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        const start: usize = @intCast(command.op_start);
+        if (command.op_count == 4) {
+            const gate = deviceOpAt(.matmul, ops, start) orelse return false;
+            const up = deviceOpAt(.matmul, ops, start + 2) orelse return false;
+            const product = deviceOpAt(.elementwise, ops, start + 3) orelse return false;
+            return switch (ops[start + 1]) {
+                .fused_elementwise => |first| self.encodeMatmulPairSingleFusedElementwiseChain(exec, view, gate, first, up, product),
+                .elementwise => |first| blk: {
+                    if (!program_mod.denseProjectionPairSingleElementwiseChainCompatible(gate, first, up, product)) break :blk false;
+                    const steps = [_]backend_mod.FusedEwStep{.{ .op = first.op, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 }};
+                    const fe = .{
+                        .steps = steps[0..],
+                        .n = first.n,
+                        .dst = first.dst,
+                        .src = first.src0,
+                        .dst_offset = first.dst_offset,
+                        .src_offset = first.src0_offset,
+                    };
+                    break :blk self.encodeMatmulPairSingleFusedElementwiseChain(exec, view, gate, fe, up, product);
+                },
+                else => false,
+            };
+        }
+        if (command.op_count != 6) return false;
+        const gate = deviceOpAt(.matmul, ops, start) orelse return false;
+        const first = deviceOpAt(.fused_elementwise, ops, start + 1) orelse return false;
+        const rp = deviceOpAt(.repeat, ops, start + 2) orelse return false;
+        const second = deviceOpAt(.fused_elementwise, ops, start + 3) orelse return false;
+        const up = deviceOpAt(.matmul, ops, start + 4) orelse return false;
+        const product = deviceOpAt(.elementwise, ops, start + 5) orelse return false;
+        return self.encodeMatmulPairFusedElementwiseChain(exec, view, gate, first, rp, second, up, product);
+    }
+
+    fn tryEncodeProjectionRowChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.anchor_count != 1 or command.sidecar_count != 4) return false;
+        if (command.projection_kind != .qmatmul and command.projection_kind != .qmatvec) return false;
+        const q_idx = command.indices[0];
+        const e_idx = command.sidecar_indices[0] orelse return false;
+        const rn_idx = command.sidecar_indices[1] orelse return false;
+        const rp_idx = command.sidecar_indices[2] orelse return false;
+        const out_idx = command.sidecar_indices[3] orelse return false;
+        if (q_idx >= ops.len or e_idx >= ops.len or rn_idx >= ops.len or rp_idx >= ops.len or out_idx >= ops.len) return false;
+        const q = deviceOpAt(.qmatmul, ops, q_idx) orelse return false;
+        const e = deviceOpAt(.elementwise, ops, e_idx) orelse return false;
+        const rn = deviceOpAt(.rmsnorm, ops, rn_idx) orelse return false;
+        const rp = deviceOpAt(.repeat, ops, rp_idx) orelse return false;
+        const out = deviceOpAt(.elementwise, ops, out_idx) orelse return false;
+        const command_spill = program_mod.projectionRowChainElementwiseHasExternalUsers(ops, command);
+        const output_spill = view.outputReadsSpan(e.dst, e.dst_offset, e.n);
+        const write_ew_output = command_spill or output_spill;
+        if (q.M != 1) {
+            if (self.command_policy.fuse_semantic_ffn_sublayer_width_parallel and
+                !projectionRowChainScaleHasExternalUsers(ops, command) and
+                self.encodeQMatmulRowChainWidthParallelTiled(exec, view, q, e, rn, rp, out, write_ew_output, output_spill))
+            {
+                return true;
+            }
+            if (self.command_policy.fuse_projection_row_chain_two_phase_candidate and
+                !projectionRowChainScaleHasExternalUsers(ops, command) and
+                self.encodeQMatmulRowChainTwoPhaseTiled(exec, view, q, e, rn, rp, out, write_ew_output, output_spill))
+            {
+                return true;
+            }
+            if (self.command_policy.fuse_projection_row_chain_single_dispatch and
+                !projectionRowChainScaleHasExternalUsers(ops, command) and
+                self.encodeQMatmulRowChainTiledLeaf(exec, view, q, e, rn, rp, out, write_ew_output, output_spill))
+            {
+                return true;
+            }
+            const write_primary = projectionRowChainPrimaryHasExternalUsers(ops, command);
+            if (!self.encodeQMatmulElementwise(exec, view, q, e, write_primary)) return false;
+            return self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, projectionRowChainScaleHasExternalUsers(ops, command));
+        }
+        return self.encodeQMatmulRowChain(exec, view, q, e, rn, rp, out, write_ew_output);
+    }
+
+    fn tryEncodeDenseProjectionRowChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.anchor_count != 1 or command.sidecar_count != 4) return false;
+        const m_idx = command.indices[0];
+        const e_idx = command.sidecar_indices[0] orelse return false;
+        const rn_idx = command.sidecar_indices[1] orelse return false;
+        const rp_idx = command.sidecar_indices[2] orelse return false;
+        const out_idx = command.sidecar_indices[3] orelse return false;
+        if (m_idx >= ops.len or e_idx >= ops.len or rn_idx >= ops.len or rp_idx >= ops.len or out_idx >= ops.len) return false;
+        const m = deviceOpAt(.matmul, ops, m_idx) orelse return false;
+        const e = deviceOpAt(.elementwise, ops, e_idx) orelse return false;
+        const rn = deviceOpAt(.rmsnorm, ops, rn_idx) orelse return false;
+        const rp = deviceOpAt(.repeat, ops, rp_idx) orelse return false;
+        const out = deviceOpAt(.elementwise, ops, out_idx) orelse return false;
+        const write_ew_output = program_mod.projectionRowChainElementwiseHasExternalUsers(ops, command) or view.outputReadsSpan(e.dst, e.dst_offset, e.n);
+        return self.encodeMatmulRowChain(exec, view, m, e, rn, rp, out, write_ew_output);
+    }
+
+    fn tryEncodeRegionGpuOp(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, op: backend_mod.DeviceOp) bool {
         const encoded = if (computeDispatchSpec(op)) |spec| blk: {
-            self.encodeComputeDispatch(spec);
+            self.encodeComputeDispatch(exec, view, spec);
             break :blk true;
         } else switch (op) {
             .matmul => |m| blk: {
-                const buffers = [_]DeviceBuffer{
-                    self.device_bufs[m.a],
-                    self.device_bufs[m.b],
-                    self.device_bufs[m.dst],
-                };
-                self.encodeKernel(.matmul_f32, &buffers, matmulParams(m.geom), 3, matmulGrid(m.geom.M, m.geom.N), MATMUL_THREADS);
+                self.encodeMatmul(exec, view, m);
                 break :blk true;
             },
             .qmatmul => |q| blk: {
-                if (@as(usize, q.weight_idx) >= self.qweight_views.len) break :blk false;
-                if (q.M == 1) break :blk self.encodeQMatvec(q);
-                const w = self.qweight_views[q.weight_idx];
+                if (@as(usize, q.weight_idx) >= view.qweight_views.len) break :blk false;
+                if (q.M == 1) break :blk self.encodeQMatvec(exec, view, q);
+                const w = view.qweight_views[q.weight_idx];
                 const buffers = [_]DeviceBuffer{
                     w.data,
                     w.scales,
-                    self.device_bufs[q.input],
-                    self.device_bufs[q.dst],
+                    view.device_bufs[q.input],
+                    view.device_bufs[q.dst],
                 };
-                self.encodeKernel(.qmatmul_f32, &buffers, qmatmulParams(q, w.block_size), 4, matmulGrid(q.M, q.N), MATMUL_THREADS);
+                exec.encodeKernel(.qmatmul_f32, &buffers, qmatmulParams(q, w.block_size), 4, matmulGrid(q.M, q.N), MATMUL_THREADS);
                 break :blk true;
             },
             .rope => |rr| blk: {
-                self.encodeRope(rr);
+                self.encodeRope(exec, view, rr);
                 break :blk true;
             },
             .attention => |att| blk: {
                 if (!self.canEncodeRegionGpuOp(op)) break :blk false;
-                self.encodeAttention(att);
+                self.encodeAttention(exec, view, att);
                 break :blk true;
             },
-            .fused_elementwise => |fe| self.encodeFusedElementwise(fe),
+            .fused_elementwise => |fe| self.encodeFusedElementwise(exec, view, fe),
             else => false,
         };
         if (encoded) {
-            self.recordRegionBackendOp(op, self.timingElapsed(t0));
+            self.recordRegionBackendOp(exec);
         }
         return encoded;
     }
 
-    fn tryEncodeAttentionChainCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeAttentionChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         if (command.anchor_count != 1 or command.sidecar_count != 1) return false;
         const att_idx = command.indices[0];
         const sa_idx = command.sidecar_indices[0] orelse return false;
         const sa = deviceOpAt(.slice_assign, ops, sa_idx) orelse return false;
         const att = deviceOpAt(.attention, ops, att_idx) orelse return false;
-        return self.encodeAttentionSliceAssign(sa, att);
+        return self.encodeAttentionSliceAssign(exec, view, sa, att);
     }
 
-    fn tryEncodeAttentionStoreChainCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeAttentionStoreChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         if (command.anchor_count != 1 or command.sidecar_count != 1) return false;
         const att_idx = command.indices[0];
         const sa_idx = command.sidecar_indices[0] orelse return false;
         const att = deviceOpAt(.attention, ops, att_idx) orelse return false;
         const sa = deviceOpAt(.slice_assign, ops, sa_idx) orelse return false;
-        return self.encodeAttentionSliceStore(att, sa);
+        return self.encodeAttentionSliceStore(exec, view, att, sa);
     }
 
-    fn tryEncodeAttentionStoreGroupCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeAttentionStoreGroupCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         if (!self.canEncodeAttentionStoreBatchCommand(ops, command)) return false;
-        self.encodeAttentionStoreBatchCommand(ops, command);
+        self.encodeAttentionStoreBatchCommand(exec, view, ops, command);
         return true;
     }
 
-    fn tryEncodeRopeAttentionStoreChainCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeRopeAttentionStoreChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         if (command.anchor_count != 2 or command.sidecar_count != 1) return false;
         const rope_idx = command.indices[0];
         const att_idx = command.indices[1];
@@ -6231,341 +10344,726 @@ const CompiledProgram = struct {
         const rr = deviceOpAt(.rope, ops, rope_idx) orelse return false;
         const att = deviceOpAt(.attention, ops, att_idx) orelse return false;
         const sa = deviceOpAt(.slice_assign, ops, sa_idx) orelse return false;
-        return self.encodeAttentionRopeStore(rr, att, sa);
+        return self.encodeAttentionRopeStore(exec, view, rr, att, sa);
     }
 
-    fn tryEncodeRopeAttentionStoreGroupCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeRopeAttentionStoreGroupCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         if (self.canEncodeAttentionRopeStoreSharedBatchCommand(ops, command)) {
-            self.encodeAttentionRopeStoreSharedBatchCommand(ops, command);
+            self.encodeAttentionRopeStoreSharedBatchCommand(exec, view, ops, command);
             return true;
         }
         if (!self.canEncodeAttentionRopeStoreBatchCommand(ops, command)) return false;
-        self.encodeAttentionRopeStoreBatchCommand(ops, command);
+        self.encodeAttentionRopeStoreBatchCommand(exec, view, ops, command);
         return true;
     }
 
-    fn tryEncodeAttentionBatchCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
-        const start: usize = @intCast(command.op_start);
-        const n: usize = @intCast(command.op_count);
-        if (self.attentionBatchRunLen(ops[start..]) < n) return false;
-        self.encodeAttentionBatch(ops[start..], n);
-        return true;
-    }
-
-    fn tryEncodeAttentionGroupCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeAttentionGroupCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         if (!self.canEncodeAttentionBatchIndices(ops, command.anchorIndices())) return false;
-        self.encodeAttentionBatchIndices(ops, command.anchorIndices());
+        self.encodeAttentionBatchIndices(exec, view, ops, command.anchorIndices());
         return true;
     }
 
-    fn tryEncodeRopeBatchCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeRopeBatchCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         const start: usize = @intCast(command.op_start);
         const n: usize = @intCast(command.op_count);
-        if (ropeBatchRunLen(ops[start..]) < n) return false;
-        self.encodeRopeBatch(ops[start..], n);
+        if (program_mod.ropeBatchRunLen(ops[start..], MAX_ROPE_BATCH) < n) return false;
+        self.encodeRopeBatch(exec, view, ops[start..], n);
         return true;
     }
 
-    fn tryEncodeRopeStoreGroupCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeRopeStoreGroupCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         if (!self.canEncodeRopeStoreGroupCommand(ops, command)) return false;
-        self.encodeRopeStoreGroupCommand(ops, command);
+        self.encodeRopeStoreGroupCommand(exec, view, ops, command);
         return true;
     }
 
-    fn tryEncodeMovementBatchCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeMovementBatchCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         const start: usize = @intCast(command.op_start);
         const n: usize = @intCast(command.op_count);
-        if (sliceAssignBatchRunLen(ops[start..]) < n) return false;
-        self.encodeSliceAssignBatch(ops[start..], n);
+        if (program_mod.sliceAssignBatchRunLen(ops[start..], MAX_SLICE_ASSIGN_BATCH) < n) return false;
+        self.encodeSliceAssignBatch(exec, view, ops[start..], n);
         return true;
     }
 
-    fn tryEncodeMovementGroupCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeMovementGroupCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         if (!self.canEncodeSliceAssignBatchIndices(ops, command.anchorIndices())) return false;
-        self.encodeSliceAssignBatchIndices(ops, command.anchorIndices());
+        self.encodeSliceAssignBatchIndices(exec, view, ops, command.anchorIndices());
         return true;
     }
 
-    fn tryEncodeElementwiseBatchCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeElementwiseBatchCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         for (command.anchorIndices()) |idx| {
             const e = deviceOpAt(.elementwise, ops, idx) orelse return false;
             if (!canEncodeElementwiseBatchOp(e)) return false;
         }
-        self.encodeElementwiseBatch(ops, command.anchorIndices());
+        self.encodeElementwiseBatch(exec, view, ops, command.anchorIndices());
         return true;
     }
 
-    fn tryEncodeRepeatFusedElementwiseChainCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeRepeatFusedElementwiseChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         const start: usize = @intCast(command.op_start);
         const rp = deviceOpAt(.repeat, ops, start) orelse return false;
         const fe = deviceOpAt(.fused_elementwise, ops, start + 1) orelse return false;
-        return self.encodeRepeatFusedElementwise(rp, fe);
+        return self.encodeRepeatFusedElementwise(exec, view, rp, fe);
     }
 
-    fn tryEncodeProjectionFusedElementwiseChainCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeProjectionPairFusedElementwiseChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         const start: usize = @intCast(command.op_start);
-        const q = deviceOpAt(.qmatmul, ops, start) orelse return false;
-        const first = deviceOpAt(.fused_elementwise, ops, start + 1) orelse return false;
-        const rp = deviceOpAt(.repeat, ops, start + 2) orelse return false;
-        const second = deviceOpAt(.fused_elementwise, ops, start + 3) orelse return false;
-        return self.encodeQMatmulFusedElementwiseChain(q, first, rp, second);
-    }
-
-    fn tryEncodeProjectionPairFusedElementwiseChainCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
-        const start: usize = @intCast(command.op_start);
+        if (command.op_count == 4) {
+            const gate = deviceOpAt(.qmatmul, ops, start) orelse return false;
+            const up = deviceOpAt(.qmatmul, ops, start + 2) orelse return false;
+            const product = deviceOpAt(.elementwise, ops, start + 3) orelse return false;
+            return switch (ops[start + 1]) {
+                .fused_elementwise => |first| self.encodeQMatmulPairSingleFusedElementwiseChain(exec, view, gate, first, up, product),
+                .elementwise => |first| blk: {
+                    if (!program_mod.projectionPairSingleElementwiseChainCompatible(gate, first, up, product)) break :blk false;
+                    const steps = [_]backend_mod.FusedEwStep{.{ .op = first.op, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 }};
+                    const fe = .{
+                        .steps = steps[0..],
+                        .n = first.n,
+                        .dst = first.dst,
+                        .src = first.src0,
+                        .dst_offset = first.dst_offset,
+                        .src_offset = first.src0_offset,
+                    };
+                    break :blk self.encodeQMatmulPairSingleFusedElementwiseChain(exec, view, gate, fe, up, product);
+                },
+                else => false,
+            };
+        }
+        if (command.op_count != 6) return false;
         const gate = deviceOpAt(.qmatmul, ops, start) orelse return false;
         const first = deviceOpAt(.fused_elementwise, ops, start + 1) orelse return false;
         const rp = deviceOpAt(.repeat, ops, start + 2) orelse return false;
         const second = deviceOpAt(.fused_elementwise, ops, start + 3) orelse return false;
         const up = deviceOpAt(.qmatmul, ops, start + 4) orelse return false;
         const product = deviceOpAt(.elementwise, ops, start + 5) orelse return false;
-        return self.encodeQMatmulPairFusedElementwiseChain(gate, first, rp, second, up, product);
+        return self.encodeQMatmulPairFusedElementwiseChain(exec, view, gate, first, rp, second, up, product);
     }
 
-    fn tryEncodeRowChainCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn encodeSemanticFfnSublayerSingleDispatch(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, residual: anytype, rn: anytype, rp: anytype, out: anytype) bool {
+        exec.profile.recordSemanticFfnSublayerSingleDispatchAttempt();
+        if (!program_mod.projectionPairSingleElementwiseChainCompatible(gate, first, up, product)) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.pair_chain);
+            return false;
+        }
+        if (down.M != gate.M or down.K != gate.N) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.down_shape);
+            return false;
+        }
+        if (down.input != product.dst or down.input_offset != product.dst_offset) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.down_input);
+            return false;
+        }
+        if (residual.op != .add or residual.n != down.M * down.N) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.residual_shape);
+            return false;
+        }
+        if (rn.src != residual.dst or rn.src_offset != residual.dst_offset) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.rms_source);
+            return false;
+        }
+        if (rn.rows != down.M or rn.cols != down.N) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.rms_shape);
+            return false;
+        }
+        if (!canFuseRmsnormRepeatMul(rn, rp, out)) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.rms_fuse);
+            return false;
+        }
+        if (gate.K > SEMANTIC_FFN_MAX_DIM or gate.N > SEMANTIC_FFN_MAX_DIM or down.N > SEMANTIC_FFN_MAX_DIM) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchDimRefusal(gate.K, gate.N, down.N, SEMANTIC_FFN_MAX_DIM);
+            return false;
+        }
+        if (@as(usize, gate.weight_idx) >= view.qweight_views.len or
+            @as(usize, up.weight_idx) >= view.qweight_views.len or
+            @as(usize, down.weight_idx) >= view.qweight_views.len)
+        {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.qweight);
+            return false;
+        }
+        if (view.outputReadsDenseSpan(gate.dst, gate.dst_offset, gate.M, gate.N, gate.dst_row_stride) or
+            view.outputReadsSpan(first.dst, first.dst_offset, first.n) or
+            view.outputReadsDenseSpan(up.dst, up.dst_offset, up.M, up.N, up.dst_row_stride) or
+            view.outputReadsSpan(product.dst, product.dst_offset, product.n) or
+            view.outputReadsDenseSpan(down.dst, down.dst_offset, down.M, down.N, down.dst_row_stride) or
+            view.outputReadsSpan(residual.dst, residual.dst_offset, residual.n) or
+            view.outputReadsSpan(rn.dst, rn.dst_offset, @as(u64, rn.rows) * rn.cols) or
+            view.outputReadsSpan(rp.dst, rp.dst_offset, rp.n))
+        {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchOutputReadRefusal();
+            return false;
+        }
+
+        const down_is_src0 = residual.src0 == down.dst and residual.src0_offset == down.dst_offset;
+        const residual_secondary_buf = if (down_is_src0) residual.src1 else residual.src0;
+        const residual_secondary_offset = if (down_is_src0) residual.src1_offset else residual.src0_offset;
+
+        const gate_w = view.qweight_views[gate.weight_idx];
+        const up_w = view.qweight_views[up.weight_idx];
+        const down_w = view.qweight_views[down.weight_idx];
+        const gate_params = qmatmulParams(gate, gate_w.block_size);
+        const up_params = qmatmulParams(up, up_w.block_size);
+        const down_params = qmatmulParams(down, down_w.block_size);
+        if (gate_params.block_size != 32 or up_params.block_size != 32 or down_params.block_size != 32) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchBlockSizeRefusal();
+            return false;
+        }
+        if (gate_params.M != up_params.M or gate_params.N != up_params.N or gate_params.K != up_params.K) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.qparam_shape);
+            return false;
+        }
+        if (gate_params.input_offset != up_params.input_offset or gate_params.input_row_stride != up_params.input_row_stride) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.qparam_input);
+            return false;
+        }
+        if (down_params.M != gate_params.M or down_params.K != gate_params.N) {
+            exec.profile.recordSemanticFfnSublayerSingleDispatchRefusal(.down_param_shape);
+            return false;
+        }
+
+        const buffers = [_]DeviceBuffer{
+            gate_w.data,
+            gate_w.scales,
+            up_w.data,
+            up_w.scales,
+            down_w.data,
+            down_w.scales,
+            view.device_bufs[gate.input],
+            view.device_bufs[residual_secondary_buf],
+            view.device_bufs[rp.src],
+            view.device_bufs[out.dst],
+        };
+        const params = QMatmulSemanticFfnParams{
+            .M = gate_params.M,
+            .H = gate_params.N,
+            .K = gate_params.K,
+            .O = down_params.N,
+            .gate_block_size = gate_params.block_size,
+            .up_block_size = up_params.block_size,
+            .down_block_size = down_params.block_size,
+            .input_offset = gate_params.input_offset,
+            .input_row_stride = gate_params.input_row_stride,
+            .first_op = @intFromEnum(first.op),
+            .residual_secondary_offset = residual_secondary_offset,
+            .rms_eps = rn.eps,
+            .scale_src_offset = rp.src_offset,
+            .scaled_dst_offset = out.dst_offset,
+        };
+        exec.profile.recordSemanticFfnSublayer(params.M, params.H, params.K, params.O, SEMANTIC_FFN_THREADS);
+        exec.encodeKernel(.qmatmul_semantic_ffn_sublayer_f32, &buffers, params, 10, .{ .gx = gate.M }, SEMANTIC_FFN_THREADS);
+        return true;
+    }
+
+    fn tryEncodeSemanticFfnSublayerCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.op_count != 9) return false;
+        const start: usize = @intCast(command.op_start);
+        const gate = deviceOpAt(.qmatmul, ops, start) orelse return false;
+        const first = deviceOpAt(.elementwise, ops, start + 1) orelse return false;
+        const up = deviceOpAt(.qmatmul, ops, start + 2) orelse return false;
+        const product = deviceOpAt(.elementwise, ops, start + 3) orelse return false;
+        const down = deviceOpAt(.qmatmul, ops, start + 4) orelse return false;
+        const residual = deviceOpAt(.elementwise, ops, start + 5) orelse return false;
+        const rn = deviceOpAt(.rmsnorm, ops, start + 6) orelse return false;
+        const rp = deviceOpAt(.repeat, ops, start + 7) orelse return false;
+        const out = deviceOpAt(.elementwise, ops, start + 8) orelse return false;
+
+        if (self.command_policy.fuse_semantic_ffn_sublayer_single_dispatch and
+            self.encodeSemanticFfnSublayerSingleDispatch(exec, view, gate, first, up, product, down, residual, rn, rp, out)) return true;
+
+        if (!program_mod.projectionPairSingleElementwiseChainCompatible(gate, first, up, product)) return false;
+        const steps = [_]backend_mod.FusedEwStep{.{ .op = first.op, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 }};
+        const fe = .{
+            .steps = steps[0..],
+            .n = first.n,
+            .dst = first.dst,
+            .src = first.src0,
+            .dst_offset = first.dst_offset,
+            .src_offset = first.src0_offset,
+        };
+        if (!self.encodeQMatmulPairSingleFusedElementwiseChain(exec, view, gate, fe, up, product)) return false;
+
+        const residual_output_spill = view.outputReadsSpan(residual.dst, residual.dst_offset, residual.n);
+        if (self.command_policy.fuse_semantic_ffn_sublayer_width_parallel and
+            self.encodeQMatmulRowChainWidthParallelTiled(exec, view, down, residual, rn, rp, out, residual_output_spill, residual_output_spill))
+        {
+            exec.profile.recordSemanticFfnSublayerFallbackDispatches(1, 2);
+            return true;
+        }
+
+        if (self.command_policy.fuse_projection_row_chain_two_phase_candidate and
+            self.encodeQMatmulRowChainTwoPhaseTiled(exec, view, down, residual, rn, rp, out, residual_output_spill, residual_output_spill))
+        {
+            exec.profile.recordSemanticFfnSublayerFallbackDispatches(1, 2);
+            return true;
+        }
+
+        const write_down_primary = view.outputReadsDenseSpan(down.dst, down.dst_offset, down.M, down.N, down.dst_row_stride);
+        if (!self.encodeQMatmulElementwise(exec, view, down, residual, write_down_primary)) return false;
+        if (!self.encodeRmsnormRepeatMul(exec, view, rn, rp, out, view.outputReadsSpan(rn.dst, rn.dst_offset, @as(u64, rn.rows) * rn.cols) or view.outputReadsSpan(rp.dst, rp.dst_offset, rp.n))) return false;
+        exec.profile.recordSemanticFfnSublayerFallbackDispatches(1, 2);
+        return true;
+    }
+
+    fn encodeSemanticFfnSublayerInputBridgeSingleDispatch(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, input_q: anytype, input_residual: anytype, input_rn: anytype, input_rp: anytype, input_out: anytype, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, output_residual: anytype, output_rn: anytype, output_rp: anytype, output_out: anytype) bool {
+        if (input_q.N > SEMANTIC_FFN_MAX_DIM or input_q.K > SEMANTIC_FFN_MAX_DIM or gate.N > SEMANTIC_FFN_MAX_HIDDEN or down.N > SEMANTIC_FFN_MAX_DIM) return false;
+        const plan = semanticFfnInputBridgeEncodePlan(view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out) orelse return false;
+        const bridge = plan.bridge;
+        const input_w = view.qweight_views[input_q.weight_idx];
+        const gate_w = view.qweight_views[gate.weight_idx];
+        const up_w = view.qweight_views[up.weight_idx];
+        const down_w = view.qweight_views[down.weight_idx];
+
+        const buffers = [_]DeviceBuffer{
+            input_w.data,
+            input_w.scales,
+            gate_w.data,
+            gate_w.scales,
+            up_w.data,
+            up_w.scales,
+            down_w.data,
+            down_w.scales,
+            view.device_bufs[input_q.input],
+            view.device_bufs[bridge.input_secondary_buf],
+            view.device_bufs[input_rp.src],
+            view.device_bufs[output_rp.src],
+            view.device_bufs[output_out.dst],
+        };
+        const params = QMatmulSemanticFfnInputBridgeParams{
+            .M = plan.gate_params.M,
+            .H = plan.gate_params.N,
+            .K = plan.gate_params.K,
+            .O = plan.down_params.N,
+            .input_projection_K = plan.input_params.K,
+            .input_block_size = plan.input_params.block_size,
+            .gate_block_size = plan.gate_params.block_size,
+            .up_block_size = plan.up_params.block_size,
+            .down_block_size = plan.down_params.block_size,
+            .source_input_offset = plan.input_params.input_offset,
+            .source_input_row_stride = plan.input_params.input_row_stride,
+            .input_residual_secondary_offset = bridge.input_secondary_offset,
+            .input_rms_eps = input_rn.eps,
+            .input_scale_src_offset = input_rp.src_offset,
+            .first_op = @intFromEnum(first.op),
+            .output_rms_eps = output_rn.eps,
+            .output_scale_src_offset = output_rp.src_offset,
+            .output_dst_offset = output_out.dst_offset,
+            .input_scratch_offset = 0,
+            .product_scratch_offset = 0,
+            .output_scratch_offset = 0,
+            .partial_dst_offset = 0,
+            .partial_cols = 0,
+        };
+        exec.profile.recordSemanticFfnSublayer(params.M, params.H, params.K, params.O, SEMANTIC_FFN_INPUT_BRIDGE_THREADS);
+        exec.profile.recordSemanticFfnWithInputDirect(params.M, params.H, params.K, params.O, params.input_projection_K);
+        exec.encodeKernel(.qmatmul_semantic_ffn_input_bridge_f32, &buffers, params, 13, .{ .gx = gate.M }, SEMANTIC_FFN_INPUT_BRIDGE_THREADS);
+        return true;
+    }
+
+    fn encodeSemanticFfnSublayerInputBridgeWidthParallel(_: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, input_q: anytype, input_residual: anytype, input_rn: anytype, input_rp: anytype, input_out: anytype, gate: anytype, first: anytype, up: anytype, product: anytype, down: anytype, output_residual: anytype, output_rn: anytype, output_rp: anytype, output_out: anytype) bool {
+        const plan = semanticFfnInputBridgeEncodePlan(view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out) orelse return false;
+        const scratch_buffer = view.semantic_width_scratch orelse return false;
+        if (scratch_buffer.size < plan.scratch_layout.total_bytes) return false;
+        if (@as(u64, plan.scratch_layout.down_partial_elements) < @as(u64, plan.down_params.M) * plan.bridge.output_tiles) return false;
+
+        const input_w = view.qweight_views[input_q.weight_idx];
+        const gate_w = view.qweight_views[gate.weight_idx];
+        const up_w = view.qweight_views[up.weight_idx];
+        const down_w = view.qweight_views[down.weight_idx];
+        const output_tiles = std.math.cast(u32, plan.bridge.output_tiles) orelse return false;
+        const partial_elements_u64 = @as(u64, plan.down_params.M) * plan.bridge.output_tiles;
+        const partial_elements = std.math.cast(u32, partial_elements_u64) orelse return false;
+        const partial_offset = std.math.add(u32, plan.scratch_layout.output_element_offset, plan.scratch_layout.output_elements) catch return false;
+        if (@as(u64, partial_offset) + @as(u64, partial_elements) > @as(u64, plan.scratch_layout.down_partial_elements)) return false;
+        const staged_scratch_bytes = checkedF32Bytes(@as(u64, plan.scratch_layout.input_elements) + @as(u64, plan.scratch_layout.product_elements) + @as(u64, plan.scratch_layout.output_elements) + @as(u64, partial_elements)) orelse return false;
+
+        const params = QMatmulSemanticFfnInputBridgeParams{
+            .M = plan.gate_params.M,
+            .H = plan.gate_params.N,
+            .K = plan.gate_params.K,
+            .O = plan.down_params.N,
+            .input_projection_K = plan.input_params.K,
+            .input_block_size = plan.input_params.block_size,
+            .gate_block_size = plan.gate_params.block_size,
+            .up_block_size = plan.up_params.block_size,
+            .down_block_size = plan.down_params.block_size,
+            .source_input_offset = plan.input_params.input_offset,
+            .source_input_row_stride = plan.input_params.input_row_stride,
+            .input_residual_secondary_offset = plan.bridge.input_secondary_offset,
+            .input_rms_eps = input_rn.eps,
+            .input_scale_src_offset = input_rp.src_offset,
+            .first_op = @intFromEnum(first.op),
+            .output_rms_eps = output_rn.eps,
+            .output_scale_src_offset = output_rp.src_offset,
+            .output_dst_offset = output_out.dst_offset,
+            .input_scratch_offset = plan.scratch_layout.input_element_offset,
+            .product_scratch_offset = plan.scratch_layout.product_element_offset,
+            .output_scratch_offset = plan.scratch_layout.output_element_offset,
+            .partial_dst_offset = partial_offset,
+            .partial_cols = output_tiles,
+        };
+
+        const input_q_is_src0 = input_residual.src0 == input_q.dst and input_residual.src0_offset == input_q.dst_offset;
+        const input_stage_params = QMatmulRowChainParams{
+            .M = plan.input_params.M,
+            .N = plan.input_params.N,
+            .K = plan.input_params.K,
+            .block_size = plan.input_params.block_size,
+            .input_offset = plan.input_params.input_offset,
+            .input_row_stride = plan.input_params.input_row_stride,
+            .ew_op = @intFromEnum(input_residual.op),
+            .ew_is_swapped = if (input_q_is_src0) 0 else 1,
+            .ew_secondary_offset = plan.bridge.input_secondary_offset,
+            .ew_dst_offset = plan.scratch_layout.output_element_offset,
+            .write_ew_output = 1,
+            .rms_eps = input_rn.eps,
+            .scale_src_offset = input_rp.src_offset,
+            .scaled_dst_offset = plan.scratch_layout.input_element_offset,
+            .partial_dst_offset = partial_offset,
+            .partial_cols = output_tiles,
+        };
+        const input_stage_partial_buffers = [_]DeviceBuffer{
+            input_w.data,
+            input_w.scales,
+            view.device_bufs[input_q.input],
+            view.device_bufs[plan.bridge.input_secondary_buf],
+            scratch_buffer,
+            scratch_buffer,
+            scratch_buffer,
+        };
+        exec.profile.recordQMatmulRowChainWidthParallelTiledSpill(
+            input_stage_params.M,
+            input_stage_params.N,
+            input_stage_params.K,
+            ROW_CHAIN_TILE,
+            ROW_CHAIN_WIDTH_LANES,
+            true,
+            true,
+        );
+        exec.profile.recordSemanticWidthScratchRuntimeUse(checkedF32Bytes(partial_elements_u64) orelse return false);
+        exec.encodeKernel(
+            .qmatmul_row_chain_width_partials_f32,
+            &input_stage_partial_buffers,
+            input_stage_params,
+            7,
+            .{ .gx = std.math.divCeil(u32, input_stage_params.M, ROW_CHAIN_TILE) catch return false, .gy = output_tiles },
+            SEMANTIC_FFN_THREADS,
+        );
+
+        const input_stage_finalize_buffers = [_]DeviceBuffer{
+            scratch_buffer,
+            scratch_buffer,
+            view.device_bufs[input_rp.src],
+            scratch_buffer,
+        };
+        exec.encodeKernel(
+            .qmatmul_row_chain_tiled_finalize_tiles_f32,
+            &input_stage_finalize_buffers,
+            input_stage_params,
+            4,
+            .{ .gx = std.math.divCeil(u32, input_stage_params.M, ROW_CHAIN_TILE) catch return false, .gy = output_tiles },
+            MATMUL_THREADS,
+        );
+
+        var pair_params = std.mem.zeroes(QMatmulPairFusedEwParams);
+        pair_params.M = plan.gate_params.M;
+        pair_params.N = plan.gate_params.N;
+        pair_params.K = plan.gate_params.K;
+        pair_params.left_block_size = plan.gate_params.block_size;
+        pair_params.right_block_size = plan.up_params.block_size;
+        pair_params.input_offset = plan.scratch_layout.input_element_offset;
+        pair_params.input_row_stride = plan.gate_params.K;
+        pair_params.dst_offset = plan.scratch_layout.product_element_offset;
+        pair_params.final_op = @intFromEnum(product.op);
+        pair_params.n_steps = 1;
+        pair_params.op[0] = @intFromEnum(first.op);
+        pair_params.is_swapped[0] = 0;
+
+        var pair_buffers: [6 + MAX_FUSED_EW_SECONDARIES]DeviceBuffer = undefined;
+        pair_buffers[0] = gate_w.data;
+        pair_buffers[1] = gate_w.scales;
+        pair_buffers[2] = up_w.data;
+        pair_buffers[3] = up_w.scales;
+        pair_buffers[4] = scratch_buffer;
+        pair_buffers[5] = scratch_buffer;
+        for (pair_buffers[6..]) |*buf| buf.* = scratch_buffer;
+        exec.encodeKernel(
+            .qmatmul_pair_fused_elementwise_f32,
+            &pair_buffers,
+            pair_params,
+            14,
+            matmulGrid(pair_params.M, pair_params.N),
+            MATMUL_THREADS,
+        );
+
+        const partial_buffers = [_]DeviceBuffer{
+            down_w.data,
+            down_w.scales,
+            scratch_buffer,
+            scratch_buffer,
+        };
+        exec.profile.recordSemanticFfnSublayer(params.M, params.H, params.K, params.O, SEMANTIC_FFN_INPUT_BRIDGE_THREADS);
+        exec.profile.recordSemanticFfnWithInputDirect(params.M, params.H, params.K, params.O, params.input_projection_K);
+        exec.profile.recordSemanticFfnWithInputDirectWidthParallel(params.M, ROW_CHAIN_TILE, params.O, ROW_CHAIN_TILE, ROW_CHAIN_WIDTH_LANES);
+        exec.profile.recordSemanticWidthScratchRuntimeUse(staged_scratch_bytes);
+        exec.encodeKernel(
+            .qmatmul_semantic_ffn_input_bridge_width_partials_f32,
+            &partial_buffers,
+            params,
+            4,
+            .{ .gx = std.math.divCeil(u32, params.M, ROW_CHAIN_TILE) catch return false, .gy = output_tiles },
+            SEMANTIC_FFN_THREADS,
+        );
+
+        const finalize_buffers = [_]DeviceBuffer{
+            scratch_buffer,
+            scratch_buffer,
+            view.device_bufs[output_rp.src],
+            view.device_bufs[output_out.dst],
+        };
+        exec.encodeKernel(
+            .qmatmul_semantic_ffn_input_bridge_finalize_row_tiles_f32,
+            &finalize_buffers,
+            params,
+            4,
+            .{ .gx = std.math.divCeil(u32, params.M, ROW_CHAIN_TILE) catch return false, .gy = output_tiles },
+            SEMANTIC_FFN_INPUT_BRIDGE_WIDTH_THREADS,
+        );
+        return true;
+    }
+
+    fn tryEncodeSemanticFfnSublayerWithInputRowChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.op_count != 14) return false;
+        const start: usize = @intCast(command.op_start);
+        const before_dispatches = exec.profile.backend_dispatch_count;
+        const before_pair_dispatches = exec.profile.semantic_ffn_sublayer_fallback_pair_dispatches;
+        const before_tail_dispatches = exec.profile.semantic_ffn_sublayer_fallback_tail_dispatches;
+        var row_command = program_mod.ProgramCommand{
+            .kind = .projection_row_chain,
+            .op_start = @intCast(start),
+            .op_count = 5,
+            .projection_kind = command.projection_kind,
+            .anchor_count = 1,
+            .sidecar_count = 4,
+        };
+        row_command.indices[0] = start;
+        row_command.sidecar_indices[0] = start + 1;
+        row_command.sidecar_indices[1] = start + 2;
+        row_command.sidecar_indices[2] = start + 3;
+        row_command.sidecar_indices[3] = start + 4;
+        row_command.sidecar_slots[0] = 0;
+        row_command.sidecar_slots[1] = 0;
+        row_command.sidecar_slots[2] = 0;
+        row_command.sidecar_slots[3] = 0;
+
+        const semantic_command = program_mod.ProgramCommand{
+            .kind = .semantic_ffn_sublayer,
+            .op_start = @intCast(start + 5),
+            .op_count = 9,
+            .projection_kind = command.projection_kind,
+        };
+        const input_q = deviceOpAt(.qmatmul, ops, start) orelse return false;
+        const input_residual = deviceOpAt(.elementwise, ops, start + 1) orelse return false;
+        const input_rn = deviceOpAt(.rmsnorm, ops, start + 2) orelse return false;
+        const input_rp = deviceOpAt(.repeat, ops, start + 3) orelse return false;
+        const input_out = deviceOpAt(.elementwise, ops, start + 4) orelse return false;
+        const gate = deviceOpAt(.qmatmul, ops, start + 5) orelse return false;
+        const first = deviceOpAt(.elementwise, ops, start + 6) orelse return false;
+        const up = deviceOpAt(.qmatmul, ops, start + 7) orelse return false;
+        const product = deviceOpAt(.elementwise, ops, start + 8) orelse return false;
+        const down = deviceOpAt(.qmatmul, ops, start + 9) orelse return false;
+        const output_residual = deviceOpAt(.elementwise, ops, start + 10) orelse return false;
+        const output_rn = deviceOpAt(.rmsnorm, ops, start + 11) orelse return false;
+        const output_rp = deviceOpAt(.repeat, ops, start + 12) orelse return false;
+        const output_out = deviceOpAt(.elementwise, ops, start + 13) orelse return false;
+        if (self.command_policy.fuse_semantic_ffn_sublayer_input_bridge_width_parallel and
+            self.encodeSemanticFfnSublayerInputBridgeWidthParallel(exec, view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out))
+        {
+            return true;
+        }
+        if (self.command_policy.fuse_semantic_ffn_sublayer_input_bridge_single_dispatch and
+            self.encodeSemanticFfnSublayerInputBridgeSingleDispatch(exec, view, input_q, input_residual, input_rn, input_rp, input_out, gate, first, up, product, down, output_residual, output_rn, output_rp, output_out))
+        {
+            return true;
+        }
+        if (!self.tryEncodeProjectionRowChainCommand(exec, view, ops, row_command)) return false;
+        if (!self.tryEncodeSemanticFfnSublayerCommand(exec, view, ops, semantic_command)) return false;
+        const dispatches = exec.profile.backend_dispatch_count -| before_dispatches;
+        const pair_dispatches = exec.profile.semantic_ffn_sublayer_fallback_pair_dispatches -| before_pair_dispatches;
+        const tail_dispatches = exec.profile.semantic_ffn_sublayer_fallback_tail_dispatches -| before_tail_dispatches;
+        const row_chain_dispatches = dispatches -| pair_dispatches -| tail_dispatches;
+        exec.profile.recordSemanticFfnWithInputDecomposed(dispatches, row_chain_dispatches, pair_dispatches, tail_dispatches);
+        return true;
+    }
+
+    fn projectionRowChainPrimaryHasExternalUsers(ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.anchor_count != 1 or command.sidecar_count < 1) return true;
+        const q_idx = command.indices[0];
+        const e_idx = command.sidecar_indices[0] orelse return true;
+        if (q_idx == @as(usize, @intCast(command.op_start)) and e_idx == q_idx + 1) return false;
+        const sidecars = [_]?usize{e_idx};
+        return program_mod.projectionPrimaryOutputHasExternalUsersExcept(ops, q_idx, sidecars[0..]);
+    }
+
+    fn projectionRowChainScaleHasExternalUsers(ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.sidecar_count < 4) return true;
+        const rn_idx = command.sidecar_indices[1] orelse return true;
+        const rp_idx = command.sidecar_indices[2] orelse return true;
+        const out_idx = command.sidecar_indices[3] orelse return true;
+        if (rn_idx == @as(usize, @intCast(command.op_start)) + 2 and rp_idx == rn_idx + 1 and out_idx == rp_idx + 1) return false;
+        return program_mod.rmsnormScaleChainHasExternalUsers(ops, rn_idx);
+    }
+
+    fn tryEncodeRowChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         const start: usize = @intCast(command.op_start);
         const rn = deviceOpAt(.rmsnorm, ops, start) orelse return false;
         const rp = deviceOpAt(.repeat, ops, start + 1) orelse return false;
         const e = deviceOpAt(.elementwise, ops, start + 2) orelse return false;
-        return self.encodeRmsnormRepeatMul(rn, rp, e);
+        return self.encodeRmsnormRepeatMul(exec, view, rn, rp, e, program_mod.rmsnormScaleChainHasExternalUsers(ops, start));
     }
 
-    fn tryEncodeRopeChainCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+    fn tryEncodeRopeChainCommand(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         const start: usize = @intCast(command.op_start);
         const rr = deviceOpAt(.rope, ops, start) orelse return false;
         const sa = deviceOpAt(.slice_assign, ops, start + 1) orelse return false;
         if (!canFuseRopeSliceAssign(rr, sa)) return false;
-        self.encodeRopeSliceAssign(rr, sa);
+        self.encodeRopeSliceAssign(exec, view, rr, sa);
         return true;
     }
 
-    const ProgramCommandLoweringFn = *const fn (*CompiledProgram, []const backend_mod.DeviceOp, program_mod.ProgramCommand) bool;
-    const ProgramCommandLowering = struct {
-        kind: program_mod.ProgramCommandKind,
-        encode: ProgramCommandLoweringFn,
-        records_run: bool = false,
-    };
-
-    const exact_program_command_lowerings = [_]ProgramCommandLowering{
-        .{ .kind = .projection_group, .encode = tryEncodeProjectionCommand, .records_run = true },
-        .{ .kind = .projection_cache_group, .encode = tryEncodeProjectionCacheCommand, .records_run = true },
-        .{ .kind = .projection_chain, .encode = tryEncodeProjectionChainCommand },
-        .{ .kind = .attention_chain, .encode = tryEncodeAttentionChainCommand },
-        .{ .kind = .attention_store_chain, .encode = tryEncodeAttentionStoreChainCommand },
-        .{ .kind = .attention_store_group, .encode = tryEncodeAttentionStoreGroupCommand },
-        .{ .kind = .rope_attention_store_chain, .encode = tryEncodeRopeAttentionStoreChainCommand },
-        .{ .kind = .rope_attention_store_group, .encode = tryEncodeRopeAttentionStoreGroupCommand },
-        .{ .kind = .attention_batch, .encode = tryEncodeAttentionBatchCommand },
-        .{ .kind = .attention_group, .encode = tryEncodeAttentionGroupCommand },
-        .{ .kind = .rope_batch, .encode = tryEncodeRopeBatchCommand },
-        .{ .kind = .rope_store_group, .encode = tryEncodeRopeStoreGroupCommand },
-        .{ .kind = .movement_batch, .encode = tryEncodeMovementBatchCommand },
-        .{ .kind = .movement_group, .encode = tryEncodeMovementGroupCommand },
-        .{ .kind = .elementwise_batch, .encode = tryEncodeElementwiseBatchCommand },
-        .{ .kind = .repeat_fused_elementwise_chain, .encode = tryEncodeRepeatFusedElementwiseChainCommand },
-        .{ .kind = .projection_fused_elementwise_chain, .encode = tryEncodeProjectionFusedElementwiseChainCommand },
-        .{ .kind = .projection_pair_fused_elementwise_chain, .encode = tryEncodeProjectionPairFusedElementwiseChainCommand },
-        .{ .kind = .row_chain, .encode = tryEncodeRowChainCommand },
-        .{ .kind = .rope_chain, .encode = tryEncodeRopeChainCommand },
-    };
-
-    comptime {
-        const command_count = @typeInfo(program_mod.ProgramCommandKind).@"enum".fields.len;
-        var seen = [_]bool{false} ** command_count;
-        seen[@intFromEnum(program_mod.ProgramCommandKind.op)] = true;
-        for (exact_program_command_lowerings) |lowering| {
-            const idx = @intFromEnum(lowering.kind);
-            if (seen[idx]) @compileError("duplicate exact Metal command lowering: " ++ @tagName(lowering.kind));
-            seen[idx] = true;
-        }
-        for (@typeInfo(program_mod.ProgramCommandKind).@"enum".fields) |field| {
-            if (!seen[field.value]) @compileError("missing exact Metal command lowering: " ++ field.name);
-        }
-    }
-
-    fn exactProgramCommandLowering(kind: program_mod.ProgramCommandKind) ?ProgramCommandLowering {
-        inline for (exact_program_command_lowerings) |lowering| {
-            if (lowering.kind == kind) return lowering;
-        }
-        return null;
-    }
-
-    fn recordExactProgramCommandRun(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand, lowering: ProgramCommandLowering, elapsed_ns: u64) void {
-        if (lowering.records_run) return;
-        self.recordRegionFusedRunFromCommand(ops, command, elapsed_ns);
+    fn recordExactProgramCommandRun(self: *CompiledProgram, exec: *MetalExecutionContext, command: program_mod.ProgramCommand) void {
+        self.recordRegionFusedRunFromCommand(exec, command);
     }
 
     fn tryEncodeExactProgramCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        var exec = MetalExecutionContext.init(self.backend);
+        defer exec.deinit();
+        const encoded = self.tryEncodeExactProgramCommandView(&exec, self.compiledRuntimeView(), ops, command);
+        exec.flushCommandsProfiled();
+        self.mergeRuntimeProfile(exec.profile);
+        return encoded;
+    }
+
+    fn tryEncodeExactProgramCommandView(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
         const start: usize = @intCast(command.op_start);
         const end = start + @as(usize, command.op_count);
         if (end > ops.len) return false;
 
-        self.runtime_profile.recordProgramCommandAttempt(command.kind);
-        const t0 = self.timingStart();
-        const lowering = exactProgramCommandLowering(command.kind) orelse return false;
-        const previous_command_kind = self.active_program_command_kind;
-        self.active_program_command_kind = command.kind;
-        defer self.active_program_command_kind = previous_command_kind;
-        const encoded = lowering.encode(self, ops, command);
+        exec.profile.recordProgramCommandAttempt(command.kind);
+        const previous_command_kind = exec.active_program_command_kind;
+        exec.active_program_command_kind = command.kind;
+        defer exec.active_program_command_kind = previous_command_kind;
+        const encoded = switch (command.kind) {
+            .op => return false,
+            .row_chain => self.tryEncodeRowChainCommand(exec, view, ops, command),
+            .rope_chain => self.tryEncodeRopeChainCommand(exec, view, ops, command),
+            .rope_batch => self.tryEncodeRopeBatchCommand(exec, view, ops, command),
+            .rope_store_group => self.tryEncodeRopeStoreGroupCommand(exec, view, ops, command),
+            .movement_batch => self.tryEncodeMovementBatchCommand(exec, view, ops, command),
+            .movement_group => self.tryEncodeMovementGroupCommand(exec, view, ops, command),
+            .attention_chain => self.tryEncodeAttentionChainCommand(exec, view, ops, command),
+            .attention_store_chain => self.tryEncodeAttentionStoreChainCommand(exec, view, ops, command),
+            .attention_store_group => self.tryEncodeAttentionStoreGroupCommand(exec, view, ops, command),
+            .rope_attention_store_chain => self.tryEncodeRopeAttentionStoreChainCommand(exec, view, ops, command),
+            .rope_attention_store_group => self.tryEncodeRopeAttentionStoreGroupCommand(exec, view, ops, command),
+            .attention_group => self.tryEncodeAttentionGroupCommand(exec, view, ops, command),
+            .elementwise_batch => self.tryEncodeElementwiseBatchCommand(exec, view, ops, command),
+            .repeat_fused_elementwise_chain => self.tryEncodeRepeatFusedElementwiseChainCommand(exec, view, ops, command),
+            .projection_pair_elementwise_chain => self.tryEncodeProjectionPairElementwiseChainCommand(exec, view, ops, command),
+            .projection_pair_fused_elementwise_chain => self.tryEncodeProjectionPairFusedElementwiseChainCommand(exec, view, ops, command),
+            .dense_projection_pair_fused_elementwise_chain => self.tryEncodeDenseProjectionPairFusedElementwiseChainCommand(exec, view, ops, command),
+            .semantic_ffn_sublayer => self.tryEncodeSemanticFfnSublayerCommand(exec, view, ops, command),
+            .semantic_ffn_sublayer_with_input_row_chain => self.tryEncodeSemanticFfnSublayerWithInputRowChainCommand(exec, view, ops, command),
+            .projection_row_chain => self.tryEncodeProjectionRowChainCommand(exec, view, ops, command),
+            .dense_projection_row_chain => self.tryEncodeDenseProjectionRowChainCommand(exec, view, ops, command),
+            .dense_projection_chain => self.tryEncodeDenseProjectionChainCommand(exec, view, ops, command),
+            .projection_chain => self.tryEncodeProjectionChainCommand(exec, view, ops, command),
+            .projection_group => self.tryEncodeProjectionCommand(exec, view, ops, command),
+            .dense_projection_cache_group => self.tryEncodeDenseProjectionCacheCommand(exec, view, ops, command),
+            .projection_cache_group => self.tryEncodeProjectionCacheCommand(exec, view, ops, command),
+        };
 
         if (!encoded) {
-            self.runtime_profile.recordProgramCommandFailed(command.kind);
+            exec.profile.recordProgramCommandFailed(command.kind);
             return false;
         }
-        self.recordExactProgramCommandRun(ops, command, lowering, self.timingElapsed(t0));
-        self.runtime_profile.recordProgramCommand(command.kind);
-        return true;
-    }
-
-    fn canEncodeRegionGpuOpDirect(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
-        if (computeDispatchSpec(op) != null) return true;
-
-        return switch (op) {
-            .matmul => true,
-            .qmatmul => |q| {
-                if (@as(usize, q.weight_idx) >= self.qweight_views.len) return false;
-                if (q.M == 1) return self.canEncodeQMatvecBatchOp(q);
-                return true;
-            },
-            .rope => true,
-            .attention => |att| canEncodeAttention(att),
-            .fused_elementwise => |fe| canEncodeFusedElementwise(fe),
-            else => false,
-        };
-    }
-
-    fn canEncodeRegionGpuOpsDirect(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) bool {
-        for (ops) |op| {
-            if (!self.canEncodeRegionGpuOpDirect(op)) return false;
-        }
+        self.recordExactProgramCommandRun(exec, command);
+        exec.profile.recordProgramCommand(command.kind);
         return true;
     }
 
     fn canEncodeProgramCommandIndividually(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        if (command.kind != .op) return true;
         var indices = command.coveredIndexIterator();
         while (indices.next()) |idx| {
-            if (idx >= ops.len or !self.canEncodeRegionGpuOpDirect(ops[idx])) return false;
+            if (idx >= ops.len or !self.canEncodeRegionGpuOp(ops[idx])) return false;
         }
         return true;
-    }
-
-    fn canEncodeProgramCommand(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
-        return self.canEncodeProgramCommandIndividually(ops, command);
     }
 
     fn canEncodeProgramCommands(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, commands: []const program_mod.ProgramCommand) bool {
         for (commands) |command| {
-            if (!self.canEncodeProgramCommand(ops, command)) return false;
+            if (!self.canEncodeProgramCommandIndividually(ops, command)) return false;
         }
         return true;
     }
 
-    fn tryEncodeProgramCommandIndividually(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
-        const previous_command_kind = self.active_program_command_kind;
-        self.active_program_command_kind = command.kind;
-        defer self.active_program_command_kind = previous_command_kind;
+    fn tryEncodeProgramCommandIndividually(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, command: program_mod.ProgramCommand) bool {
+        const previous_command_kind = exec.active_program_command_kind;
+        exec.active_program_command_kind = command.kind;
+        defer exec.active_program_command_kind = previous_command_kind;
         var indices = command.coveredIndexIterator();
         while (indices.next()) |idx| {
             if (idx >= ops.len) return false;
-            if (!self.tryEncodeRegionGpuOp(ops[idx])) return false;
+            if (!self.tryEncodeRegionGpuOp(exec, view, ops[idx])) return false;
         }
         return true;
     }
 
-    fn tryEncodeRegionGpuCommands(self: *CompiledProgram, ops: []const backend_mod.DeviceOp, commands: []const program_mod.ProgramCommand) bool {
+    fn tryEncodeRegionGpuCommands(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, ops: []const backend_mod.DeviceOp, commands: []const program_mod.ProgramCommand) bool {
         if (ops.len > 256) return false;
         if (!self.canEncodeProgramCommands(ops, commands)) return false;
 
         var skipped = [_]bool{false} ** 256;
         for (commands) |command| {
-            self.runtime_profile.recordProgramCommandPlanned(command.kind);
             const start: usize = @intCast(command.op_start);
             if (start >= ops.len) return false;
             if (command.kind == .op) {
                 if (skipped[start]) continue;
-                if (!self.tryEncodeProgramCommandIndividually(ops, command)) return false;
+                if (!self.tryEncodeProgramCommandIndividually(exec, view, ops, command)) return false;
+                exec.profile.recordProgramCommand(.op);
+                exec.profile.recordProgramOpCommand(ops[start]);
                 program_mod.markProgramCommandUsed(skipped[0..ops.len], command);
                 continue;
             }
 
-            if (self.tryEncodeExactProgramCommand(ops, command)) {
+            if (self.tryEncodeExactProgramCommandView(exec, view, ops, command)) {
                 program_mod.markProgramCommandUsed(skipped[0..ops.len], command);
                 continue;
             }
 
-            if (!self.tryEncodeProgramCommandIndividually(ops, command)) return false;
+            if (!self.tryEncodeProgramCommandIndividually(exec, view, ops, command)) return false;
             program_mod.markProgramCommandUsed(skipped[0..ops.len], command);
         }
         return true;
     }
 
-    fn tryEncodeRegionGpuOps(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) bool {
-        if (ops.len > 256) {
-            if (!self.canEncodeRegionGpuOpsDirect(ops)) return false;
-            for (ops) |op| {
-                if (!self.tryEncodeRegionGpuOp(op)) return false;
-            }
-            return true;
-        }
-
-        const commands = program_mod.buildProgramCommands(self.alloc, ops, self.backend.commandStreamPolicy()) catch return false;
-        defer self.alloc.free(commands);
-        return self.tryEncodeRegionGpuCommands(ops, commands);
-    }
-
-    const RegionLoweringFn = *const fn (*CompiledProgram, program_mod.ScheduleUnit, []const program_mod.ProgramCommand) bool;
-    const RegionLowering = struct {
-        pattern: MetalRegionPattern,
-        encode: RegionLoweringFn,
-    };
-
-    const region_lowerings = [_]RegionLowering{
-        .{ .pattern = .decode_layer_stage, .encode = tryEncodeLayerStageRegion },
-        .{ .pattern = .prefill_layer_stage, .encode = tryEncodeLayerStageRegion },
-    };
-
-    comptime {
-        const pattern_count = @typeInfo(MetalRegionPattern).@"enum".fields.len;
-        var seen = [_]bool{false} ** pattern_count;
-        for (region_lowerings) |lowering| {
-            const idx = @intFromEnum(lowering.pattern);
-            if (seen[idx]) @compileError("duplicate Metal region lowering: " ++ @tagName(lowering.pattern));
-            seen[idx] = true;
-        }
-        for (@typeInfo(MetalRegionPattern).@"enum".fields) |field| {
-            if (!seen[field.value]) {
-                @compileError("missing Metal region lowering: " ++ field.name);
-            }
-        }
-    }
-
-    fn regionLowering(pattern_index: u32) ?RegionLowering {
-        inline for (region_lowerings) |lowering| {
-            if (@intFromEnum(lowering.pattern) == pattern_index) return lowering;
-        }
-        return null;
-    }
-
-    fn regionCommandPlan(self: *const CompiledProgram, unit_index: usize) []const program_mod.ProgramCommand {
-        return self.plan.regionCommandPlan(unit_index, self.backend.commandStreamPolicy());
-    }
-
-    fn tryEncodePatternRegion(self: *CompiledProgram, unit: program_mod.ScheduleUnit, unit_index: usize) bool {
-        self.runtime_profile.recordScheduleRegionAttempt(unit);
-        const lowering = regionLowering(unit.pattern_index) orelse {
-            self.runtime_profile.recordScheduleRegionFailed(unit);
+    fn tryEncodePatternRegion(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, unit: program_mod.ScheduleUnit, unit_index: usize) bool {
+        exec.profile.recordScheduleRegionAttempt(unit);
+        if (unit.pattern_index >= metal_region_pattern_count) {
+            exec.profile.recordScheduleRegionFailed(unit);
             return false;
-        };
-        const encoded = lowering.encode(self, unit, self.regionCommandPlan(unit_index));
+        }
+        const encoded = self.tryEncodeCommandRegion(exec, view, unit, self.plan.regionCommandPlan(unit_index));
         if (encoded) {
-            self.runtime_profile.recordScheduleRegionLowered(unit);
+            exec.profile.recordScheduleRegionLowered(unit);
         } else {
-            self.runtime_profile.recordScheduleRegionFailed(unit);
+            exec.profile.recordScheduleRegionFailed(unit);
         }
         return encoded;
     }
 
-    fn tryEncodeLayerStageRegion(self: *CompiledProgram, unit: program_mod.ScheduleUnit, commands: []const program_mod.ProgramCommand) bool {
+    fn tryEncodeCommandRegion(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, unit: program_mod.ScheduleUnit, commands: []const program_mod.ProgramCommand) bool {
         const start_item: usize = @intCast(unit.start_item);
         const end_item = start_item + @as(usize, unit.item_count);
         if (end_item > self.plan.schedule.len) return false;
@@ -6574,117 +11072,274 @@ const CompiledProgram = struct {
         for (items) |item| {
             const op_start: usize = @intCast(item.start);
             const op_end = op_start + @as(usize, item.len);
-            if (op_end > self.ops.len) return false;
-            for (self.ops[op_start..op_end]) |op| {
+            if (op_end > view.program_stencil.ops.len) return false;
+            for (view.program_stencil.ops[op_start..op_end]) |op| {
                 if (!self.canEncodeRegionGpuOp(op)) return false;
             }
         }
 
         const op_start: usize = @intCast(unit.op_start);
         const op_end = op_start + @as(usize, unit.op_count);
-        if (op_end > self.ops.len) return false;
-        const ops = self.ops[op_start..op_end];
-        if (commands.len > 0) {
-            self.runtime_profile.recordCachedRegionCommandPlan(commands.len);
-            return self.tryEncodeRegionGpuCommands(ops, commands);
-        }
-
-        self.runtime_profile.recordDynamicRegionCommandPlan();
-        return self.tryEncodeRegionGpuOps(ops);
+        if (op_end > view.program_stencil.ops.len) return false;
+        const ops = view.program_stencil.ops[op_start..op_end];
+        if (commands.len == 0) return false;
+        exec.profile.recordCachedRegionCommandPlan(commands.len);
+        return self.tryEncodeRegionGpuCommands(exec, view, ops, commands);
     }
 
-    fn tryEncodeGpuOp(self: *CompiledProgram, op: backend_mod.DeviceOp) bool {
+    fn tryEncodeGpuOp(self: *CompiledProgram, exec: *MetalExecutionContext, view: RuntimeView, op: backend_mod.DeviceOp) bool {
         const fine_grained = self.backend.fine_grained_program_dispatch;
+        const region_dispatch = self.backend.region_program_dispatch;
 
         if (fine_grained) {
             if (computeDispatchSpec(op)) |spec| {
-                self.encodeComputeDispatch(spec);
+                self.encodeComputeDispatch(exec, view, spec);
                 return true;
             }
         }
 
         switch (op) {
+            .gather_rows, .conv2d, .max_pool2d, .avg_pool2d => return false,
             .matmul => |m| {
-                if (!fine_grained and m.geom.M < 16) return false;
-                const buffers = [_]DeviceBuffer{
-                    self.device_bufs[m.a],
-                    self.device_bufs[m.b],
-                    self.device_bufs[m.dst],
-                };
-                self.encodeKernel(.matmul_f32, &buffers, matmulParams(m.geom), 3, matmulGrid(m.geom.M, m.geom.N), MATMUL_THREADS);
+                if (!fine_grained and !region_dispatch and m.geom.M < 16) return false;
+                self.encodeMatmul(exec, view, m);
                 return true;
             },
             .qmatmul => |q| {
-                const w = self.qweight_views[q.weight_idx];
+                if (@as(usize, q.weight_idx) >= view.qweight_views.len) return false;
+                const w = view.qweight_views[q.weight_idx];
                 const buffers = [_]DeviceBuffer{
                     w.data,
                     w.scales,
-                    self.device_bufs[q.input],
-                    self.device_bufs[q.dst],
+                    view.device_bufs[q.input],
+                    view.device_bufs[q.dst],
                 };
                 if (q.M == 1) {
-                    return self.encodeQMatvec(q);
+                    return self.encodeQMatvec(exec, view, q);
                 }
                 if (!fine_grained and q.M < 16) return false;
-                self.encodeKernel(.qmatmul_f32, &buffers, qmatmulParams(q, w.block_size), 4, matmulGrid(q.M, q.N), MATMUL_THREADS);
+                exec.encodeKernel(.qmatmul_f32, &buffers, qmatmulParams(q, w.block_size), 4, matmulGrid(q.M, q.N), MATMUL_THREADS);
                 return true;
             },
             .rope => |rr| {
                 if (!fine_grained) return false;
-                self.encodeRope(rr);
+                self.encodeRope(exec, view, rr);
                 return true;
             },
             .attention => |att| {
                 if (!fine_grained) return false;
                 if (!canEncodeAttention(att)) return false;
-                self.encodeAttention(att);
+                self.encodeAttention(exec, view, att);
                 return true;
             },
-            .elementwise, .softmax, .layernorm, .rmsnorm, .reduce, .repeat, .slice_assign => return false,
-            .fused_elementwise => |fe| return self.tryEncodeFusedElementwise(fe),
+            .elementwise, .softmax, .logsoftmax, .layernorm, .rmsnorm, .reduce, .repeat, .slice_assign => return false,
+            .fused_elementwise => |fe| return self.tryEncodeFusedElementwise(exec, view, fe),
         }
     }
 
-    fn rebuildSchedule(self: *CompiledProgram, ops: []const backend_mod.DeviceOp) void {
-        const policy = metalSchedulePolicy(self.backend.fine_grained_program_dispatch);
-        if (self.plan.shapeMatches(ops, policy)) {
-            self.ops = ops;
-            self.runtime_profile.schedule_reuse_count +%= 1;
-            return;
-        }
+    fn patchRuntimeWindow(self: *CompiledProgram, window: backend_mod.RuntimeWindow) backend_mod.RuntimePatchStatus {
+        const status = self.compiledRuntimeView().program_stencil.patchRuntimeWindow(window);
+        self.recordRuntimePatch(status);
+        return status;
+    }
 
-        const plan = buildMetalExecutionPlan(
-            self.alloc,
-            ops,
-            policy,
-            self.backend.commandStreamPolicy(),
-        ) catch {
-            self.plan.deinit(self.alloc);
-            self.ops = ops;
-            self.plan = .{};
-            self.runtime_profile.schedule_rebuild_count +%= 1;
-            return;
-        };
+    fn patchRuntimeBindings(self: *CompiledProgram, runtime: *RuntimeBindings, window: backend_mod.RuntimeWindow) backend_mod.RuntimePatchStatus {
+        const status = self.boundRuntimeView(runtime).program_stencil.patchRuntimeWindow(window);
+        runtime.recordRuntimePatch(status);
+        return status;
+    }
 
-        self.plan.deinit(self.alloc);
-        self.ops = ops;
-        self.plan = plan;
-        self.runtime_profile.schedule_rebuild_count +%= 1;
+    fn mergeRuntimeProfile(self: *CompiledProgram, delta: profile_mod.RuntimeProfile) void {
+        self.lockProfile();
+        defer self.unlockProfile();
+        self.runtime_profile.add(delta);
+    }
+
+    fn recordRuntimePatch(self: *CompiledProgram, status: backend_mod.RuntimePatchStatus) void {
+        self.lockProfile();
+        defer self.unlockProfile();
+        self.runtime_profile.recordRuntimePatch(status);
+    }
+
+    fn resetRuntimeProfile(self: *CompiledProgram) void {
+        self.lockProfile();
+        defer self.unlockProfile();
+        self.runtime_profile.reset();
+    }
+
+    fn addRuntimeProfileTo(self: *CompiledProgram, dest: *profile_mod.RuntimeProfile) void {
+        self.lockProfile();
+        defer self.unlockProfile();
+        dest.add(self.runtime_profile);
+    }
+
+    fn lockProfile(self: *CompiledProgram) void {
+        self.profile_mutex.lockUncancelable(profileIo());
+    }
+
+    fn unlockProfile(self: *CompiledProgram) void {
+        self.profile_mutex.unlock(profileIo());
     }
 };
 
-fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backend_mod.Backend.CompiledHandle {
-    const self = getState(ctx);
-    const alloc = std.heap.page_allocator;
+const RuntimeBindings = struct {
+    device_bufs: []DeviceBuffer,
+    ref_buffers: []reference.Buffer,
+    qweight_views: []DeviceQWeight = &.{},
+    ref_qweights: []reference.QWeight = &.{},
+    semantic_width_scratch: ?DeviceBuffer = null,
+    semantic_width_scratch_requirement: SemanticWidthScratchRequirement = .{},
+    program_stencil: program_mod.ProgramStencil,
+    configured_persistent: []backend_mod.ProgramIO = &.{},
+    configured_inputs: []backend_mod.ProgramIO = &.{},
+    configured_outputs: []backend_mod.ProgramIO = &.{},
+    runtime_profile: profile_mod.RuntimeProfile = .{},
+    profile_mutex: std.Io.Mutex = .init,
+    alloc: std.mem.Allocator,
+
+    fn init(compiled: *CompiledProgram) !RuntimeBindings {
+        const alloc = compiled.alloc;
+        const device_bufs = try alloc.alloc(DeviceBuffer, compiled.device_bufs.len);
+        errdefer alloc.free(device_bufs);
+        var n_device_bufs: usize = 0;
+        errdefer releaseDeviceBuffers(device_bufs[0..n_device_bufs]);
+        for (device_bufs, compiled.device_bufs) |*dst, src| {
+            const ptr = c.mtl_create_buffer(compiled.backend.device, src.size) orelse return error.OutOfMemory;
+            dst.* = .{ .ptr = ptr, .size = src.size };
+            n_device_bufs += 1;
+            const dst_bytes: [*]u8 = @ptrCast(c.mtl_buffer_contents(ptr));
+            const src_bytes: [*]const u8 = @ptrCast(c.mtl_buffer_contents(src.ptr));
+            @memcpy(dst_bytes[0..src.size], src_bytes[0..src.size]);
+        }
+
+        const ref_buffers = try alloc.alloc(reference.Buffer, device_bufs.len);
+        errdefer alloc.free(ref_buffers);
+        for (ref_buffers, device_bufs) |*rb, buf| {
+            rb.* = .{ .ptr = @ptrCast(@alignCast(c.mtl_buffer_contents(buf.ptr))), .len = buf.size / @sizeOf(f32) };
+        }
+
+        const semantic_width_scratch = try allocateSemanticWidthScratch(compiled.backend.device, compiled.semantic_width_scratch_requirement);
+        errdefer releaseOptionalDeviceBuffer(semantic_width_scratch);
+
+        var program_stencil = try compiled.program_stencil.clone(alloc);
+        errdefer program_stencil.deinit(alloc);
+        const inspection = program_stencil.inspect();
+        const command_shape = compiled.plan.executableCommandShape() catch inspection.command_shape;
+        var runtime_profile = profile_mod.RuntimeProfile{
+            .runtime_patch_shape = inspection.runtime_patch_shape,
+            .program_command_shape = command_shape,
+        };
+        runtime_profile.recordSemanticWidthScratch(
+            compiled.semantic_width_scratch_requirement.candidates,
+            @intCast(compiled.semantic_width_scratch_requirement.scratchBytes()),
+            @intCast(compiled.semantic_width_scratch_requirement.input_bytes),
+            @intCast(compiled.semantic_width_scratch_requirement.product_bytes),
+            @intCast(compiled.semantic_width_scratch_requirement.down_partial_bytes),
+            @intCast(compiled.semantic_width_scratch_requirement.output_bytes),
+            @intCast(compiled.semantic_width_scratch_requirement.runtimeScratchBytes()),
+        );
+        runtime_profile.recordSemanticWidthScratchAllocation(if (semantic_width_scratch) |scratch| @intCast(scratch.size) else 0);
+        return .{
+            .device_bufs = device_bufs,
+            .ref_buffers = ref_buffers,
+            .qweight_views = &.{},
+            .ref_qweights = &.{},
+            .semantic_width_scratch = semantic_width_scratch,
+            .semantic_width_scratch_requirement = compiled.semantic_width_scratch_requirement,
+            .program_stencil = program_stencil,
+            .configured_persistent = &.{},
+            .configured_inputs = &.{},
+            .configured_outputs = &.{},
+            .runtime_profile = runtime_profile,
+            .alloc = alloc,
+        };
+    }
+
+    fn configure(self: *RuntimeBindings, persistent: []const backend_mod.ProgramIO, inputs: []const backend_mod.ProgramIO, outputs: []const backend_mod.ProgramIO) !void {
+        if (!self.program_stencil.ioValid(persistent, &.{})) return error.InvalidProgramIO;
+        if (!self.program_stencil.ioValid(inputs, outputs)) return error.InvalidProgramIO;
+        const next_persistent = try self.alloc.dupe(backend_mod.ProgramIO, persistent);
+        errdefer self.alloc.free(next_persistent);
+        const next_inputs = try self.alloc.dupe(backend_mod.ProgramIO, inputs);
+        errdefer self.alloc.free(next_inputs);
+        const next_outputs = try self.alloc.dupe(backend_mod.ProgramIO, outputs);
+        errdefer self.alloc.free(next_outputs);
+        if (self.configured_persistent.len > 0) self.alloc.free(self.configured_persistent);
+        if (self.configured_inputs.len > 0) self.alloc.free(self.configured_inputs);
+        if (self.configured_outputs.len > 0) self.alloc.free(self.configured_outputs);
+        self.configured_persistent = next_persistent;
+        self.configured_inputs = next_inputs;
+        self.configured_outputs = next_outputs;
+    }
+
+    fn mergeRuntimeProfile(self: *RuntimeBindings, delta: profile_mod.RuntimeProfile) void {
+        self.lockProfile();
+        defer self.unlockProfile();
+        self.runtime_profile.add(delta);
+    }
+
+    fn recordRuntimePatch(self: *RuntimeBindings, status: backend_mod.RuntimePatchStatus) void {
+        self.lockProfile();
+        defer self.unlockProfile();
+        self.runtime_profile.recordRuntimePatch(status);
+    }
+
+    fn resetRuntimeProfile(self: *RuntimeBindings) void {
+        self.lockProfile();
+        defer self.unlockProfile();
+        self.runtime_profile.reset();
+    }
+
+    fn addRuntimeProfileTo(self: *RuntimeBindings, dest: *profile_mod.RuntimeProfile) void {
+        self.lockProfile();
+        defer self.unlockProfile();
+        dest.add(self.runtime_profile);
+    }
+
+    fn lockProfile(self: *RuntimeBindings) void {
+        self.profile_mutex.lockUncancelable(profileIo());
+    }
+
+    fn unlockProfile(self: *RuntimeBindings) void {
+        self.profile_mutex.unlock(profileIo());
+    }
+
+    fn uploadQWeights(self: *RuntimeBindings, device: *anyopaque, shapes: []const QWeightShape, qweights: []const backend_mod.QuantizedWeightUpload) !void {
+        if (qweights.len != shapes.len) return error.ShapeMismatch;
+        for (qweights, shapes) |qw, expected| {
+            if (qw.rows != expected.rows or qw.cols != expected.cols or qw.block_size != expected.block_size) return error.ShapeMismatch;
+        }
+        const prepared = try prepareQWeights(device, self.alloc, qweights);
+        deinitPreparedQWeights(self.alloc, .{ .views = self.qweight_views, .refs = self.ref_qweights });
+        self.qweight_views = prepared.views;
+        self.ref_qweights = prepared.refs;
+    }
+
+    fn deinit(self: *RuntimeBindings) void {
+        if (self.configured_persistent.len > 0) self.alloc.free(self.configured_persistent);
+        if (self.configured_inputs.len > 0) self.alloc.free(self.configured_inputs);
+        if (self.configured_outputs.len > 0) self.alloc.free(self.configured_outputs);
+        deinitPreparedQWeights(self.alloc, .{ .views = self.qweight_views, .refs = self.ref_qweights });
+        releaseOptionalDeviceBuffer(self.semantic_width_scratch);
+        self.program_stencil.deinit(self.alloc);
+        releaseDeviceBuffers(self.device_bufs);
+        self.alloc.free(self.ref_buffers);
+        self.alloc.free(self.device_bufs);
+        self.* = undefined;
+    }
+};
+
+fn compileProgramInner(self: *MetalBackend, program: backend_mod.DeviceProgram, kernelizer: program_mod.Kernelizer) !*CompiledProgram {
+    const alloc = self.alloc;
 
     // Allocate device buffers.
-    const device_bufs = alloc.alloc(DeviceBuffer, program.n_buffers) catch return null;
+    const device_bufs = try alloc.alloc(DeviceBuffer, program.n_buffers);
     errdefer alloc.free(device_bufs);
     var n_device_bufs: usize = 0;
     errdefer releaseDeviceBuffers(device_bufs[0..n_device_bufs]);
     for (device_bufs, program.buffer_sizes) |*buf, size| {
         const byte_size = size * @sizeOf(f32);
-        const ptr = c.mtl_create_buffer(self.device, byte_size) orelse return null;
+        const ptr = c.mtl_create_buffer(self.device, byte_size) orelse return error.OutOfMemory;
         buf.* = .{ .ptr = ptr, .size = byte_size };
         n_device_bufs += 1;
     }
@@ -6693,75 +11348,104 @@ fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backen
     for (program.initial_uploads) |io| {
         const buf = device_bufs[io.buf_idx];
         const ptr: [*]u8 = @ptrCast(c.mtl_buffer_contents(buf.ptr));
-        @memcpy(ptr[io.offset..][0..io.size], io.host_ptr[0..io.size]);
+        const host = io.hostSlice() orelse return error.Unsupported;
+        @memcpy(ptr[io.offset..][0..io.size], host);
     }
 
     // Upload quantized weights.
-    const qweight_views = alloc.alloc(DeviceQWeight, program.qweights.len) catch return null;
-    errdefer if (qweight_views.len > 0) alloc.free(qweight_views);
-    const ref_qweights = alloc.alloc(reference.QWeight, program.qweights.len) catch return null;
-    errdefer if (ref_qweights.len > 0) alloc.free(ref_qweights);
-    var n_qweight_views: usize = 0;
-    errdefer releaseQWeightViews(qweight_views[0..n_qweight_views]);
-    var n_ref_qweights: usize = 0;
-    errdefer for (ref_qweights[0..n_ref_qweights]) |qw| reference.deinitTransposedQWeight(alloc, qw);
+    const prepared_qweights = try prepareQWeights(self.device, alloc, program.qweights);
+    errdefer deinitPreparedQWeights(alloc, prepared_qweights);
+    const qweight_shapes = try alloc.alloc(QWeightShape, program.qweights.len);
+    errdefer if (qweight_shapes.len > 0) alloc.free(qweight_shapes);
     for (program.qweights, 0..) |qw, i| {
-        const data_raw = c.mtl_create_buffer(self.device, qw.data.len) orelse return null;
-        const data_buf: DeviceBuffer = .{ .ptr = data_raw, .size = qw.data.len };
-        const data_ptr: [*]u8 = @ptrCast(c.mtl_buffer_contents(data_buf.ptr));
-        const i8_as_u8: [*]const u8 = @ptrCast(qw.data.ptr);
-        @memcpy(data_ptr[0..qw.data.len], i8_as_u8[0..qw.data.len]);
-
-        const scales_size = qw.scales.len * @sizeOf(f32);
-        const scales_raw = c.mtl_create_buffer(self.device, scales_size) orelse {
-            c.mtl_release(data_buf.ptr);
-            return null;
-        };
-        const scales_buf: DeviceBuffer = .{ .ptr = scales_raw, .size = scales_size };
-        const scales_ptr: [*]u8 = @ptrCast(c.mtl_buffer_contents(scales_buf.ptr));
-        @memcpy(scales_ptr[0..scales_size], std.mem.sliceAsBytes(qw.scales));
-
-        qweight_views[i] = .{ .data = data_buf, .scales = scales_buf, .block_size = qw.block_size };
-        n_qweight_views += 1;
-        const ref_data: [*]const i8 = @ptrCast(c.mtl_buffer_contents(data_buf.ptr));
-        const ref_scales: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(scales_buf.ptr)));
-        ref_qweights[i] = reference.prepareTransposedQWeight(alloc, .{
-            .data = ref_data[0..qw.data.len],
-            .scales = ref_scales[0..qw.scales.len],
-            .rows = qw.rows,
-            .cols = qw.cols,
-            .block_size = qw.block_size,
-        }) catch return null;
-        n_ref_qweights += 1;
+        qweight_shapes[i] = .{ .rows = qw.rows, .cols = qw.cols, .block_size = qw.block_size };
     }
 
     // Cache mtl_buffer_contents pointers — stable for shared-memory buffers.
-    const ref_buffers = alloc.alloc(reference.Buffer, program.n_buffers) catch return null;
+    const ref_buffers = try alloc.alloc(reference.Buffer, program.n_buffers);
     errdefer alloc.free(ref_buffers);
     for (ref_buffers, device_bufs) |*rb, buf| {
         rb.* = .{ .ptr = @ptrCast(@alignCast(c.mtl_buffer_contents(buf.ptr))), .len = buf.size / @sizeOf(f32) };
     }
 
-    const plan = buildMetalExecutionPlan(
-        alloc,
-        program.ops,
-        metalSchedulePolicy(self.fine_grained_program_dispatch),
-        self.commandStreamPolicy(),
-    ) catch return null;
-    errdefer plan.deinit(alloc);
+    var program_stencil = try program_mod.ProgramStencil.initProgramWithKernelizer(alloc, program, kernelizer);
+    errdefer program_stencil.deinit(alloc);
+    const inspection = program_stencil.inspect();
 
-    const compiled = alloc.create(CompiledProgram) catch return null;
+    const plan = try kernelizer.executionPlan(
+        alloc,
+        program_stencil.ops,
+        self.schedulePolicy(),
+        &metal_region_stages,
+    );
+    errdefer plan.deinit(alloc);
+    const command_shape = try plan.executableCommandShape();
+
+    const semantic_width_scratch_requirement = semanticWidthScratchRequirement(&program_stencil, kernelizer.command_policy);
+    const semantic_width_scratch = try allocateSemanticWidthScratch(self.device, semantic_width_scratch_requirement);
+    errdefer releaseOptionalDeviceBuffer(semantic_width_scratch);
+
+    var runtime_profile = profile_mod.RuntimeProfile{
+        .runtime_patch_shape = inspection.runtime_patch_shape,
+        .program_command_shape = command_shape,
+    };
+    runtime_profile.recordSemanticWidthScratch(
+        semantic_width_scratch_requirement.candidates,
+        @intCast(semantic_width_scratch_requirement.scratchBytes()),
+        @intCast(semantic_width_scratch_requirement.input_bytes),
+        @intCast(semantic_width_scratch_requirement.product_bytes),
+        @intCast(semantic_width_scratch_requirement.down_partial_bytes),
+        @intCast(semantic_width_scratch_requirement.output_bytes),
+        @intCast(semantic_width_scratch_requirement.runtimeScratchBytes()),
+    );
+    runtime_profile.recordSemanticWidthScratchAllocation(if (semantic_width_scratch) |scratch| @intCast(scratch.size) else 0);
+
+    const compiled = try alloc.create(CompiledProgram);
     compiled.* = .{
         .backend = self,
         .device_bufs = device_bufs,
         .ref_buffers = ref_buffers,
-        .qweight_views = qweight_views,
-        .ref_qweights = ref_qweights,
-        .ops = program.ops,
+        .qweight_views = prepared_qweights.views,
+        .ref_qweights = prepared_qweights.refs,
+        .qweight_shapes = qweight_shapes,
+        .semantic_width_scratch = semantic_width_scratch,
+        .semantic_width_scratch_requirement = semantic_width_scratch_requirement,
+        .program_stencil = program_stencil,
         .plan = plan,
+        .command_policy = kernelizer.command_policy,
         .alloc = alloc,
+        .runtime_profile = runtime_profile,
     };
+    return compiled;
+}
+
+fn profileIo() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
+}
+
+fn compileProgramFn(ctx: *anyopaque, program: backend_mod.DeviceProgram) ?backend_mod.Backend.CompiledHandle {
+    const state = getState(ctx);
+    const compiled = compileProgramInner(state, program, program_mod.Kernelizer.init(state.command_policy)) catch return null;
     return @ptrCast(compiled);
+}
+
+fn runtimeBindings(runtime: backend_mod.Backend.RuntimeHandle) *RuntimeBindings {
+    return @ptrCast(@alignCast(runtime));
+}
+
+fn bindProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle) ?backend_mod.Backend.RuntimeHandle {
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    const runtime = compiled.alloc.create(RuntimeBindings) catch return null;
+    runtime.* = RuntimeBindings.init(compiled) catch {
+        compiled.alloc.destroy(runtime);
+        return null;
+    };
+    return @ptrCast(runtime);
+}
+
+fn configureBindingsFn(_: *anyopaque, _: backend_mod.Backend.CompiledHandle, runtime: backend_mod.Backend.RuntimeHandle, persistent_inputs: []const backend_mod.ProgramIO, step_inputs: []const backend_mod.ProgramIO, step_outputs: []const backend_mod.ProgramIO) bool {
+    runtimeBindings(runtime).configure(persistent_inputs, step_inputs, step_outputs) catch return false;
+    return true;
 }
 
 fn executeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, inputs: []const backend_mod.ProgramIO, outputs: []const backend_mod.ProgramIO) void {
@@ -6769,9 +11453,50 @@ fn executeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, i
     compiled.execute(inputs, outputs);
 }
 
-fn refreshProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, ops: []const backend_mod.DeviceOp) void {
+fn executeBindingsFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, runtime: backend_mod.Backend.RuntimeHandle, inputs: []const backend_mod.ProgramIO, outputs: []const backend_mod.ProgramIO) void {
     const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
-    compiled.rebuildSchedule(ops);
+    compiled.executeBound(runtimeBindings(runtime), inputs, outputs);
+}
+
+fn executeConfiguredBindingsFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, runtime: backend_mod.Backend.RuntimeHandle, download_outputs: bool) void {
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    const bindings = runtimeBindings(runtime);
+    const outputs = if (download_outputs) bindings.configured_outputs else &.{};
+    compiled.executeBound(bindings, bindings.configured_inputs, outputs);
+}
+
+fn patchRuntimeWindowFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, window: backend_mod.RuntimeWindow) backend_mod.RuntimePatchStatus {
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    return compiled.patchRuntimeWindow(window);
+}
+
+fn patchRuntimeBindingsFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, runtime: backend_mod.Backend.RuntimeHandle, window: backend_mod.RuntimeWindow) backend_mod.RuntimePatchStatus {
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    return compiled.patchRuntimeBindings(runtimeBindings(runtime), window);
+}
+
+fn uploadProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, inputs: []const backend_mod.ProgramIO) void {
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    compiled.upload(inputs);
+}
+
+fn uploadBindingsFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, runtime: backend_mod.Backend.RuntimeHandle, inputs: []const backend_mod.ProgramIO) void {
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    compiled.uploadBound(runtimeBindings(runtime), inputs);
+}
+
+fn uploadQWeightsFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, runtime: backend_mod.Backend.RuntimeHandle, qweights: []const backend_mod.QuantizedWeightUpload) bool {
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    const bindings = runtimeBindings(runtime);
+    bindings.uploadQWeights(compiled.backend.device, compiled.qweight_shapes, qweights) catch return false;
+    return true;
+}
+
+fn freeBindingsFn(_: *anyopaque, _: backend_mod.Backend.CompiledHandle, runtime: backend_mod.Backend.RuntimeHandle) void {
+    const binding = runtimeBindings(runtime);
+    const alloc = binding.alloc;
+    binding.deinit();
+    alloc.destroy(binding);
 }
 
 fn freeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle) void {
@@ -6779,18 +11504,43 @@ fn freeProgramFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle) void
     compiled.deinit();
 }
 
-fn getRuntimeProfileFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle) ?*profile_mod.RuntimeProfile {
+fn resetRuntimeProfileFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle) void {
     const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
-    return &compiled.runtime_profile;
+    compiled.resetRuntimeProfile();
+}
+
+fn addRuntimeProfileToFn(_: *anyopaque, handle: backend_mod.Backend.CompiledHandle, dest: *profile_mod.RuntimeProfile) void {
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    compiled.addRuntimeProfileTo(dest);
+}
+
+fn resetRuntimeBindingsProfileFn(_: *anyopaque, _: backend_mod.Backend.CompiledHandle, runtime: backend_mod.Backend.RuntimeHandle) void {
+    runtimeBindings(runtime).resetRuntimeProfile();
+}
+
+fn addRuntimeBindingsProfileToFn(_: *anyopaque, _: backend_mod.Backend.CompiledHandle, runtime: backend_mod.Backend.RuntimeHandle, dest: *profile_mod.RuntimeProfile) void {
+    runtimeBindings(runtime).addRuntimeProfileTo(dest);
 }
 
 const vtable = backend_mod.Backend.VTable{
     .dense_matmul_f32 = denseMatMulF32,
     .compile_program = compileProgramFn,
-    .refresh_program = refreshProgramFn,
+    .bind_program = bindProgramFn,
+    .configure_bindings = configureBindingsFn,
+    .patch_runtime_bindings = patchRuntimeBindingsFn,
+    .upload_bindings = uploadBindingsFn,
+    .upload_qweights = uploadQWeightsFn,
+    .execute_bindings = executeBindingsFn,
+    .execute_configured_bindings = executeConfiguredBindingsFn,
+    .free_bindings = freeBindingsFn,
+    .patch_runtime_window = patchRuntimeWindowFn,
+    .upload_program = uploadProgramFn,
     .execute_program = executeProgramFn,
     .free_program = freeProgramFn,
-    .get_runtime_profile = getRuntimeProfileFn,
+    .reset_runtime_profile = resetRuntimeProfileFn,
+    .add_runtime_profile_to = addRuntimeProfileToFn,
+    .reset_runtime_bindings_profile = resetRuntimeBindingsProfileFn,
+    .add_runtime_bindings_profile_to = addRuntimeBindingsProfileToFn,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────
@@ -6822,12 +11572,373 @@ test "metal backend compiled program matmul" {
 
     const handle = be.compileProgram(program) orelse return error.CompileFailed;
     defer be.freeProgram(handle);
-
     var dst: [4]f32 = undefined;
     var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 2, .host_ptr = @ptrCast(&dst), .size = 4 * 4 }};
     be.executeProgram(handle, &.{}, &out);
 
     try std.testing.expectEqualSlices(f32, &.{ 58, 64, 139, 154 }, &dst);
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+}
+
+test "metal backend runtime bindings own independent buffer state" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setFineGrainedProgramDispatch(true);
+    const be = metal.backend();
+
+    const ops = [_]backend_mod.DeviceOp{.{ .matmul = .{
+        .dst = 2,
+        .a = 0,
+        .b = 1,
+        .geom = .{ .M = 1, .N = 2, .K = 2, .a_row_stride = 2, .a_col_stride = 1, .b_row_stride = 2, .b_col_stride = 1, .a_offset = 0, .b_offset = 0, .dst_offset = 0, .dst_row_stride = 2 },
+    } }};
+    const buf_sizes = [_]usize{ 2, 4, 2 };
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 3, .buffer_sizes = &buf_sizes, .initial_uploads = &.{} };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const runtime_a = be.bindProgram(handle) orelse return error.CompileFailed;
+    defer be.freeBindings(handle, runtime_a);
+    const runtime_b = be.bindProgram(handle) orelse return error.CompileFailed;
+    defer be.freeBindings(handle, runtime_b);
+
+    var input = [_]f32{ 2, 3 };
+    var weights_a = [_]f32{ 1, 0, 0, 1 };
+    var weights_b = [_]f32{ 2, 0, 0, 2 };
+    const inputs = [_]backend_mod.ProgramIO{.{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * @sizeOf(f32) }};
+    const bind_a = [_]backend_mod.ProgramIO{.{ .buf_idx = 1, .host_ptr = @ptrCast(&weights_a), .size = weights_a.len * @sizeOf(f32) }};
+    const bind_b = [_]backend_mod.ProgramIO{.{ .buf_idx = 1, .host_ptr = @ptrCast(&weights_b), .size = weights_b.len * @sizeOf(f32) }};
+    be.uploadBindings(handle, runtime_a, &bind_a);
+    be.uploadBindings(handle, runtime_b, &bind_b);
+
+    var out_a = [_]f32{0} ** 2;
+    var out_b = [_]f32{0} ** 2;
+    const output_a = [_]backend_mod.ProgramIO{.{ .buf_idx = 2, .host_ptr = @ptrCast(&out_a), .size = out_a.len * @sizeOf(f32) }};
+    const output_b = [_]backend_mod.ProgramIO{.{ .buf_idx = 2, .host_ptr = @ptrCast(&out_b), .size = out_b.len * @sizeOf(f32) }};
+
+    be.executeBindings(handle, runtime_a, &inputs, &output_a);
+    be.executeBindings(handle, runtime_b, &inputs, &output_b);
+    try std.testing.expectEqualSlices(f32, &.{ 2, 3 }, &out_a);
+    try std.testing.expectEqualSlices(f32, &.{ 4, 6 }, &out_b);
+
+    out_a = .{ 0, 0 };
+    be.executeBindings(handle, runtime_a, &inputs, &output_a);
+    try std.testing.expectEqualSlices(f32, &.{ 2, 3 }, &out_a);
+}
+
+test "metal backend runtime profiles are session local" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setFineGrainedProgramDispatch(true);
+    const be = metal.backend();
+
+    const ops = [_]backend_mod.DeviceOp{.{ .matmul = .{
+        .dst = 2,
+        .a = 0,
+        .b = 1,
+        .geom = .{ .M = 1, .N = 2, .K = 2, .a_row_stride = 2, .a_col_stride = 1, .b_row_stride = 2, .b_col_stride = 1, .a_offset = 0, .b_offset = 0, .dst_offset = 0, .dst_row_stride = 2 },
+    } }};
+    const buf_sizes = [_]usize{ 2, 4, 2 };
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 3, .buffer_sizes = &buf_sizes, .initial_uploads = &.{} };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const runtime_a = be.bindProgram(handle) orelse return error.CompileFailed;
+    defer be.freeBindings(handle, runtime_a);
+    const runtime_b = be.bindProgram(handle) orelse return error.CompileFailed;
+    defer be.freeBindings(handle, runtime_b);
+
+    var input = [_]f32{ 2, 3 };
+    var weights = [_]f32{ 1, 0, 0, 1 };
+    const inputs = [_]backend_mod.ProgramIO{.{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * @sizeOf(f32) }};
+    const bind_weights = [_]backend_mod.ProgramIO{.{ .buf_idx = 1, .host_ptr = @ptrCast(&weights), .size = weights.len * @sizeOf(f32) }};
+    be.uploadBindings(handle, runtime_a, &bind_weights);
+    be.uploadBindings(handle, runtime_b, &bind_weights);
+
+    var out = [_]f32{0} ** 2;
+    const output = [_]backend_mod.ProgramIO{.{ .buf_idx = 2, .host_ptr = @ptrCast(&out), .size = out.len * @sizeOf(f32) }};
+    const window = try backend_mod.RuntimeWindow.init(0, 1);
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.unchanged, be.patchRuntimeBindings(handle, runtime_a, window));
+    be.executeBindings(handle, runtime_a, &inputs, &output);
+
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.unchanged, be.patchRuntimeBindings(handle, runtime_b, window));
+    be.executeBindings(handle, runtime_b, &inputs, &output);
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.unchanged, be.patchRuntimeBindings(handle, runtime_b, window));
+    be.executeBindings(handle, runtime_b, &inputs, &output);
+
+    var program_profile = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &program_profile);
+    try std.testing.expectEqual(@as(u32, 0), program_profile.call_count);
+    try std.testing.expectEqual(@as(u64, 0), program_profile.runtime_patch_call_count);
+
+    var profile_a = profile_mod.RuntimeProfile{};
+    be.addRuntimeBindingsProfileTo(handle, runtime_a, &profile_a);
+    var profile_b = profile_mod.RuntimeProfile{};
+    be.addRuntimeBindingsProfileTo(handle, runtime_b, &profile_b);
+
+    try std.testing.expect(profile_a.program_command_shape.command_count > 0);
+    try std.testing.expectEqual(profile_a.program_command_shape.command_stencil_hash, profile_b.program_command_shape.command_stencil_hash);
+    try std.testing.expectEqual(@as(u32, 1), profile_a.call_count);
+    try std.testing.expectEqual(@as(u64, 1), profile_a.runtime_patch_call_count);
+    try std.testing.expectEqual(@as(u32, 2), profile_b.call_count);
+    try std.testing.expectEqual(@as(u64, 2), profile_b.runtime_patch_call_count);
+
+    be.resetRuntimeBindingsProfile(handle, runtime_a);
+    profile_a = .{};
+    be.addRuntimeBindingsProfileTo(handle, runtime_a, &profile_a);
+    profile_b = .{};
+    be.addRuntimeBindingsProfileTo(handle, runtime_b, &profile_b);
+    try std.testing.expect(profile_a.program_command_shape.command_count > 0);
+    try std.testing.expectEqual(@as(u32, 0), profile_a.call_count);
+    try std.testing.expectEqual(@as(u64, 0), profile_a.runtime_patch_call_count);
+    try std.testing.expectEqual(@as(u32, 2), profile_b.call_count);
+    try std.testing.expectEqual(@as(u64, 2), profile_b.runtime_patch_call_count);
+}
+
+test "metal backend bound executable hot path does not allocate" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const alloc = failing.allocator();
+
+    var metal = MetalBackend.initWithAllocator(alloc) catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setFineGrainedProgramDispatch(true);
+    const be = metal.backend();
+
+    const ops = [_]backend_mod.DeviceOp{.{ .matmul = .{
+        .dst = 2,
+        .a = 0,
+        .b = 1,
+        .geom = .{ .M = 1, .N = 2, .K = 2, .a_row_stride = 2, .a_col_stride = 1, .b_row_stride = 2, .b_col_stride = 1, .a_offset = 0, .b_offset = 0, .dst_offset = 0, .dst_row_stride = 2 },
+    } }};
+    const buf_sizes = [_]usize{ 2, 4, 2 };
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 3, .buffer_sizes = &buf_sizes, .initial_uploads = &.{} };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const runtime = be.bindProgram(handle) orelse return error.CompileFailed;
+    defer be.freeBindings(handle, runtime);
+
+    var input = [_]f32{ 2, 3 };
+    var weights = [_]f32{ 1, 0, 0, 1 };
+    const inputs = [_]backend_mod.ProgramIO{.{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * @sizeOf(f32) }};
+    const bind_weights = [_]backend_mod.ProgramIO{.{ .buf_idx = 1, .host_ptr = @ptrCast(&weights), .size = weights.len * @sizeOf(f32) }};
+    be.uploadBindings(handle, runtime, &bind_weights);
+
+    var out = [_]f32{0} ** 2;
+    const output = [_]backend_mod.ProgramIO{.{ .buf_idx = 2, .host_ptr = @ptrCast(&out), .size = out.len * @sizeOf(f32) }};
+
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+    const alloc_index = failing.alloc_index;
+    const resize_index = failing.resize_index;
+
+    try std.testing.expectEqual(backend_mod.RuntimePatchStatus.unchanged, be.patchRuntimeBindings(handle, runtime, try backend_mod.RuntimeWindow.init(0, 1)));
+    be.executeBindings(handle, runtime, &inputs, &output);
+    try std.testing.expectEqualSlices(f32, &.{ 2, 3 }, &out);
+
+    out = .{ 0, 0 };
+    input = .{ 4, 5 };
+    be.executeBindings(handle, runtime, &inputs, &.{});
+    be.executeBindings(handle, runtime, &inputs, &output);
+    try std.testing.expectEqualSlices(f32, &.{ 4, 5 }, &out);
+
+    try std.testing.expectEqual(alloc_index, failing.alloc_index);
+    try std.testing.expectEqual(resize_index, failing.resize_index);
+    try std.testing.expect(!failing.has_induced_failure);
+}
+
+test "metal llama persistent decode executable hot path does not allocate" {
+    const llama_mod = @import("../llama_inference.zig");
+    const cfg = llama_mod.LlamaConfig{
+        .vocab_size = 16,
+        .d_model = 8,
+        .n_heads = 2,
+        .n_kv_heads = 1,
+        .d_ff = 16,
+        .n_layers = 2,
+        .max_seq_len = 8,
+    };
+    const Session = llama_mod.LlamaInferenceSession(f32, cfg);
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const alloc = failing.allocator();
+
+    var model_session = try Session.init(alloc);
+    defer model_session.deinit();
+
+    var metal = MetalBackend.initWithAllocator(alloc) catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setFineGrainedProgramDispatch(true);
+
+    var program = try model_session.compileDeviceDecodeProgram(metal.backend(), alloc);
+    defer program.deinit();
+
+    var runtime = try model_session.bindRuntime(alloc);
+    defer runtime.deinit();
+
+    var logits = [_]f32{-999} ** cfg.vocab_size;
+    var exec = try program.bind(&runtime, &logits);
+    defer exec.deinit();
+
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+    const alloc_index = failing.alloc_index;
+    const resize_index = failing.resize_index;
+
+    const first = try exec.stepInto(&logits, 0);
+    try std.testing.expectEqual(@as(usize, cfg.vocab_size), first.len);
+    try exec.advance(1);
+    const second = try exec.stepInto(&logits, 2);
+    try std.testing.expectEqual(@as(usize, cfg.vocab_size), second.len);
+    try std.testing.expectEqual(@as(usize, 3), runtime.position());
+
+    var prof = profile_mod.RuntimeProfile{};
+    exec.addRuntimeProfileTo(&prof);
+    try std.testing.expectEqual(@as(u64, 3), prof.call_count);
+    try std.testing.expect(prof.backend_dispatch_count > 0);
+
+    try std.testing.expectEqual(alloc_index, failing.alloc_index);
+    try std.testing.expectEqual(resize_index, failing.resize_index);
+    try std.testing.expect(!failing.has_induced_failure);
+}
+
+test "metal llama persistent prefill executable hot path does not allocate" {
+    const llama_mod = @import("../llama_inference.zig");
+    const cfg = llama_mod.LlamaConfig{
+        .vocab_size = 16,
+        .d_model = 8,
+        .n_heads = 2,
+        .n_kv_heads = 1,
+        .d_ff = 16,
+        .n_layers = 2,
+        .max_seq_len = 8,
+    };
+    const Session = llama_mod.LlamaInferenceSession(f32, cfg);
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const alloc = failing.allocator();
+
+    var model_session = try Session.init(alloc);
+    defer model_session.deinit();
+
+    var metal = MetalBackend.initWithAllocator(alloc) catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setFineGrainedProgramDispatch(true);
+
+    const tokens = [_]usize{ 0, 1, 2 };
+    var program = try model_session.compileDevicePrefillProgram(metal.backend(), alloc, tokens.len);
+    defer program.deinit();
+
+    var runtime = try model_session.bindRuntime(alloc);
+    defer runtime.deinit();
+
+    var logits = [_]f32{-999} ** cfg.vocab_size;
+    var exec = try program.bind(&runtime, &logits);
+    defer exec.deinit();
+
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+    const alloc_index = failing.alloc_index;
+    const resize_index = failing.resize_index;
+
+    const prefilled = try exec.prefillInto(&logits, &tokens);
+    try std.testing.expectEqual(@as(usize, cfg.vocab_size), prefilled.len);
+    try std.testing.expectEqual(@as(usize, tokens.len), runtime.position());
+
+    runtime.reset();
+    try exec.advanceTokens(&tokens);
+    try std.testing.expectEqual(@as(usize, tokens.len), runtime.position());
+
+    var prof = profile_mod.RuntimeProfile{};
+    exec.addRuntimeProfileTo(&prof);
+    try std.testing.expectEqual(@as(u64, 2), prof.call_count);
+    try std.testing.expect(prof.backend_dispatch_count > 0);
+
+    try std.testing.expectEqual(alloc_index, failing.alloc_index);
+    try std.testing.expectEqual(resize_index, failing.resize_index);
+    try std.testing.expect(!failing.has_induced_failure);
+}
+
+test "metal backend runtime bindings own independent qweight state" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setFineGrainedProgramDispatch(true);
+    const be = metal.backend();
+    try std.testing.expect(be.capabilities.runtime_qweights);
+
+    const ops = [_]backend_mod.DeviceOp{.{ .qmatmul = .{
+        .dst = 1,
+        .input = 0,
+        .weight_idx = 0,
+        .M = 1,
+        .N = 2,
+        .K = 2,
+    } }};
+    const buf_sizes = [_]usize{ 2, 2 };
+    const compile_qdata = [_]i8{ 1, 0, 0, 1 };
+    const compile_scales = [_]f32{1};
+    const compile_qweights = [_]backend_mod.QuantizedWeightUpload{.{
+        .data = &compile_qdata,
+        .scales = &compile_scales,
+        .rows = 2,
+        .cols = 2,
+        .block_size = 4,
+    }};
+    const program = backend_mod.DeviceProgram{ .ops = &ops, .n_buffers = 2, .buffer_sizes = &buf_sizes, .initial_uploads = &.{}, .qweights = &compile_qweights };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const runtime_a = be.bindProgram(handle) orelse return error.CompileFailed;
+    defer be.freeBindings(handle, runtime_a);
+    const runtime_b = be.bindProgram(handle) orelse return error.CompileFailed;
+    defer be.freeBindings(handle, runtime_b);
+
+    const qdata_b = [_]i8{ 2, 0, 0, 2 };
+    const qweights_a = [_]backend_mod.QuantizedWeightUpload{compile_qweights[0]};
+    const qweights_b = [_]backend_mod.QuantizedWeightUpload{.{
+        .data = &qdata_b,
+        .scales = &compile_scales,
+        .rows = 2,
+        .cols = 2,
+        .block_size = 4,
+    }};
+    try std.testing.expect(be.uploadQWeights(handle, runtime_a, &qweights_a));
+    try std.testing.expect(be.uploadQWeights(handle, runtime_b, &qweights_b));
+
+    var input = [_]f32{ 2, 3 };
+    const inputs = [_]backend_mod.ProgramIO{.{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * @sizeOf(f32) }};
+    var out_a = [_]f32{0} ** 2;
+    var out_b = [_]f32{0} ** 2;
+    const output_a = [_]backend_mod.ProgramIO{.{ .buf_idx = 1, .host_ptr = @ptrCast(&out_a), .size = out_a.len * @sizeOf(f32) }};
+    const output_b = [_]backend_mod.ProgramIO{.{ .buf_idx = 1, .host_ptr = @ptrCast(&out_b), .size = out_b.len * @sizeOf(f32) }};
+
+    be.executeBindings(handle, runtime_a, &inputs, &output_a);
+    be.executeBindings(handle, runtime_b, &inputs, &output_b);
+    try std.testing.expectEqualSlices(f32, &.{ 2, 3 }, &out_a);
+    try std.testing.expectEqualSlices(f32, &.{ 4, 6 }, &out_b);
+
+    out_a = .{ 0, 0 };
+    be.executeBindings(handle, runtime_a, &inputs, &output_a);
+    try std.testing.expectEqualSlices(f32, &.{ 2, 3 }, &out_a);
 }
 
 test "metal backend compiled program qmatvec" {
@@ -6872,22 +11983,11 @@ test "metal backend compiled program qmatvec" {
 
     try std.testing.expectApproxEqAbs(@as(f32, 220), dst[0], 1e-4);
     try std.testing.expectApproxEqAbs(@as(f32, 280), dst[1], 1e-4);
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 1), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
-}
-
-test "metal backend capabilities reflect projection rope cache sidecar knob" {
-    var metal = MetalBackend.init() catch |err| switch (err) {
-        error.MetalNotAvailable => return,
-        else => return err,
-    };
-    defer metal.deinit();
-
-    try std.testing.expect(!metal.backend().capabilities.command_stream.projection_rope_cache_sidecars);
-    metal.setProjectionRopeCacheSidecars(true);
-    try std.testing.expect(metal.backend().capabilities.command_stream.projection_rope_cache_sidecars);
 }
 
 test "metal backend region batches independent qmatvecs" {
@@ -6896,6 +11996,7 @@ test "metal backend region batches independent qmatvecs" {
         else => return err,
     };
     defer metal.deinit();
+    metal.setFineGrainedProgramDispatch(true);
     metal.setRegionProgramDispatch(true);
     const be = metal.backend();
 
@@ -6934,6 +12035,8 @@ test "metal backend region batches independent qmatvecs" {
 
     const handle = be.compileProgram(program) orelse return error.CompileFailed;
     defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+    try std.testing.expectEqualSlices(program_mod.ProgramCommand, compiled.program_stencil.kernel_plan.commands, compiled.plan.regionCommandPlan(0));
 
     var got: [7][4]f32 = undefined;
     var outs: [7]backend_mod.ProgramIO = undefined;
@@ -6946,7 +12049,8 @@ test "metal backend region batches independent qmatvecs" {
         try std.testing.expectEqualSlices(f32, &input, &row);
     }
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 7), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
@@ -6955,7 +12059,6 @@ test "metal backend region batches independent qmatvecs" {
     try std.testing.expectEqual(@as(u64, 0), rt.schedule_regions.failed);
     try std.testing.expectEqual(@as(u64, 7), rt.schedule_regions.lowered_ops);
     try std.testing.expectEqual(@as(u64, 1), rt.region_command_plan_cached_count);
-    try std.testing.expectEqual(@as(u64, 0), rt.region_command_plan_dynamic_count);
     try std.testing.expect(rt.region_command_plan_cached_command_count > 0);
     const decode_pattern = MetalRegionPattern.decode_layer_stage.index();
     try std.testing.expectEqual(@as(u64, 1), rt.schedule_region_patterns[decode_pattern].attempted);
@@ -7043,7 +12146,8 @@ test "metal backend qmatvec projection group carries cache store sidecars" {
         try std.testing.expectEqualSlices(f32, &input, &row);
     }
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
@@ -7133,7 +12237,8 @@ test "metal backend qmatvec projection cache coalesces rectangular stores" {
     try std.testing.expectEqualSlices(f32, &.{ 3, 4 }, got[6..8]);
     try std.testing.expectEqualSlices(f32, &.{ 5, 6 }, got[12..14]);
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 10), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
@@ -7209,7 +12314,8 @@ test "metal backend qmatvec projection group carries elementwise sidecars" {
 
     try std.testing.expectEqualSlices(f32, &.{ 11, 22, 33, 44 }, &got);
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
@@ -7217,123 +12323,16 @@ test "metal backend qmatvec projection group carries elementwise sidecars" {
     try std.testing.expectEqual(@as(u64, 2), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_group)]);
 }
 
-test "metal backend qmatvec projection cache group carries rope store sidecars" {
+test "metal backend qmatvec projection group carries unary elementwise sidecars" {
     var metal = MetalBackend.init() catch |err| switch (err) {
         error.MetalNotAvailable => return,
         else => return err,
     };
     defer metal.deinit();
     metal.setRegionProgramDispatch(true);
-    metal.setProjectionRopeCacheSidecars(true);
     const be = metal.backend();
 
     var input = [_]f32{ 1, 2, 3, 4 };
-    var q_out_seed = [_]f32{99} ** 4;
-    var rope_out_seed = [_]f32{77} ** 4;
-    var cos_sin = [_]f32{ 0, 0, 1, 1 };
-    var cache = [_]f32{0} ** 4;
-    const qdata = [_]i8{
-        1, 0, 0, 0,
-        0, 1, 0, 0,
-        0, 0, 1, 0,
-        0, 0, 0, 1,
-    };
-    const scales = [_]f32{ 1, 1, 1, 1 };
-    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
-
-    var ops: [9]backend_mod.DeviceOp = undefined;
-    for (ops[0..7], 0..) |*op, i| {
-        op.* = .{ .qmatmul = .{
-            .dst = @intCast(i + 1),
-            .input = 0,
-            .weight_idx = 0,
-            .M = 1,
-            .N = 4,
-            .K = 4,
-        } };
-    }
-    ops[7] = .{ .rope = .{
-        .dst = 8,
-        .src = 7,
-        .cos_sin = 9,
-        .half_d = 2,
-        .seq_len = 1,
-        .src_off = 0,
-        .dst_off = 0,
-        .cs_off = 0,
-        .src_rs = 1,
-        .src_cs = 4,
-        .cs_cs = 4,
-    } };
-    ops[8] = .{ .slice_assign = .{
-        .dst = 10,
-        .src = 8,
-        .rows = 4,
-        .cols = 1,
-        .dst_base_offset = 0,
-        .dst_offset = 0,
-        .dst_row_stride = 1,
-        .dst_col_stride = 4,
-        .src_offset = 0,
-        .src_row_stride = 1,
-        .src_col_stride = 4,
-        .patch_stride = 4,
-    } };
-
-    const buf_sizes = [_]usize{ 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 };
-    const uploads = [_]backend_mod.ProgramIO{
-        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
-        .{ .buf_idx = 7, .host_ptr = @ptrCast(&q_out_seed), .size = q_out_seed.len * 4 },
-        .{ .buf_idx = 8, .host_ptr = @ptrCast(&rope_out_seed), .size = rope_out_seed.len * 4 },
-        .{ .buf_idx = 9, .host_ptr = @ptrCast(&cos_sin), .size = cos_sin.len * 4 },
-        .{ .buf_idx = 10, .host_ptr = @ptrCast(&cache), .size = cache.len * 4 },
-    };
-    const program = backend_mod.DeviceProgram{
-        .ops = &ops,
-        .n_buffers = 11,
-        .buffer_sizes = &buf_sizes,
-        .initial_uploads = &uploads,
-        .qweights = &qweights,
-    };
-
-    const handle = be.compileProgram(program) orelse return error.CompileFailed;
-    defer be.freeProgram(handle);
-
-    var got_q: [4]f32 = undefined;
-    var got_rope: [4]f32 = undefined;
-    var got_cache: [4]f32 = undefined;
-    const outs = [_]backend_mod.ProgramIO{
-        .{ .buf_idx = 7, .host_ptr = @ptrCast(&got_q), .size = got_q.len * 4 },
-        .{ .buf_idx = 8, .host_ptr = @ptrCast(&got_rope), .size = got_rope.len * 4 },
-        .{ .buf_idx = 10, .host_ptr = @ptrCast(&got_cache), .size = got_cache.len * 4 },
-    };
-    be.executeProgram(handle, &.{}, &outs);
-
-    try std.testing.expectEqualSlices(f32, &q_out_seed, &got_q);
-    try std.testing.expectEqualSlices(f32, &rope_out_seed, &got_rope);
-    try std.testing.expectEqualSlices(f32, &.{ -3, -4, 1, 2 }, &got_cache);
-
-    const rt = be.getRuntimeProfile(handle).?;
-    try std.testing.expectEqual(@as(u64, 9), rt.backend_op_count);
-    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
-    try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
-    try std.testing.expectEqual(@as(u64, 1), rt.region_command_plan_cached_count);
-}
-
-test "metal backend qmatvec projection cache group materializes rope sidecars" {
-    var metal = MetalBackend.init() catch |err| switch (err) {
-        error.MetalNotAvailable => return,
-        else => return err,
-    };
-    defer metal.deinit();
-    metal.setRegionProgramDispatch(true);
-    metal.setProjectionRopeCacheSidecars(true);
-    const be = metal.backend();
-
-    var input = [_]f32{ 1, 2, 3, 4 };
-    var q_out_seed = [_]f32{99} ** 4;
-    var rope_out_seed = [_]f32{77} ** 4;
-    var cos_sin = [_]f32{ 0, 0, 1, 1 };
     const qdata = [_]i8{
         1, 0, 0, 0,
         0, 1, 0, 0,
@@ -7352,18 +12351,12 @@ test "metal backend qmatvec projection cache group materializes rope sidecars" {
         .N = 4,
         .K = 4,
     } };
-    ops[1] = .{ .rope = .{
-        .dst = 8,
-        .src = 1,
-        .cos_sin = 9,
-        .half_d = 2,
-        .seq_len = 1,
-        .src_off = 0,
-        .dst_off = 0,
-        .cs_off = 0,
-        .src_rs = 1,
-        .src_cs = 4,
-        .cs_cs = 4,
+    ops[1] = .{ .elementwise = .{
+        .op = .silu,
+        .dst = 9,
+        .src0 = 1,
+        .src1 = 1,
+        .n = 4,
     } };
     for (ops[2..], 0..) |*op, i| {
         op.* = .{ .qmatmul = .{
@@ -7379,9 +12372,6 @@ test "metal backend qmatvec projection cache group materializes rope sidecars" {
     const buf_sizes = [_]usize{ 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 };
     const uploads = [_]backend_mod.ProgramIO{
         .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
-        .{ .buf_idx = 1, .host_ptr = @ptrCast(&q_out_seed), .size = q_out_seed.len * 4 },
-        .{ .buf_idx = 8, .host_ptr = @ptrCast(&rope_out_seed), .size = rope_out_seed.len * 4 },
-        .{ .buf_idx = 9, .host_ptr = @ptrCast(&cos_sin), .size = cos_sin.len * 4 },
     };
     const program = backend_mod.DeviceProgram{
         .ops = &ops,
@@ -7394,22 +12384,190 @@ test "metal backend qmatvec projection cache group materializes rope sidecars" {
     const handle = be.compileProgram(program) orelse return error.CompileFailed;
     defer be.freeProgram(handle);
 
-    var got_q: [4]f32 = undefined;
-    var got_rope: [4]f32 = undefined;
-    const outs = [_]backend_mod.ProgramIO{
-        .{ .buf_idx = 1, .host_ptr = @ptrCast(&got_q), .size = got_q.len * 4 },
-        .{ .buf_idx = 8, .host_ptr = @ptrCast(&got_rope), .size = got_rope.len * 4 },
-    };
-    be.executeProgram(handle, &.{}, &outs);
+    var got: [4]f32 = undefined;
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 9, .host_ptr = @ptrCast(&got), .size = got.len * 4 }};
+    be.executeProgram(handle, &.{}, &out);
 
-    try std.testing.expectEqualSlices(f32, &q_out_seed, &got_q);
-    try std.testing.expectEqualSlices(f32, &.{ -3, -4, 1, 2 }, &got_rope);
+    for (input, got) |x, actual| {
+        const want = x / (1.0 + @exp(-x));
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
     try std.testing.expectEqual(@as(u64, 1), rt.region_command_plan_cached_count);
+    try std.testing.expectEqual(@as(u64, 2), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_group)]);
+}
+
+test "metal backend exact-lowers qmatvec unary elementwise sidecar" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4 };
+    var q_out = [_]f32{99} ** 4;
+    var silu_out = [_]f32{0} ** 4;
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{
+            .dst = 1,
+            .input = 0,
+            .weight_idx = 0,
+            .M = 1,
+            .N = 4,
+            .K = 4,
+        } },
+        .{ .elementwise = .{
+            .op = .silu,
+            .dst = 2,
+            .src0 = 1,
+            .src1 = 1,
+            .n = 4,
+        } },
+    };
+    try std.testing.expect(!program_mod.projectionPrimaryOutputHasExternalUsers(&ops, 0, 1));
+
+    const buf_sizes = [_]usize{ 4, 4, 4 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&q_out), .size = q_out.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&silu_out), .size = silu_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 3,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_chain, commands[0].kind);
+    try std.testing.expectEqual(.qmatvec, commands[0].projection_kind);
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, commands[0]));
+    metal.flushCommands();
+
+    const got_q: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[1].ptr)));
+    const got_silu: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[2].ptr)));
+    try std.testing.expectEqualSlices(f32, &.{ 99, 99, 99, 99 }, got_q[0..4]);
+    for (input, got_silu[0..4]) |x, actual| {
+        const want = x / (1.0 + @exp(-x));
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 2), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.projection_chain_qmatvec_sidecars[@intFromEnum(std.meta.Tag(backend_mod.DeviceOp).elementwise)]);
+}
+
+test "metal backend region fuses qmatvec fused-elementwise sidecar" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4 };
+    var q_out = [_]f32{99} ** 4;
+    var scale = [_]f32{ 2, 3, 4, 5 };
+    var fused_out = [_]f32{0} ** 4;
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
+    const fused_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .mul, .is_swapped = false, .secondary_buf = 2, .secondary_offset = 0 },
+        .{ .op = .add, .is_swapped = false, .secondary_buf = 1, .secondary_offset = 0 },
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{
+            .dst = 1,
+            .input = 0,
+            .weight_idx = 0,
+            .M = 1,
+            .N = 4,
+            .K = 4,
+        } },
+        .{ .fused_elementwise = .{
+            .steps = &fused_steps,
+            .n = 4,
+            .dst = 3,
+            .src = 1,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+    };
+    try std.testing.expect(!program_mod.projectionPrimaryOutputHasExternalUsers(&ops, 0, 1));
+
+    const buf_sizes = [_]usize{ 4, 4, 4, 4 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&q_out), .size = q_out.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&scale), .size = scale.len * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&fused_out), .size = fused_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 4,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_chain, commands[0].kind);
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, commands[0]));
+    metal.flushCommands();
+
+    const got_q: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[1].ptr)));
+    const got_fused: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[3].ptr)));
+    try std.testing.expectEqualSlices(f32, &.{ 99, 99, 99, 99 }, got_q[0..4]);
+    try std.testing.expectEqualSlices(f32, &.{ 3, 8, 15, 24 }, got_fused[0..4]);
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 2), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.projection_chain_qmatvec_sidecars[@intFromEnum(std.meta.Tag(backend_mod.DeviceOp).fused_elementwise)]);
 }
 
 test "metal backend region lowers mixed direct ops without fallback" {
@@ -7473,7 +12631,8 @@ test "metal backend region lowers mixed direct ops without fallback" {
         try std.testing.expectApproxEqAbs(expected, actual, 1e-4);
     }
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 1), rt.schedule_regions.attempted);
@@ -7481,13 +12640,80 @@ test "metal backend region lowers mixed direct ops without fallback" {
     try std.testing.expectEqual(@as(u64, 0), rt.schedule_regions.failed);
     try std.testing.expectEqual(@as(u64, 8), rt.schedule_regions.lowered_ops);
     try std.testing.expectEqual(@as(u64, 1), rt.region_command_plan_cached_count);
-    try std.testing.expectEqual(@as(u64, 0), rt.region_command_plan_dynamic_count);
     try std.testing.expect(rt.region_command_plan_cached_command_count > 0);
     const decode_pattern = MetalRegionPattern.decode_layer_stage.index();
     try std.testing.expectEqual(@as(u64, 1), rt.schedule_region_patterns[decode_pattern].attempted);
     try std.testing.expectEqual(@as(u64, 1), rt.schedule_region_patterns[decode_pattern].lowered);
     try std.testing.expectEqual(@as(u64, 0), rt.schedule_region_patterns[decode_pattern].failed);
     try std.testing.expectEqual(@as(u64, 8), rt.schedule_region_patterns[decode_pattern].lowered_ops);
+}
+
+test "metal backend fuses sibling qmatvec elementwise chain" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4 };
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
+
+    var ops: [8]backend_mod.DeviceOp = undefined;
+    for (ops[0..7], 0..) |*op, i| {
+        op.* = .{ .qmatmul = .{
+            .dst = @intCast(i + 1),
+            .input = 0,
+            .weight_idx = 0,
+            .M = 1,
+            .N = 4,
+            .K = 4,
+        } };
+    }
+    ops[7] = .{ .elementwise = .{
+        .op = .add,
+        .dst = 8,
+        .src0 = 1,
+        .src1 = 2,
+        .n = 4,
+    } };
+
+    const buf_sizes = [_]usize{ 4, 4, 4, 4, 4, 4, 4, 4, 4 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = 4 * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 9,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var got: [4]f32 = undefined;
+    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 8, .host_ptr = @ptrCast(&got), .size = 4 * 4 }};
+    be.executeProgram(handle, &.{}, &out);
+
+    for (got, [_]f32{ 2, 4, 6, 8 }) |actual, expected| {
+        try std.testing.expectApproxEqAbs(expected, actual, 1e-4);
+    }
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expect(rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_pair_elementwise_chain)] >= 1);
 }
 
 test "metal backend region batches independent qmatmuls" {
@@ -7546,7 +12772,8 @@ test "metal backend region batches independent qmatmuls" {
         try std.testing.expectEqualSlices(f32, &expected, &row);
     }
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 7), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
@@ -7555,7 +12782,6 @@ test "metal backend region batches independent qmatmuls" {
     try std.testing.expectEqual(@as(u64, 0), rt.schedule_regions.failed);
     try std.testing.expectEqual(@as(u64, 7), rt.schedule_regions.lowered_ops);
     try std.testing.expectEqual(@as(u64, 1), rt.region_command_plan_cached_count);
-    try std.testing.expectEqual(@as(u64, 0), rt.region_command_plan_dynamic_count);
     try std.testing.expect(rt.region_command_plan_cached_command_count > 0);
     const prefill_pattern = MetalRegionPattern.prefill_layer_stage.index();
     try std.testing.expectEqual(@as(u64, 1), rt.schedule_region_patterns[prefill_pattern].attempted);
@@ -7631,120 +12857,11 @@ test "metal backend qmatmul batch carries cache-store sidecars" {
     try std.testing.expectEqualSlices(f32, &.{ 1, 2, 3, 0 }, got[4..8]);
     try std.testing.expectEqualSlices(f32, &.{ 4, 5, 6, 0 }, got[8..12]);
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
-}
-
-test "metal backend opt-in qmatmul rope cache store sidecar" {
-    var metal = MetalBackend.init() catch |err| switch (err) {
-        error.MetalNotAvailable => return,
-        else => return err,
-    };
-    defer metal.deinit();
-    metal.setFineGrainedProgramDispatch(true);
-    metal.setRegionProgramDispatch(true);
-    metal.setProjectionRopeCacheSidecars(true);
-    const be = metal.backend();
-
-    var input = [_]f32{ 1, 2 };
-    var q_out_seed = [_]f32{99} ** 128;
-    var rope_out_seed = [_]f32{77} ** 128;
-    var cos_sin = [_]f32{0} ** 128;
-    for (0..2) |row| {
-        const base = row * 64;
-        for (0..32) |i| cos_sin[base + i] = 1;
-    }
-    var cache = [_]f32{0} ** 128;
-    var qdata: [64]i8 = undefined;
-    for (&qdata, 0..) |*v, i| v.* = @intCast(i + 1);
-    const scales = [_]f32{1};
-    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 1, .cols = 64, .block_size = 64 }};
-
-    var ops: [9]backend_mod.DeviceOp = undefined;
-    for (ops[0..7], 0..) |*op, i| {
-        op.* = .{ .qmatmul = .{
-            .dst = @intCast(i + 1),
-            .input = 0,
-            .weight_idx = 0,
-            .M = 2,
-            .N = 64,
-            .K = 1,
-        } };
-    }
-    ops[7] =
-        .{ .rope = .{
-            .dst = 8,
-            .src = 7,
-            .cos_sin = 9,
-            .half_d = 32,
-            .seq_len = 2,
-            .src_off = 0,
-            .dst_off = 0,
-            .cs_off = 0,
-            .src_rs = 1,
-            .src_cs = 64,
-            .cs_cs = 64,
-        } };
-    ops[8] =
-        .{ .slice_assign = .{
-            .dst = 10,
-            .src = 8,
-            .rows = 64,
-            .cols = 2,
-            .dst_base_offset = 0,
-            .dst_offset = 0,
-            .dst_row_stride = 1,
-            .dst_col_stride = 64,
-            .src_offset = 0,
-            .src_row_stride = 1,
-            .src_col_stride = 64,
-            .patch_stride = 64,
-        } };
-
-    const buf_sizes = [_]usize{ 2, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128 };
-    const uploads = [_]backend_mod.ProgramIO{
-        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
-        .{ .buf_idx = 7, .host_ptr = @ptrCast(&q_out_seed), .size = q_out_seed.len * 4 },
-        .{ .buf_idx = 8, .host_ptr = @ptrCast(&rope_out_seed), .size = rope_out_seed.len * 4 },
-        .{ .buf_idx = 9, .host_ptr = @ptrCast(&cos_sin), .size = cos_sin.len * 4 },
-        .{ .buf_idx = 10, .host_ptr = @ptrCast(&cache), .size = cache.len * 4 },
-    };
-    const program = backend_mod.DeviceProgram{
-        .ops = &ops,
-        .n_buffers = 11,
-        .buffer_sizes = &buf_sizes,
-        .initial_uploads = &uploads,
-        .qweights = &qweights,
-    };
-
-    const handle = be.compileProgram(program) orelse return error.CompileFailed;
-    defer be.freeProgram(handle);
-
-    var got_q: [128]f32 = undefined;
-    var got_rope: [128]f32 = undefined;
-    var got_cache: [128]f32 = undefined;
-    const outs = [_]backend_mod.ProgramIO{
-        .{ .buf_idx = 7, .host_ptr = @ptrCast(&got_q), .size = got_q.len * 4 },
-        .{ .buf_idx = 8, .host_ptr = @ptrCast(&got_rope), .size = got_rope.len * 4 },
-        .{ .buf_idx = 10, .host_ptr = @ptrCast(&got_cache), .size = got_cache.len * 4 },
-    };
-    be.executeProgram(handle, &.{}, &outs);
-
-    for (got_q) |v| try std.testing.expectEqual(@as(f32, 99), v);
-    for (got_rope) |v| try std.testing.expectEqual(@as(f32, 77), v);
-    for (0..2) |row| {
-        for (0..64) |col| {
-            const expected: f32 = @floatFromInt((row + 1) * (col + 1));
-            try std.testing.expectEqual(expected, got_cache[row * 64 + col]);
-        }
-    }
-
-    const rt = be.getRuntimeProfile(handle).?;
-    try std.testing.expectEqual(@as(u64, 9), rt.backend_op_count);
-    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
-    try std.testing.expectEqual(@as(u64, 3), rt.backend_dispatch_count);
 }
 
 test "metal backend qmatmul batch carries elementwise sidecars" {
@@ -7809,7 +12926,8 @@ test "metal backend qmatmul batch carries elementwise sidecars" {
 
     try std.testing.expectEqualSlices(f32, &.{ 11, 22, 33, 40, 54, 65, 76, 80 }, &got);
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
@@ -7894,7 +13012,8 @@ test "metal backend region batches independent elementwise ops" {
         try std.testing.expectEqualSlices(f32, &expected, &row);
     }
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 15), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 3), rt.backend_dispatch_count);
@@ -7980,7 +13099,8 @@ test "metal backend region fuses qmatmul cache-store sidecar" {
     try std.testing.expectEqualSlices(f32, &.{ 1, 2, 3, 0 }, got[4..8]);
     try std.testing.expectEqualSlices(f32, &.{ 4, 5, 6, 0 }, got[8..12]);
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 4), rt.backend_dispatch_count);
@@ -8060,10 +13180,575 @@ test "metal backend region fuses qmatmul elementwise sidecar" {
 
     try std.testing.expectEqualSlices(f32, &.{ 11, 12, 13, 10, 14, 15, 16, 10 }, &got);
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 4), rt.backend_dispatch_count);
+}
+
+test "metal backend exact command fuses qmatmul residual into row chain" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    const rows = 8;
+    const cols = 64;
+    const k_cols = 3;
+    const elems = rows * cols;
+    var input: [rows * k_cols]f32 = undefined;
+    for (&input, 0..) |*x, i| x.* = @floatFromInt(i + 1);
+    var q_out = [_]f32{77} ** elems;
+    var residual = [_]f32{10} ** elems;
+    var norm_out = [_]f32{88} ** elems;
+    var scale: [cols]f32 = undefined;
+    for (&scale, 0..) |*x, col| x.* = @floatFromInt((col % 4) + 1);
+    var repeat_out = [_]f32{99} ** elems;
+    var fused_out = [_]f32{0} ** elems;
+    var zero = [_]f32{0} ** elems;
+    var residual_copy = [_]f32{0} ** elems;
+    var qdata = [_]i8{0} ** (k_cols * cols);
+    for (0..k_cols) |k| qdata[k * cols + k] = 1;
+    var scales = [_]f32{1} ** ((k_cols * cols) / 4);
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = k_cols, .cols = cols, .block_size = 4 }};
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = rows, .N = cols, .K = k_cols } },
+        .{ .elementwise = .{ .op = .add, .dst = 2, .src0 = 1, .src1 = 2, .n = elems } },
+        .{ .rmsnorm = .{ .dst = 3, .src = 2, .rows = rows, .cols = cols, .eps = 1e-5 } },
+        .{ .repeat = .{
+            .dst = 5,
+            .src = 4,
+            .n = elems,
+            .src_ne = .{ cols, 1, 1, 1 },
+            .dst_ne = .{ cols, rows, 1, 1 },
+            .src_strides = .{ 1, cols, cols, cols },
+            .dst_strides = .{ 1, cols, elems, elems },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 6, .src0 = 3, .src1 = 5, .n = elems } },
+        .{ .elementwise = .{ .op = .add, .dst = 8, .src0 = 2, .src1 = 7, .n = elems } },
+    };
+    const buf_sizes = [_]usize{ rows * k_cols, elems, elems, elems, cols, elems, elems, elems, elems };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&q_out), .size = q_out.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&residual), .size = residual.len * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&norm_out), .size = norm_out.len * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&scale), .size = scale.len * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&repeat_out), .size = repeat_out.len * 4 },
+        .{ .buf_idx = 6, .host_ptr = @ptrCast(&fused_out), .size = fused_out.len * 4 },
+        .{ .buf_idx = 7, .host_ptr = @ptrCast(&zero), .size = zero.len * 4 },
+        .{ .buf_idx = 8, .host_ptr = @ptrCast(&residual_copy), .size = residual_copy.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 9,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const command_policy = program_mod.CommandStreamPolicy.promptProjectionRowChainCommand();
+    const handle = metal.compileProgramWithCommandPolicy(program, command_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.init(command_policy).kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), kernel_plan.commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_row_chain, kernel_plan.commands[0].kind);
+
+    var got: [elems]f32 = undefined;
+    var got_residual: [elems]f32 = undefined;
+    var got_residual_copy: [elems]f32 = undefined;
+    const out = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 6, .host_ptr = @ptrCast(&got), .size = got.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&got_residual), .size = got_residual.len * 4 },
+        .{ .buf_idx = 8, .host_ptr = @ptrCast(&got_residual_copy), .size = got_residual_copy.len * 4 },
+    };
+    be.executeProgram(handle, &.{}, &out);
+
+    var projection_plus_residual: [elems]f32 = undefined;
+    for (0..rows) |row| {
+        const input_base = row * k_cols;
+        const base = row * cols;
+        for (0..cols) |col| {
+            const projected = if (col < k_cols) input[input_base + col] else 0;
+            projection_plus_residual[base + col] = projected + 10;
+        }
+        var ss: f32 = 0;
+        for (projection_plus_residual[base..][0..cols]) |x| ss += x * x;
+        const inv_rms = 1.0 / @sqrt(ss / @as(f32, @floatFromInt(cols)) + 1e-5);
+        for (0..cols) |col| {
+            const expected = projection_plus_residual[base + col] * inv_rms * scale[col];
+            try std.testing.expectApproxEqAbs(expected, got[base + col], 1e-4);
+            try std.testing.expectApproxEqAbs(projection_plus_residual[base + col], got_residual[base + col], 1e-4);
+        }
+    }
+    for (projection_plus_residual, got_residual_copy) |expected, actual| {
+        try std.testing.expectApproxEqAbs(expected, actual, 1e-4);
+    }
+
+    be.resetRuntimeProfile(handle);
+
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, kernel_plan.commands[0]));
+    metal.flushCommands();
+
+    var command_rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &command_rt);
+    try std.testing.expectEqual(@as(u64, 1), command_rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
+    try std.testing.expectEqual(@as(u64, 2), command_rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
+    try std.testing.expectEqual(@as(u64, 0), command_rt.fallback_op_count);
+
+    const candidate_policy = program_mod.CommandStreamPolicy.promptProjectionRowChainSingleDispatchCandidate();
+    const candidate_handle = metal.compileProgramWithCommandPolicy(program, candidate_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(candidate_handle);
+    const candidate_compiled: *CompiledProgram = @ptrCast(@alignCast(candidate_handle));
+
+    var candidate_plan = try program_mod.Kernelizer.init(candidate_policy).kernelize(std.testing.allocator, &ops);
+    defer candidate_plan.deinit(std.testing.allocator);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_row_chain, candidate_plan.commands[0].kind);
+
+    be.resetRuntimeProfile(candidate_handle);
+    try std.testing.expect(candidate_compiled.tryEncodeExactProgramCommand(&ops, candidate_plan.commands[0]));
+    metal.flushCommands();
+
+    var candidate_rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(candidate_handle, &candidate_rt);
+    try std.testing.expectEqual(@as(u64, 1), candidate_rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), candidate_rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
+    try std.testing.expectEqual(@as(u64, 0), candidate_rt.fallback_op_count);
+
+    var two_phase_policy = candidate_policy;
+    two_phase_policy.fuse_projection_row_chain_single_dispatch = false;
+    two_phase_policy.fuse_projection_row_chain_two_phase_candidate = true;
+    const two_phase_handle = metal.compileProgramWithCommandPolicy(program, two_phase_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(two_phase_handle);
+    const two_phase_compiled: *CompiledProgram = @ptrCast(@alignCast(two_phase_handle));
+
+    var two_phase_plan = try program_mod.Kernelizer.init(two_phase_policy).kernelize(std.testing.allocator, &ops);
+    defer two_phase_plan.deinit(std.testing.allocator);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_row_chain, two_phase_plan.commands[0].kind);
+
+    var two_phase_got: [elems]f32 = undefined;
+    var two_phase_residual: [elems]f32 = undefined;
+    var two_phase_residual_copy: [elems]f32 = undefined;
+    const two_phase_out = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 6, .host_ptr = @ptrCast(&two_phase_got), .size = two_phase_got.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&two_phase_residual), .size = two_phase_residual.len * 4 },
+        .{ .buf_idx = 8, .host_ptr = @ptrCast(&two_phase_residual_copy), .size = two_phase_residual_copy.len * 4 },
+    };
+    be.executeProgram(two_phase_handle, &.{}, &two_phase_out);
+    for (got, two_phase_got) |expected, actual| {
+        try std.testing.expectApproxEqAbs(expected, actual, 1e-4);
+    }
+    for (projection_plus_residual, two_phase_residual) |expected, actual| {
+        try std.testing.expectApproxEqAbs(expected, actual, 1e-4);
+    }
+    for (projection_plus_residual, two_phase_residual_copy) |expected, actual| {
+        try std.testing.expectApproxEqAbs(expected, actual, 1e-4);
+    }
+
+    be.resetRuntimeProfile(two_phase_handle);
+    try std.testing.expect(two_phase_compiled.tryEncodeExactProgramCommand(&ops, two_phase_plan.commands[0]));
+    metal.flushCommands();
+
+    var two_phase_rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(two_phase_handle, &two_phase_rt);
+    try std.testing.expectEqual(@as(u64, 1), two_phase_rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
+    try std.testing.expectEqual(@as(u64, 2), two_phase_rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_row_chain)]);
+    try std.testing.expectEqual(@as(u64, 0), two_phase_rt.fallback_op_count);
+}
+
+test "metal backend region fuses dense matmul elementwise sidecar" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4, 5, 6 };
+    var weights = [_]f32{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 1,
+    };
+    var matmul_out = [_]f32{99} ** 8;
+    var residual = [_]f32{ 10, 10, 10, 10, 10, 10, 10, 10 };
+    var fused_out = [_]f32{0} ** 8;
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .matmul = .{
+            .dst = 2,
+            .a = 0,
+            .b = 1,
+            .geom = .{
+                .M = 2,
+                .N = 4,
+                .K = 3,
+                .a_row_stride = 3,
+                .a_col_stride = 1,
+                .b_row_stride = 4,
+                .b_col_stride = 1,
+                .a_offset = 0,
+                .b_offset = 0,
+                .dst_offset = 0,
+                .dst_row_stride = 4,
+            },
+        } },
+        .{ .elementwise = .{
+            .op = .add,
+            .dst = 4,
+            .src0 = 2,
+            .src1 = 3,
+            .n = 8,
+        } },
+    };
+    const buf_sizes = [_]usize{ 6, 12, 8, 8, 8 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&weights), .size = weights.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&matmul_out), .size = matmul_out.len * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&residual), .size = residual.len * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&fused_out), .size = fused_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 5,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+    };
+
+    var command_policy = program_mod.CommandStreamPolicy.default();
+    command_policy.fuse_dense_projection_row_chain = true;
+    const handle = metal.compileProgramWithCommandPolicy(program, command_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var kernel_plan = try program_mod.Kernelizer.init(command_policy).kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.dense_projection_chain, commands[0].kind);
+
+    var got_fused: [8]f32 = undefined;
+    var got_primary: [8]f32 = undefined;
+    const out = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&got_fused), .size = got_fused.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&got_primary), .size = got_primary.len * 4 },
+    };
+    be.executeProgram(handle, &.{}, &out);
+
+    try std.testing.expectEqualSlices(f32, &.{ 11, 12, 13, 13, 14, 15, 16, 16 }, &got_fused);
+    try std.testing.expectEqualSlices(f32, &.{ 99, 99, 99, 99, 99, 99, 99, 99 }, &got_primary);
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.dense_projection_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.dense_projection_chain)]);
+    try std.testing.expectEqual(@as(u64, 2), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+}
+
+test "metal backend region fuses dense matmul fused-elementwise sidecar" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    const steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .add, .is_swapped = false, .secondary_buf = 3, .secondary_offset = 0 },
+        .{ .op = .relu, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+    };
+    var input = [_]f32{ 1, 2, 3, 4, 5, 6 };
+    var weights = [_]f32{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 1,
+    };
+    var matmul_out = [_]f32{99} ** 8;
+    var residual = [_]f32{ 10, 10, 10, 10, 10, 10, 10, 10 };
+    var fused_out = [_]f32{0} ** 8;
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .matmul = .{
+            .dst = 2,
+            .a = 0,
+            .b = 1,
+            .geom = .{
+                .M = 2,
+                .N = 4,
+                .K = 3,
+                .a_row_stride = 3,
+                .a_col_stride = 1,
+                .b_row_stride = 4,
+                .b_col_stride = 1,
+                .a_offset = 0,
+                .b_offset = 0,
+                .dst_offset = 0,
+                .dst_row_stride = 4,
+            },
+        } },
+        .{ .fused_elementwise = .{
+            .steps = &steps,
+            .n = 8,
+            .dst = 4,
+            .src = 2,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+    };
+    const buf_sizes = [_]usize{ 6, 12, 8, 8, 8 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&weights), .size = weights.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&matmul_out), .size = matmul_out.len * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&residual), .size = residual.len * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&fused_out), .size = fused_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 5,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.dense_projection_chain, commands[0].kind);
+
+    var got_fused: [8]f32 = undefined;
+    var got_primary: [8]f32 = undefined;
+    const out = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&got_fused), .size = got_fused.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&got_primary), .size = got_primary.len * 4 },
+    };
+    be.executeProgram(handle, &.{}, &out);
+
+    try std.testing.expectEqualSlices(f32, &.{ 11, 12, 13, 13, 14, 15, 16, 16 }, &got_fused);
+    try std.testing.expectEqualSlices(f32, &.{ 99, 99, 99, 99, 99, 99, 99, 99 }, &got_primary);
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.dense_projection_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.dense_projection_chain)]);
+    try std.testing.expectEqual(@as(u64, 2), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+}
+
+test "metal backend dense row-chain preserves residual intermediate" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3 };
+    var weights = [_]f32{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 1,
+    };
+    var matmul_out = [_]f32{99} ** 4;
+    var residual = [_]f32{ 10, 10, 10, 10 };
+    var norm_out = [_]f32{77} ** 4;
+    var scale = [_]f32{ 1, 2, 3, 4 };
+    var repeat_out = [_]f32{88} ** 4;
+    var scaled_out = [_]f32{0} ** 4;
+    var zero = [_]f32{0} ** 4;
+    var residual_copy = [_]f32{0} ** 4;
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .matmul = .{
+            .dst = 2,
+            .a = 0,
+            .b = 1,
+            .geom = .{
+                .M = 1,
+                .N = 4,
+                .K = 3,
+                .a_row_stride = 3,
+                .a_col_stride = 1,
+                .b_row_stride = 4,
+                .b_col_stride = 1,
+                .a_offset = 0,
+                .b_offset = 0,
+                .dst_offset = 0,
+                .dst_row_stride = 4,
+            },
+        } },
+        .{ .elementwise = .{ .op = .add, .dst = 3, .src0 = 3, .src1 = 2, .n = 4 } },
+        .{ .rmsnorm = .{ .dst = 4, .src = 3, .rows = 1, .cols = 4, .eps = 1e-5 } },
+        .{ .repeat = .{
+            .dst = 6,
+            .src = 5,
+            .n = 4,
+            .src_ne = .{ 4, 1, 1, 1 },
+            .dst_ne = .{ 4, 1, 1, 1 },
+            .src_strides = .{ 1, 4, 4, 4 },
+            .dst_strides = .{ 1, 4, 4, 4 },
+        } },
+        .{ .elementwise = .{ .op = .mul, .dst = 7, .src0 = 4, .src1 = 6, .n = 4 } },
+        .{ .elementwise = .{ .op = .add, .dst = 9, .src0 = 3, .src1 = 8, .n = 4 } },
+    };
+
+    const buf_sizes = [_]usize{ 3, 12, 4, 4, 4, 4, 4, 4, 4, 4 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&weights), .size = weights.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&matmul_out), .size = matmul_out.len * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&residual), .size = residual.len * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&norm_out), .size = norm_out.len * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&scale), .size = scale.len * 4 },
+        .{ .buf_idx = 6, .host_ptr = @ptrCast(&repeat_out), .size = repeat_out.len * 4 },
+        .{ .buf_idx = 7, .host_ptr = @ptrCast(&scaled_out), .size = scaled_out.len * 4 },
+        .{ .buf_idx = 8, .host_ptr = @ptrCast(&zero), .size = zero.len * 4 },
+        .{ .buf_idx = 9, .host_ptr = @ptrCast(&residual_copy), .size = residual_copy.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 10,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+    };
+
+    var command_policy = program_mod.CommandStreamPolicy.default();
+    command_policy.fuse_dense_projection_row_chain = true;
+    const handle = metal.compileProgramWithCommandPolicy(program, command_policy) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var kernel_plan = try program_mod.Kernelizer.init(command_policy).kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.dense_projection_row_chain, commands[0].kind);
+
+    var got_scaled: [4]f32 = undefined;
+    var got_residual: [4]f32 = undefined;
+    var got_residual_copy: [4]f32 = undefined;
+    const out = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 7, .host_ptr = @ptrCast(&got_scaled), .size = got_scaled.len * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&got_residual), .size = got_residual.len * 4 },
+        .{ .buf_idx = 9, .host_ptr = @ptrCast(&got_residual_copy), .size = got_residual_copy.len * 4 },
+    };
+    be.executeProgram(handle, &.{}, &out);
+
+    const expected_residual = [_]f32{ 11, 12, 13, 13 };
+    const inv_rms = 1.0 / @sqrt((11.0 * 11.0 + 12.0 * 12.0 + 13.0 * 13.0 + 13.0 * 13.0) / 4.0 + 1e-5);
+    for (expected_residual, got_residual, got_residual_copy, scale, got_scaled) |ew, actual_residual, actual_copy, s, actual_scaled| {
+        try std.testing.expectApproxEqAbs(ew, actual_residual, 1e-4);
+        try std.testing.expectApproxEqAbs(ew, actual_copy, 1e-4);
+        try std.testing.expectApproxEqAbs(ew * inv_rms * s, actual_scaled, 1e-4);
+    }
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.dense_projection_row_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.dense_projection_row_chain)]);
+    try std.testing.expectEqual(@as(u64, 6), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+}
+
+test "metal backend region uses dense matvec elementwise sidecar for decode projection" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3 };
+    var weights = [_]f32{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 1,
+    };
+    var matmul_out = [_]f32{99} ** 4;
+    var residual = [_]f32{ 10, 10, 10, 10 };
+    var fused_out = [_]f32{0} ** 4;
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .matmul = .{
+            .dst = 2,
+            .a = 0,
+            .b = 1,
+            .geom = .{
+                .M = 1,
+                .N = 4,
+                .K = 3,
+                .a_row_stride = 3,
+                .a_col_stride = 1,
+                .b_row_stride = 4,
+                .b_col_stride = 1,
+                .a_offset = 0,
+                .b_offset = 0,
+                .dst_offset = 0,
+                .dst_row_stride = 4,
+            },
+        } },
+        .{ .elementwise = .{
+            .op = .add,
+            .dst = 4,
+            .src0 = 2,
+            .src1 = 3,
+            .n = 4,
+        } },
+    };
+    const buf_sizes = [_]usize{ 3, 12, 4, 4, 4 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&weights), .size = weights.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&matmul_out), .size = matmul_out.len * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&residual), .size = residual.len * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&fused_out), .size = fused_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 5,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.dense_projection_chain, commands[0].kind);
+
+    var got_fused: [4]f32 = undefined;
+    var got_primary: [4]f32 = undefined;
+    const out = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&got_fused), .size = got_fused.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&got_primary), .size = got_primary.len * 4 },
+    };
+    be.executeProgram(handle, &.{}, &out);
+
+    try std.testing.expectEqualSlices(f32, &.{ 11, 12, 13, 13 }, &got_fused);
+    try std.testing.expectEqualSlices(f32, &.{ 99, 99, 99, 99 }, &got_primary);
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.dense_projection_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.dense_projection_chain)]);
+    try std.testing.expectEqual(@as(u64, 2), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
 }
 
 test "metal qmatmul sidecar elides dead primary output" {
@@ -8135,7 +13820,8 @@ test "metal qmatmul sidecar elides dead primary output" {
     try std.testing.expectEqualSlices(f32, &.{ 99, 99, 99, 99, 99, 99, 99, 99 }, &got_q);
     try std.testing.expectEqualSlices(f32, &.{ 11, 12, 13, 10, 14, 15, 16, 10 }, &got_fused);
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 2), rt.backend_dispatch_count);
@@ -8217,134 +13903,11 @@ test "metal backend region fuses qmatmul fused-elementwise sidecar" {
 
     try std.testing.expectEqualSlices(f32, &.{ 2, 4, 6, 0, 8, 10, 12, 0 }, &got);
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 4), rt.backend_dispatch_count);
-}
-
-test "metal backend region fuses qmatmul activation expression chain" {
-    var metal = MetalBackend.init() catch |err| switch (err) {
-        error.MetalNotAvailable => return,
-        else => return err,
-    };
-    defer metal.deinit();
-    metal.setRegionProgramDispatch(true);
-    const be = metal.backend();
-
-    var input = [_]f32{ 1, 2, 3, 4, 5, 6, 7, 8 };
-    var filler = [_]f32{0} ** 8;
-    var q_out = [_]f32{0} ** 8;
-    var exp_tmp = [_]f32{0} ** 8;
-    var one = [_]f32{1};
-    var repeat_out = [_]f32{0} ** 8;
-    var silu_out = [_]f32{0} ** 8;
-    const qdata = [_]i8{
-        1, 0, 0, 0,
-        0, 1, 0, 0,
-        0, 0, 1, 0,
-        0, 0, 0, 1,
-    };
-    const scales = [_]f32{ 1, 1, 1, 1 };
-    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
-    const exp_steps = [_]backend_mod.FusedEwStep{
-        .{ .op = .neg, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
-        .{ .op = .exp, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
-    };
-    const silu_steps = [_]backend_mod.FusedEwStep{
-        .{ .op = .add, .is_swapped = false, .secondary_buf = 7, .secondary_offset = 0 },
-        .{ .op = .recip, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
-        .{ .op = .mul, .is_swapped = true, .secondary_buf = 5, .secondary_offset = 0 },
-    };
-
-    var ops: [10]backend_mod.DeviceOp = undefined;
-    for (ops[0..4]) |*op| {
-        op.* = .{ .qmatmul = .{
-            .dst = 1,
-            .input = 0,
-            .weight_idx = 0,
-            .M = 2,
-            .N = 4,
-            .K = 4,
-        } };
-    }
-    ops[4] = .{ .qmatmul = .{
-        .dst = 5,
-        .input = 0,
-        .weight_idx = 0,
-        .M = 2,
-        .N = 4,
-        .K = 4,
-    } };
-    ops[5] = .{ .fused_elementwise = .{
-        .steps = &exp_steps,
-        .n = 8,
-        .dst = 6,
-        .src = 5,
-        .dst_offset = 0,
-        .src_offset = 0,
-    } };
-    ops[6] = .{ .repeat = .{
-        .dst = 7,
-        .src = 8,
-        .n = 8,
-        .src_ne = .{ 1, 1, 1, 1 },
-        .dst_ne = .{ 4, 2, 1, 1 },
-        .src_strides = .{ 1, 1, 1, 1 },
-        .dst_strides = .{ 1, 4, 8, 8 },
-    } };
-    ops[7] = .{ .fused_elementwise = .{
-        .steps = &silu_steps,
-        .n = 8,
-        .dst = 9,
-        .src = 6,
-        .dst_offset = 0,
-        .src_offset = 0,
-    } };
-    for (ops[8..10]) |*op| {
-        op.* = .{ .qmatmul = .{
-            .dst = 1,
-            .input = 0,
-            .weight_idx = 0,
-            .M = 2,
-            .N = 4,
-            .K = 4,
-        } };
-    }
-
-    const buf_sizes = [_]usize{ 8, 8, 8, 8, 8, 8, 8, 8, 1, 8 };
-    const uploads = [_]backend_mod.ProgramIO{
-        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
-        .{ .buf_idx = 1, .host_ptr = @ptrCast(&filler), .size = filler.len * 4 },
-        .{ .buf_idx = 5, .host_ptr = @ptrCast(&q_out), .size = q_out.len * 4 },
-        .{ .buf_idx = 6, .host_ptr = @ptrCast(&exp_tmp), .size = exp_tmp.len * 4 },
-        .{ .buf_idx = 7, .host_ptr = @ptrCast(&repeat_out), .size = repeat_out.len * 4 },
-        .{ .buf_idx = 8, .host_ptr = @ptrCast(&one), .size = one.len * 4 },
-        .{ .buf_idx = 9, .host_ptr = @ptrCast(&silu_out), .size = silu_out.len * 4 },
-    };
-    const program = backend_mod.DeviceProgram{
-        .ops = &ops,
-        .n_buffers = 10,
-        .buffer_sizes = &buf_sizes,
-        .initial_uploads = &uploads,
-        .qweights = &qweights,
-    };
-
-    const handle = be.compileProgram(program) orelse return error.CompileFailed;
-    defer be.freeProgram(handle);
-
-    var got: [8]f32 = undefined;
-    var out = [_]backend_mod.ProgramIO{.{ .buf_idx = 9, .host_ptr = @ptrCast(&got), .size = got.len * 4 }};
-    be.executeProgram(handle, &.{}, &out);
-
-    for (input, got) |x, actual| {
-        const want = x / (1.0 + @exp(-x));
-        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
-    }
-
-    const rt = be.getRuntimeProfile(handle).?;
-    try std.testing.expectEqual(@as(u64, 10), rt.backend_op_count);
-    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
 }
 
 test "metal backend region fuses paired qmatmul activation product chain" {
@@ -8473,10 +14036,397 @@ test "metal backend region fuses paired qmatmul activation product chain" {
         try std.testing.expectApproxEqAbs(want, actual, 1e-4);
     }
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 11), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain)]);
+}
+
+test "metal backend exact-lowers paired qmatvec activation product chain" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4 };
+    var shared_q_out = [_]f32{ 99, 99, 99, 99 };
+    var one = [_]f32{1};
+    var product_out = [_]f32{0} ** 4;
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
+    const exp_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .neg, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+        .{ .op = .exp, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+    };
+    const silu_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .add, .is_swapped = false, .secondary_buf = 7, .secondary_offset = 0 },
+        .{ .op = .recip, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+        .{ .op = .mul, .is_swapped = true, .secondary_buf = 5, .secondary_offset = 0 },
+    };
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 5, .input = 0, .weight_idx = 0, .M = 1, .N = 4, .K = 4 } },
+        .{ .fused_elementwise = .{
+            .steps = &exp_steps,
+            .n = 4,
+            .dst = 6,
+            .src = 5,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+        .{ .repeat = .{
+            .dst = 7,
+            .src = 8,
+            .n = 4,
+            .src_ne = .{ 1, 1, 1, 1 },
+            .dst_ne = .{ 4, 1, 1, 1 },
+            .src_strides = .{ 1, 1, 1, 1 },
+            .dst_strides = .{ 1, 4, 4, 4 },
+        } },
+        .{ .fused_elementwise = .{
+            .steps = &silu_steps,
+            .n = 4,
+            .dst = 9,
+            .src = 6,
+            .dst_offset = 0,
+            .src_offset = 0,
+        } },
+        .{ .qmatmul = .{ .dst = 5, .input = 0, .weight_idx = 0, .M = 1, .N = 4, .K = 4 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 10, .src0 = 9, .src1 = 5, .n = 4 } },
+    };
+
+    const buf_sizes = [_]usize{ 4, 4, 4, 4, 4, 4, 4, 4, 1, 4, 4 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&shared_q_out), .size = shared_q_out.len * 4 },
+        .{ .buf_idx = 8, .host_ptr = @ptrCast(&one), .size = one.len * 4 },
+        .{ .buf_idx = 10, .host_ptr = @ptrCast(&product_out), .size = product_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 11,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(.qmatvec, commands[0].projection_kind);
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, commands[0]));
+    metal.flushCommands();
+
+    const got: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[10].ptr)));
+    const primary_after: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[5].ptr)));
+    for (input, got[0..4]) |x, actual| {
+        const want = x * x / (1.0 + @exp(-x));
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
+    for (primary_after[0..4]) |actual| try std.testing.expectApproxEqAbs(@as(f32, 99), actual, 0);
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 6), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain)]);
+}
+
+test "metal backend exact-lowers paired qmatmul single activation product chain" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    var shared_q_out = [_]f32{99} ** 8;
+    var product_out = [_]f32{0} ** 8;
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 5, .input = 0, .weight_idx = 0, .M = 2, .N = 4, .K = 4 } },
+        .{ .elementwise = .{
+            .op = .silu,
+            .dst = 6,
+            .src0 = 5,
+            .src1 = 5,
+            .n = 8,
+            .dst_offset = 0,
+            .src0_offset = 0,
+            .src1_offset = 0,
+        } },
+        .{ .qmatmul = .{ .dst = 5, .input = 0, .weight_idx = 0, .M = 2, .N = 4, .K = 4 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 7, .src0 = 6, .src1 = 5, .n = 8 } },
+    };
+
+    const buf_sizes = [_]usize{ 8, 4, 4, 4, 4, 8, 8, 8 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&shared_q_out), .size = shared_q_out.len * 4 },
+        .{ .buf_idx = 7, .host_ptr = @ptrCast(&product_out), .size = product_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 8,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 4), commands[0].op_count);
+    try std.testing.expectEqual(.qmatmul, commands[0].projection_kind);
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, commands[0]));
+    metal.flushCommands();
+
+    const got: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[7].ptr)));
+    const primary_after: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[5].ptr)));
+    for (input, got[0..8]) |x, actual| {
+        const want = x * x / (1.0 + @exp(-x));
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
+    for (primary_after[0..8]) |actual| try std.testing.expectApproxEqAbs(@as(f32, 99), actual, 0);
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 4), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain)]);
+}
+
+test "metal backend exact-lowers paired qmatvec single activation product chain" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4 };
+    var shared_q_out = [_]f32{99} ** 4;
+    var product_out = [_]f32{0} ** 4;
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 5, .input = 0, .weight_idx = 0, .M = 1, .N = 4, .K = 4 } },
+        .{ .elementwise = .{
+            .op = .silu,
+            .dst = 6,
+            .src0 = 5,
+            .src1 = 5,
+            .n = 4,
+            .dst_offset = 0,
+            .src0_offset = 0,
+            .src1_offset = 0,
+        } },
+        .{ .qmatmul = .{ .dst = 5, .input = 0, .weight_idx = 0, .M = 1, .N = 4, .K = 4 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 7, .src0 = 6, .src1 = 5, .n = 4 } },
+    };
+
+    const buf_sizes = [_]usize{ 4, 4, 4, 4, 4, 4, 4, 4 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&shared_q_out), .size = shared_q_out.len * 4 },
+        .{ .buf_idx = 7, .host_ptr = @ptrCast(&product_out), .size = product_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 8,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 4), commands[0].op_count);
+    try std.testing.expectEqual(.qmatvec, commands[0].projection_kind);
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, commands[0]));
+    metal.flushCommands();
+
+    const got: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[7].ptr)));
+    const primary_after: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[5].ptr)));
+    for (input, got[0..4]) |x, actual| {
+        const want = x * x / (1.0 + @exp(-x));
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
+    for (primary_after[0..4]) |actual| try std.testing.expectApproxEqAbs(@as(f32, 99), actual, 0);
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 4), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_pair_fused_elementwise_chain)]);
+}
+
+test "metal backend exact-lowers paired dense activation product prefill chain" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    var weights = [_]f32{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    var shared_dense_out = [_]f32{99} ** 8;
+    var one = [_]f32{1};
+    var product_out = [_]f32{0} ** 8;
+    const exp_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .neg, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+        .{ .op = .exp, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+    };
+    const silu_steps = [_]backend_mod.FusedEwStep{
+        .{ .op = .add, .is_swapped = false, .secondary_buf = 7, .secondary_offset = 0 },
+        .{ .op = .recip, .is_swapped = false, .secondary_buf = 0, .secondary_offset = 0 },
+        .{ .op = .mul, .is_swapped = true, .secondary_buf = 5, .secondary_offset = 0 },
+    };
+
+    var ops: [6]backend_mod.DeviceOp = undefined;
+    for (&ops) |*op| op.* = .{ .matmul = .{
+        .dst = 5,
+        .a = 0,
+        .b = 1,
+        .geom = .{
+            .M = 2,
+            .N = 4,
+            .K = 4,
+            .a_row_stride = 4,
+            .a_col_stride = 1,
+            .b_row_stride = 4,
+            .b_col_stride = 1,
+            .a_offset = 0,
+            .b_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 4,
+        },
+    } };
+    ops[1] = .{ .fused_elementwise = .{
+        .steps = &exp_steps,
+        .n = 8,
+        .dst = 6,
+        .src = 5,
+        .dst_offset = 0,
+        .src_offset = 0,
+    } };
+    ops[2] = .{ .repeat = .{
+        .dst = 7,
+        .src = 8,
+        .n = 8,
+        .src_ne = .{ 1, 1, 1, 1 },
+        .dst_ne = .{ 4, 2, 1, 1 },
+        .src_strides = .{ 1, 1, 1, 1 },
+        .dst_strides = .{ 1, 4, 8, 8 },
+    } };
+    ops[3] = .{ .fused_elementwise = .{
+        .steps = &silu_steps,
+        .n = 8,
+        .dst = 9,
+        .src = 6,
+        .dst_offset = 0,
+        .src_offset = 0,
+    } };
+    ops[5] = .{ .elementwise = .{ .op = .mul, .dst = 10, .src0 = 9, .src1 = 5, .n = 8 } };
+
+    const buf_sizes = [_]usize{ 8, 16, 4, 4, 4, 8, 8, 8, 1, 8, 8 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&weights), .size = weights.len * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&shared_dense_out), .size = shared_dense_out.len * 4 },
+        .{ .buf_idx = 8, .host_ptr = @ptrCast(&one), .size = one.len * 4 },
+        .{ .buf_idx = 10, .host_ptr = @ptrCast(&product_out), .size = product_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 11,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.dense_projection_pair_fused_elementwise_chain, commands[0].kind);
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, commands[0]));
+    metal.flushCommands();
+
+    const got: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[10].ptr)));
+    const primary_after: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[5].ptr)));
+    for (input, got[0..8]) |x, actual| {
+        const want = x * x / (1.0 + @exp(-x));
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
+    for (primary_after[0..8]) |actual| try std.testing.expectApproxEqAbs(@as(f32, 99), actual, 0);
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 6), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.dense_projection_pair_fused_elementwise_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.dense_projection_pair_fused_elementwise_chain)]);
 }
 
 test "metal backend region fuses repeated secondary into fused elementwise" {
@@ -8566,7 +14516,8 @@ test "metal backend region fuses repeated secondary into fused elementwise" {
         try std.testing.expectApproxEqAbs(want, actual, 1e-5);
     }
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 9), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_dispatch_count);
@@ -8583,7 +14534,7 @@ test "metal backend region fuses cache-store sidecars" {
     const be = metal.backend();
 
     var input = [_]f32{ 1, 2, 3, 4 };
-    var cos_sin = [_]f32{ 1, 0, 0, 1 };
+    var cos_sin = [_]f32{ 1, 0, 1, 0, 0, 1, 0, 1 };
     var rope_tmp = [_]f32{0} ** 4;
     var q_cache = [_]f32{0} ** 12;
     var q_out = [_]f32{0} ** 4;
@@ -8633,7 +14584,7 @@ test "metal backend region fuses cache-store sidecars" {
         .dst_off = 0,
         .src_rs = 1,
         .src_cs = 4,
-        .cs_cs = 4,
+        .cs_cs = 8,
     } };
     ops[9] = .{ .slice_assign = .{
         .dst = 5,
@@ -8650,10 +14601,10 @@ test "metal backend region fuses cache-store sidecars" {
         .patch_stride = 4,
     } };
 
-    const buf_sizes = [_]usize{ 4, 4, 4, 12, 4, 12 };
+    const buf_sizes = [_]usize{ 4, 8, 4, 12, 4, 12 };
     const uploads = [_]backend_mod.ProgramIO{
         .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = 4 * 4 },
-        .{ .buf_idx = 1, .host_ptr = @ptrCast(&cos_sin), .size = 4 * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&cos_sin), .size = 8 * 4 },
         .{ .buf_idx = 2, .host_ptr = @ptrCast(&rope_tmp), .size = 4 * 4 },
         .{ .buf_idx = 3, .host_ptr = @ptrCast(&q_cache), .size = 12 * 4 },
         .{ .buf_idx = 4, .host_ptr = @ptrCast(&q_out), .size = 4 * 4 },
@@ -8681,10 +14632,453 @@ test "metal backend region fuses cache-store sidecars" {
     try std.testing.expectEqualSlices(f32, &.{ 1, 2, 3, 4 }, q_cache_out[4..8]);
     try std.testing.expectEqualSlices(f32, &.{ 1, -4, 3, 2 }, rope_cache_out[4..8]);
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 10), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_dispatch_count);
+}
+
+test "metal backend qmatvec projection cache group carries rope store sidecars" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4 };
+    var primary = [_]f32{0} ** 6;
+    var k_proj_seed = [_]f32{99} ** 6;
+    var rope_tmp_seed = [_]f32{77} ** 6;
+    var cos_sin = [_]f32{ 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 1 };
+    var cache = [_]f32{0} ** 6;
+    const qdata = [_]i8{
+        1, 0, 0, 0, 1,  0,
+        0, 1, 0, 0, 0,  1,
+        0, 0, 1, 0, 1,  1,
+        0, 0, 0, 1, -1, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 6, .block_size = 4 }};
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = 1, .N = 6, .K = 4 } },
+        .{ .qmatmul = .{ .dst = 2, .input = 0, .weight_idx = 0, .M = 1, .N = 6, .K = 4 } },
+        .{ .rope = .{
+            .dst = 3,
+            .src = 2,
+            .cos_sin = 4,
+            .half_d = 3,
+            .seq_len = 1,
+            .src_off = 0,
+            .cs_off = 0,
+            .dst_off = 0,
+            .src_rs = 1,
+            .src_cs = 6,
+            .cs_cs = 12,
+        } },
+        .{ .slice_assign = .{
+            .dst = 5,
+            .src = 3,
+            .rows = 6,
+            .cols = 1,
+            .dst_base_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 1,
+            .dst_col_stride = 6,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 6,
+            .patch_stride = 6,
+        } },
+    };
+
+    const buf_sizes = [_]usize{ 4, 6, 6, 6, 12, 6 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&primary), .size = primary.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&k_proj_seed), .size = k_proj_seed.len * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&rope_tmp_seed), .size = rope_tmp_seed.len * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&cos_sin), .size = cos_sin.len * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&cache), .size = cache.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 6,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_cache_group, commands[0].kind);
+    try std.testing.expectEqual(.qmatvec, commands[0].projection_kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].sidecar_count);
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, commands[0]));
+    metal.flushCommands();
+
+    const got_primary: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[1].ptr)));
+    const got_k_proj: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[2].ptr)));
+    const got_rope_tmp: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[3].ptr)));
+    const got_cache: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[5].ptr)));
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 4), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_cache_group)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_cache_group)]);
+
+    const expected_projection = [_]f32{ 1, 2, 3, 4, 0, 9 };
+    const expected_rope = [_]f32{ -4, 2, -9, 1, 0, 3 };
+    for (expected_projection, got_primary[0..6]) |want, actual| {
+        try std.testing.expectApproxEqAbs(want, actual, 0.05);
+    }
+    try std.testing.expectEqualSlices(f32, &k_proj_seed, got_k_proj[0..6]);
+    try std.testing.expectEqualSlices(f32, &rope_tmp_seed, got_rope_tmp[0..6]);
+    for (expected_rope, got_cache[0..6]) |want, actual| {
+        try std.testing.expectApproxEqAbs(want, actual, 1e-4);
+    }
+}
+
+test "metal backend qmatmul projection cache group carries elementwise sidecars" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    var left = [_]f32{0} ** 8;
+    var right = [_]f32{0} ** 8;
+    var secondary = [_]f32{ 10, 20, 30, 40, 50, 60, 70, 80 };
+    var add_out = [_]f32{0} ** 8;
+    var mul_out = [_]f32{0} ** 8;
+    const qdata = [_]i8{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    const scales = [_]f32{ 1, 1, 1, 1 };
+    const qweights = [_]backend_mod.QuantizedWeightUpload{.{ .data = &qdata, .scales = &scales, .rows = 4, .cols = 4, .block_size = 4 }};
+
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .qmatmul = .{ .dst = 1, .input = 0, .weight_idx = 0, .M = 2, .N = 4, .K = 4 } },
+        .{ .qmatmul = .{ .dst = 2, .input = 0, .weight_idx = 0, .M = 2, .N = 4, .K = 4 } },
+        .{ .elementwise = .{ .op = .add, .dst = 4, .src0 = 1, .src1 = 3, .n = 8 } },
+        .{ .elementwise = .{ .op = .mul, .dst = 5, .src0 = 3, .src1 = 2, .n = 8 } },
+    };
+
+    const buf_sizes = [_]usize{ 8, 8, 8, 8, 8, 8 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&left), .size = left.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&right), .size = right.len * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&secondary), .size = secondary.len * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&add_out), .size = add_out.len * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&mul_out), .size = mul_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 6,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+        .qweights = &qweights,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.projection_cache_group, commands[0].kind);
+    try std.testing.expectEqual(.qmatmul, commands[0].projection_kind);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 2), commands[0].sidecar_count);
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, commands[0]));
+    metal.flushCommands();
+
+    const got_left: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[1].ptr)));
+    const got_right: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[2].ptr)));
+    const got_add: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[4].ptr)));
+    const got_mul: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[5].ptr)));
+
+    for (got_left[0..8]) |actual| try std.testing.expectApproxEqAbs(@as(f32, 0), actual, 0);
+    for (got_right[0..8]) |actual| try std.testing.expectApproxEqAbs(@as(f32, 0), actual, 0);
+    for (0..8) |i| {
+        try std.testing.expectApproxEqAbs(input[i] + secondary[i], got_add[i], 1e-4);
+        try std.testing.expectApproxEqAbs(input[i] * secondary[i], got_mul[i], 1e-4);
+    }
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 4), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_cache_group)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.projection_cache_group)]);
+}
+
+test "metal backend dense matvec projection cache group carries rope and value stores" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4 };
+    var q_out = [_]f32{ 0, 0, 0, 0 };
+    var k_out = [_]f32{ 99, 99, 99, 99 };
+    var v_out = [_]f32{ 88, 88, 88, 88 };
+    var rope_tmp = [_]f32{ 77, 77, 77, 77 };
+    var cos_sin = [_]f32{ 0, 0, 0, 0, 1, 1, 1, 1 };
+    var k_cache = [_]f32{0} ** 4;
+    var v_cache = [_]f32{0} ** 4;
+    var weights = [_]f32{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+
+    const matmul_geom = backend_mod.MatMulGeometry{
+        .M = 1,
+        .N = 4,
+        .K = 4,
+        .a_row_stride = 4,
+        .a_col_stride = 1,
+        .b_row_stride = 4,
+        .b_col_stride = 1,
+        .a_offset = 0,
+        .b_offset = 0,
+        .dst_offset = 0,
+        .dst_row_stride = 4,
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .matmul = .{ .dst = 1, .a = 0, .b = 8, .geom = matmul_geom } },
+        .{ .matmul = .{ .dst = 2, .a = 0, .b = 8, .geom = matmul_geom } },
+        .{ .matmul = .{ .dst = 3, .a = 0, .b = 8, .geom = matmul_geom } },
+        .{ .rope = .{
+            .dst = 4,
+            .src = 2,
+            .cos_sin = 5,
+            .half_d = 2,
+            .seq_len = 1,
+            .src_off = 0,
+            .cs_off = 0,
+            .dst_off = 0,
+            .src_rs = 1,
+            .src_cs = 4,
+            .cs_cs = 8,
+        } },
+        .{ .slice_assign = .{
+            .dst = 6,
+            .src = 4,
+            .rows = 4,
+            .cols = 1,
+            .dst_base_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 1,
+            .dst_col_stride = 4,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 4,
+        } },
+        .{ .slice_assign = .{
+            .dst = 7,
+            .src = 3,
+            .rows = 4,
+            .cols = 1,
+            .dst_base_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 1,
+            .dst_col_stride = 4,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 4,
+        } },
+    };
+
+    const buf_sizes = [_]usize{ 4, 4, 4, 4, 4, 8, 4, 4, 16 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&q_out), .size = q_out.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&k_out), .size = k_out.len * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&v_out), .size = v_out.len * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&rope_tmp), .size = rope_tmp.len * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&cos_sin), .size = cos_sin.len * 4 },
+        .{ .buf_idx = 6, .host_ptr = @ptrCast(&k_cache), .size = k_cache.len * 4 },
+        .{ .buf_idx = 7, .host_ptr = @ptrCast(&v_cache), .size = v_cache.len * 4 },
+        .{ .buf_idx = 8, .host_ptr = @ptrCast(&weights), .size = weights.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 9,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.dense_projection_cache_group, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 3), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 3), commands[0].sidecar_count);
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, commands[0]));
+    metal.flushCommands();
+
+    const got_q: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[1].ptr)));
+    const got_k: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[2].ptr)));
+    const got_v: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[3].ptr)));
+    const got_rope_tmp: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[4].ptr)));
+    const got_k_cache: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[6].ptr)));
+    const got_v_cache: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[7].ptr)));
+
+    try std.testing.expectEqualSlices(f32, &input, got_q[0..4]);
+    try std.testing.expectEqualSlices(f32, &k_out, got_k[0..4]);
+    try std.testing.expectEqualSlices(f32, &v_out, got_v[0..4]);
+    try std.testing.expectEqualSlices(f32, &rope_tmp, got_rope_tmp[0..4]);
+    try std.testing.expectApproxEqAbs(@as(f32, -3), got_k_cache[0], 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, -4), got_k_cache[1], 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), got_k_cache[2], 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, 2), got_k_cache[3], 1e-4);
+    try std.testing.expectEqualSlices(f32, &input, got_v_cache[0..4]);
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 6), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.dense_projection_cache_group)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.dense_projection_cache_group)]);
+}
+
+test "metal backend dense prefill projection cache group carries value stores" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    metal.setRegionProgramDispatch(true);
+    const be = metal.backend();
+
+    var input = [_]f32{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    var q_out = [_]f32{0} ** 8;
+    var k_out = [_]f32{0} ** 8;
+    var v_out = [_]f32{88} ** 8;
+    var v_cache = [_]f32{0} ** 8;
+    var weights = [_]f32{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+
+    const matmul_geom = backend_mod.MatMulGeometry{
+        .M = 2,
+        .N = 4,
+        .K = 4,
+        .a_row_stride = 4,
+        .a_col_stride = 1,
+        .b_row_stride = 4,
+        .b_col_stride = 1,
+        .a_offset = 0,
+        .b_offset = 0,
+        .dst_offset = 0,
+        .dst_row_stride = 4,
+    };
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .matmul = .{ .dst = 1, .a = 0, .b = 5, .geom = matmul_geom } },
+        .{ .matmul = .{ .dst = 2, .a = 0, .b = 5, .geom = matmul_geom } },
+        .{ .matmul = .{ .dst = 3, .a = 0, .b = 5, .geom = matmul_geom } },
+        .{ .slice_assign = .{
+            .dst = 4,
+            .src = 3,
+            .rows = 4,
+            .cols = 2,
+            .dst_base_offset = 0,
+            .dst_offset = 0,
+            .dst_row_stride = 1,
+            .dst_col_stride = 4,
+            .src_offset = 0,
+            .src_row_stride = 1,
+            .src_col_stride = 4,
+            .patch_stride = 4,
+        } },
+    };
+
+    const buf_sizes = [_]usize{ 8, 8, 8, 8, 8, 16 };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&q_out), .size = q_out.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&k_out), .size = k_out.len * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&v_out), .size = v_out.len * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&v_cache), .size = v_cache.len * 4 },
+        .{ .buf_idx = 5, .host_ptr = @ptrCast(&weights), .size = weights.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 6,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.dense_projection_cache_group, commands[0].kind);
+    try std.testing.expectEqual(@as(u32, 3), commands[0].anchor_count);
+    try std.testing.expectEqual(@as(u32, 1), commands[0].sidecar_count);
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, commands[0]));
+    metal.flushCommands();
+
+    const got_q: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[1].ptr)));
+    const got_k: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[2].ptr)));
+    const got_v: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[3].ptr)));
+    const got_v_cache: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[4].ptr)));
+
+    try std.testing.expectEqualSlices(f32, &input, got_q[0..8]);
+    try std.testing.expectEqualSlices(f32, &input, got_k[0..8]);
+    try std.testing.expectEqualSlices(f32, &v_out, got_v[0..8]);
+    try std.testing.expectEqualSlices(f32, &input, got_v_cache[0..8]);
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 4), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.dense_projection_cache_group)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.dense_projection_cache_group)]);
 }
 
 test "metal backend region fuses rmsnorm scale chain" {
@@ -8781,10 +15175,105 @@ test "metal backend region fuses rmsnorm scale chain" {
         try std.testing.expectApproxEqAbs(want, actual, 1e-4);
     }
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 10), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_dispatch_count);
+}
+
+test "metal backend row chain skips dead rmsnorm intermediates" {
+    var metal = MetalBackend.init() catch |err| switch (err) {
+        error.MetalNotAvailable => return,
+        else => return err,
+    };
+    defer metal.deinit();
+    const be = metal.backend();
+
+    const rows = 2;
+    const cols = 65;
+    const n = rows * cols;
+    var input: [n]f32 = undefined;
+    var scale: [cols]f32 = undefined;
+    var norm_out = [_]f32{77} ** n;
+    var repeat_out = [_]f32{88} ** n;
+    var scaled_out = [_]f32{0} ** n;
+    for (&input, 0..) |*v, i| v.* = @as(f32, @floatFromInt((i % 17) + 1)) / 8.0;
+    for (&scale, 0..) |*v, i| v.* = @as(f32, @floatFromInt((i % 11) + 2)) / 7.0;
+    const ops = [_]backend_mod.DeviceOp{
+        .{ .rmsnorm = .{
+            .dst = 1,
+            .src = 0,
+            .rows = rows,
+            .cols = cols,
+            .eps = 0,
+        } },
+        .{ .repeat = .{
+            .dst = 2,
+            .src = 3,
+            .n = n,
+            .src_ne = .{ cols, 1, 1, 1 },
+            .dst_ne = .{ cols, rows, 1, 1 },
+            .src_strides = .{ 1, cols, cols, cols },
+            .dst_strides = .{ 1, cols, n, n },
+        } },
+        .{ .elementwise = .{
+            .op = .mul,
+            .dst = 4,
+            .src0 = 2,
+            .src1 = 1,
+            .n = n,
+        } },
+    };
+    const buf_sizes = [_]usize{ n, n, n, cols, n };
+    const uploads = [_]backend_mod.ProgramIO{
+        .{ .buf_idx = 0, .host_ptr = @ptrCast(&input), .size = input.len * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&norm_out), .size = norm_out.len * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&repeat_out), .size = repeat_out.len * 4 },
+        .{ .buf_idx = 3, .host_ptr = @ptrCast(&scale), .size = scale.len * 4 },
+        .{ .buf_idx = 4, .host_ptr = @ptrCast(&scaled_out), .size = scaled_out.len * 4 },
+    };
+    const program = backend_mod.DeviceProgram{
+        .ops = &ops,
+        .n_buffers = 5,
+        .buffer_sizes = &buf_sizes,
+        .initial_uploads = &uploads,
+    };
+
+    const handle = be.compileProgram(program) orelse return error.CompileFailed;
+    defer be.freeProgram(handle);
+    const compiled: *CompiledProgram = @ptrCast(@alignCast(handle));
+
+    var kernel_plan = try program_mod.Kernelizer.default().kernelize(std.testing.allocator, &ops);
+    defer kernel_plan.deinit(std.testing.allocator);
+    const commands = kernel_plan.commands;
+    try std.testing.expectEqual(@as(usize, 1), commands.len);
+    try std.testing.expectEqual(program_mod.ProgramCommandKind.row_chain, commands[0].kind);
+    try std.testing.expect(compiled.tryEncodeExactProgramCommand(&ops, commands[0]));
+    metal.flushCommands();
+
+    const got: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[4].ptr)));
+    const norm_after: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[1].ptr)));
+    const repeat_after: [*]const f32 = @ptrCast(@alignCast(c.mtl_buffer_contents(compiled.device_bufs[2].ptr)));
+    for (0..rows) |row| {
+        const row_base = row * cols;
+        var ss: f32 = 0;
+        for (input[row_base..][0..cols]) |x| ss += x * x;
+        const inv_rms = 1.0 / @sqrt(ss / @as(f32, @floatFromInt(cols)));
+        for (0..cols) |col| {
+            try std.testing.expectApproxEqAbs(input[row_base + col] * inv_rms * scale[col], got[row_base + col], 1e-4);
+        }
+    }
+    for (norm_after[0..n]) |actual| try std.testing.expectApproxEqAbs(@as(f32, 77), actual, 0);
+    for (repeat_after[0..n]) |actual| try std.testing.expectApproxEqAbs(@as(f32, 88), actual, 0);
+
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
+    try std.testing.expectEqual(@as(u64, 3), rt.backend_op_count);
+    try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.backend_dispatch_count);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.row_chain)]);
+    try std.testing.expectEqual(@as(u64, 1), rt.program_command_dispatch_counts[@intFromEnum(program_mod.ProgramCommandKind.row_chain)]);
 }
 
 test "metal backend region batches attention heads" {
@@ -8897,7 +15386,8 @@ test "metal backend region batches attention heads" {
         try std.testing.expectApproxEqAbs(want, actual, 1e-4);
     }
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 9), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_dispatch_count);
@@ -9025,7 +15515,8 @@ test "metal backend fuses attention output store chains" {
         try std.testing.expectApproxEqAbs(want, actual, 1e-4);
     }
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 9), rt.backend_op_count);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 8), rt.backend_dispatch_count);
@@ -9042,7 +15533,7 @@ test "metal backend fuses rope attention output store chains" {
 
     var q_input = [_]f32{ 1, 0 };
     var q_rope = [_]f32{0} ** 2;
-    var cos_sin = [_]f32{ 1, 0 };
+    var cos_sin = [_]f32{ 1, 1, 0, 0 };
     var k_cache = [_]f32{ 1, 0, 0, 1 };
     var v_cache = [_]f32{ 10, 20, 30, 40 };
     var mask = [_]f32{ 0, 0 };
@@ -9077,7 +15568,7 @@ test "metal backend fuses rope attention output store chains" {
         .dst_off = 0,
         .src_rs = 1,
         .src_cs = 2,
-        .cs_cs = 1,
+        .cs_cs = 4,
     } };
     ops[8] = .{ .attention = .{
         .dst = 6,
@@ -9121,11 +15612,11 @@ test "metal backend fuses rope attention output store chains" {
         .patch_stride = 4,
     } };
 
-    const buf_sizes = [_]usize{ 2, 2, 2, 4, 4, 2, 2, 4 };
+    const buf_sizes = [_]usize{ 2, 2, 4, 4, 4, 2, 2, 4 };
     const uploads = [_]backend_mod.ProgramIO{
         .{ .buf_idx = 0, .host_ptr = @ptrCast(&q_input), .size = 2 * 4 },
         .{ .buf_idx = 1, .host_ptr = @ptrCast(&q_rope), .size = 2 * 4 },
-        .{ .buf_idx = 2, .host_ptr = @ptrCast(&cos_sin), .size = 2 * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&cos_sin), .size = 4 * 4 },
         .{ .buf_idx = 3, .host_ptr = @ptrCast(&k_cache), .size = 4 * 4 },
         .{ .buf_idx = 4, .host_ptr = @ptrCast(&v_cache), .size = 4 * 4 },
         .{ .buf_idx = 5, .host_ptr = @ptrCast(&mask), .size = 2 * 4 },
@@ -9166,7 +15657,8 @@ test "metal backend fuses rope attention output store chains" {
         try std.testing.expectApproxEqAbs(want, actual, 1e-4);
     }
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.rope_attention_store_chain)]);
 }
@@ -9182,7 +15674,7 @@ test "metal backend groups rope slice stores" {
 
     var src0 = [_]f32{ 1, 0 };
     var src1 = [_]f32{ 0, 1 };
-    var cos_sin = [_]f32{ 1, 0 };
+    var cos_sin = [_]f32{ 1, 1, 0, 0 };
     var dst = [_]f32{ -1, -1, -1, -1 };
     var scratch = [_]f32{ -9, -9 };
     var q_out = [_]f32{0} ** 2;
@@ -9215,7 +15707,7 @@ test "metal backend groups rope slice stores" {
         .dst_off = 0,
         .src_rs = 1,
         .src_cs = 2,
-        .cs_cs = 1,
+        .cs_cs = 4,
     } };
     ops[8] = .{ .slice_assign = .{
         .dst = 2,
@@ -9242,7 +15734,7 @@ test "metal backend groups rope slice stores" {
         .dst_off = 0,
         .src_rs = 1,
         .src_cs = 2,
-        .cs_cs = 1,
+        .cs_cs = 4,
     } };
     ops[10] = .{ .slice_assign = .{
         .dst = 2,
@@ -9258,10 +15750,10 @@ test "metal backend groups rope slice stores" {
         .src_col_stride = 2,
         .patch_stride = 2,
     } };
-    const buf_sizes = [_]usize{ 2, 2, 4, 2, 2, 2 };
+    const buf_sizes = [_]usize{ 2, 4, 4, 2, 2, 2 };
     const uploads = [_]backend_mod.ProgramIO{
         .{ .buf_idx = 0, .host_ptr = @ptrCast(&src0), .size = 2 * 4 },
-        .{ .buf_idx = 1, .host_ptr = @ptrCast(&cos_sin), .size = 2 * 4 },
+        .{ .buf_idx = 1, .host_ptr = @ptrCast(&cos_sin), .size = 4 * 4 },
         .{ .buf_idx = 2, .host_ptr = @ptrCast(&dst), .size = 4 * 4 },
         .{ .buf_idx = 3, .host_ptr = @ptrCast(&scratch), .size = 2 * 4 },
         .{ .buf_idx = 4, .host_ptr = @ptrCast(&q_out), .size = 2 * 4 },
@@ -9287,7 +15779,8 @@ test "metal backend groups rope slice stores" {
         try std.testing.expectApproxEqAbs(want, actual, 1e-5);
     }
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.rope_store_group)]);
 }
@@ -9303,7 +15796,7 @@ test "metal backend groups rope attention output stores with aliased scratch" {
 
     var q0 = [_]f32{ 1, 0 };
     var q1 = [_]f32{ 0, 1 };
-    var cos_sin = [_]f32{ 1, 0 };
+    var cos_sin = [_]f32{ 1, 1, 0, 0 };
     var k_cache = [_]f32{ 1, 0, 0, 1 };
     var v_cache = [_]f32{ 10, 20, 30, 40 };
     var mask = [_]f32{ 0, 0 };
@@ -9339,7 +15832,7 @@ test "metal backend groups rope attention output stores with aliased scratch" {
         .dst_off = 0,
         .src_rs = 1,
         .src_cs = 2,
-        .cs_cs = 1,
+        .cs_cs = 4,
     } };
     ops[8] = .{ .attention = .{
         .dst = 6,
@@ -9393,17 +15886,17 @@ test "metal backend groups rope attention output stores with aliased scratch" {
         .dst_off = 0,
         .src_rs = 1,
         .src_cs = 2,
-        .cs_cs = 1,
+        .cs_cs = 4,
     } };
     ops[11] = ops[8];
     ops[12] = ops[9];
     ops[12].slice_assign.dst_offset = 2;
 
-    const buf_sizes = [_]usize{ 2, 2, 2, 4, 4, 2, 2, 4, 2 };
+    const buf_sizes = [_]usize{ 2, 2, 4, 4, 4, 2, 2, 4, 2 };
     const uploads = [_]backend_mod.ProgramIO{
         .{ .buf_idx = 0, .host_ptr = @ptrCast(&q0), .size = 2 * 4 },
         .{ .buf_idx = 1, .host_ptr = @ptrCast(&q1), .size = 2 * 4 },
-        .{ .buf_idx = 2, .host_ptr = @ptrCast(&cos_sin), .size = 2 * 4 },
+        .{ .buf_idx = 2, .host_ptr = @ptrCast(&cos_sin), .size = 4 * 4 },
         .{ .buf_idx = 3, .host_ptr = @ptrCast(&k_cache), .size = 4 * 4 },
         .{ .buf_idx = 4, .host_ptr = @ptrCast(&v_cache), .size = 4 * 4 },
         .{ .buf_idx = 5, .host_ptr = @ptrCast(&mask), .size = 2 * 4 },
@@ -9438,7 +15931,8 @@ test "metal backend groups rope attention output stores with aliased scratch" {
         try std.testing.expectApproxEqAbs(want, actual, 1e-4);
     }
 
-    const rt = be.getRuntimeProfile(handle).?;
+    var rt = profile_mod.RuntimeProfile{};
+    be.addRuntimeProfileTo(handle, &rt);
     try std.testing.expectEqual(@as(u64, 0), rt.fallback_op_count);
     try std.testing.expectEqual(@as(u64, 1), rt.program_command_counts[@intFromEnum(program_mod.ProgramCommandKind.rope_attention_store_group)]);
 }
